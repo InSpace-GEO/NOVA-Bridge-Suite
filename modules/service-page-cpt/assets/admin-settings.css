@@ -1,0 +1,214 @@
+.service-cpt-panel {
+	margin: 0 0 16px;
+	border: 1px solid #ccd0d4;
+	border-radius: 8px;
+	background: #fff;
+}
+.service-cpt-panel > summary {
+	font-weight: 600;
+	font-size: 14px;
+	padding: 10px 14px;
+	cursor: pointer;
+	background: #f6f7f7;
+	border-radius: 8px;
+	position: relative;
+}
+.service-cpt-panel[open] > summary {
+	border-bottom-left-radius: 0;
+	border-bottom-right-radius: 0;
+	border-bottom: 1px solid #ccd0d4;
+}
+.service-cpt-panel > summary::marker {
+	display: none;
+}
+.service-cpt-panel > summary::after {
+	content: '>';
+	position: absolute;
+	right: 14px;
+	top: 50%;
+	transform: translateY(-50%);
+	color: #50575e;
+}
+.service-cpt-panel[open] > summary::after {
+	content: 'v';
+}
+.service-cpt-panel > *:not(summary) {
+	padding: 14px 16px 18px;
+	box-sizing: border-box;
+}
+.service-cpt-panel .form-table th,
+.service-cpt-panel .form-table td {
+	padding-left: 8px;
+}
+.service-cpt-subpanel {
+	margin: 10px 0 0;
+	border: 1px solid #dcdcde;
+	border-radius: 8px;
+	background: #fff;
+}
+.service-cpt-subpanel > summary {
+	padding: 8px 12px;
+	font-weight: 600;
+	cursor: pointer;
+	background: #fbfbfb;
+	border-radius: 8px;
+	position: relative;
+}
+.service-cpt-subpanel[open] > summary {
+	border-bottom-left-radius: 0;
+	border-bottom-right-radius: 0;
+	border-bottom: 1px solid #dcdcde;
+}
+.service-cpt-subpanel > summary::marker {
+	display: none;
+}
+.service-cpt-subpanel > summary::after {
+	content: '>';
+	position: absolute;
+	right: 12px;
+	top: 50%;
+	transform: translateY(-50%);
+	color: #50575e;
+}
+.service-cpt-subpanel[open] > summary::after {
+	content: 'v';
+}
+.service-cpt-subpanel > *:not(summary) {
+	padding: 10px 12px 12px;
+}
+.service-cpt-field {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: center;
+	margin: 8px 0;
+}
+.service-cpt-field-label {
+	min-width: 180px;
+	font-weight: 600;
+}
+.service-cpt-color-group {
+	margin-bottom: 12px;
+}
+.service-cpt-color-group-title {
+	margin: 8px 0 4px;
+	font-weight: 600;
+}
+.service-cpt-inline-row {
+	display: flex;
+	gap: 12px;
+	align-items: center;
+	flex-wrap: wrap;
+}
+.service-cpt-related-search,
+.service-cpt-filter-search {
+	width: 100%;
+	max-width: 320px;
+	margin-bottom: 10px;
+}
+.service-cpt-related-list {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+	gap: 6px;
+	max-height: 220px;
+	overflow: auto;
+	padding: 8px;
+	border: 1px solid #dcdcde;
+	border-radius: 8px;
+	background: #fff;
+}
+.service-cpt-related-item {
+	display: flex;
+	gap: 6px;
+	align-items: center;
+}
+.service-cpt-related-item input {
+	margin-top: 0;
+}
+.service-cpt-image-preview {
+	position: relative;
+	border: 1px dashed #c3c4c7;
+	border-radius: 8px;
+	padding: 10px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	min-height: 120px;
+	background: #f6f7f7;
+}
+.service-cpt-image-preview img {
+	max-width: 100%;
+	height: auto;
+	display: block;
+}
+.service-cpt-image-preview.has-image .service-cpt-image-placeholder {
+	display: none;
+}
+.service-cpt-image-preview.is-empty .service-cpt-image-remove {
+	display: none;
+}
+.service-cpt-image-placeholder {
+	color: #646970;
+}
+.service-cpt-image-remove {
+	position: absolute;
+	top: 8px;
+	right: 8px;
+	background: #fff;
+	border: 1px solid #c3c4c7;
+	border-radius: 999px;
+	width: 24px;
+	height: 24px;
+	line-height: 22px;
+	text-align: center;
+	cursor: pointer;
+}
+.service-cpt-image-remove[disabled] {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+.service-cpt-image-actions {
+	margin-top: 8px;
+}
+.service-cpt-archive-picker {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+	gap: 16px;
+}
+.service-cpt-archive-list {
+	list-style: none;
+	margin: 8px 0 0;
+	padding: 0;
+	border: 1px solid #dcdcde;
+	border-radius: 8px;
+	background: #fff;
+	max-height: 260px;
+	overflow: auto;
+}
+.service-cpt-archive-list li {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 8px 10px;
+	border-bottom: 1px solid #eee;
+}
+.service-cpt-archive-list li:last-child {
+	border-bottom: 0;
+}
+.service-cpt-item-title {
+	font-weight: 600;
+}
+.service-cpt-archive-list .service-cpt-empty {
+	justify-content: center;
+	color: #646970;
+	font-style: italic;
+}
+.service-cpt-archive-available .is-selected {
+	opacity: 0.5;
+}
+.service-cpt-selected-actions {
+	display: flex;
+	gap: 6px;
+	flex-wrap: wrap;
+}

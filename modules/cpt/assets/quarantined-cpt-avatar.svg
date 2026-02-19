@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="quarantinedCPTAvatarTitle" focusable="false">
+  <title id="quarantinedCPTAvatarTitle">Author avatar placeholder</title>
+  <defs>
+    <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#c9d6ff" />
+      <stop offset="100%" stop-color="#e2ebf0" />
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" fill="url(#gradient)" rx="32" ry="32" />
+  <path fill="#ffffff" opacity="0.85" d="M128 134c-26.51 0-48-21.49-48-48s21.49-48 48-48 48 21.49 48 48-21.49 48-48 48zm0 24c35.346 0 64 28.654 64 64h-16c0-26.51-21.49-48-48-48s-48 21.49-48 48H64c0-35.346 28.654-64 64-64z" />
+</svg>

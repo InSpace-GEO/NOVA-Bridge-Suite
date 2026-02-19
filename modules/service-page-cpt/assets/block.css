@@ -1,0 +1,16 @@
+.service-cpt-block {
+	border: 1px dashed #d0d0d0;
+	border-radius: 8px;
+	padding: 20px;
+	background: #f8f9fb;
+}
+
+.service-cpt-block__title {
+	margin: 0 0 8px;
+	font-size: 18px;
+}
+
+.service-cpt-block__hint {
+	margin: 0;
+	color: #555d66;
+}

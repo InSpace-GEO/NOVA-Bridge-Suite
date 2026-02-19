@@ -1,0 +1,16 @@
+{
+	"apiVersion": 3,
+	"name": "service-cpt/layout",
+	"title": "Service Page Layout",
+	"description": "Locked layout for service pages with structured fields in the sidebar.",
+	"category": "layout",
+	"icon": "layout",
+	"textdomain": "nova-bridge-suite",
+	"supports": {
+		"html": false,
+		"inserter": false
+	},
+	"editorScript": "service-cpt-block",
+	"editorStyle": "service-cpt-editor",
+	"style": "service-cpt-frontend"
+}
