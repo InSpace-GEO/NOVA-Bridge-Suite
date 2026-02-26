@@ -4,7 +4,7 @@ Tags: seo, automation, content, rest-api, page builder
 Requires at least: 6.0
 Tested up to: 6.9.1
 Requires PHP: 7.4
-Stable tag: 2.1.4
+Stable tag: 2.1.5
 License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -41,6 +41,11 @@ Yes. If WooCommerce is active you can enable the rich text field module for cate
 1. NOVA Settings screen with module toggles.
 
 == Changelog ==
+= 2.1.5 =
+* Service Page CPT: fixed template 1 intro spacing and improved legacy related-post rendering fallback.
+* Service Page CPT: related articles now render stable card grids with clickable images and stronger CSS theme compatibility.
+* Service Page CPT: compact spacing values are now the default baseline for new/missing spacing options.
+
 = 2.1.4 =
 * Added legacy blog post auto-migration to the enhanced blog CPT structure.
 * Enforced single-H1 policy by removing body H1 elements when layout/title H1 is enabled.
@@ -59,8 +64,8 @@ Yes. If WooCommerce is active you can enable the rich text field module for cate
 * Initial release.
 
 == Upgrade Notice ==
-= 2.1.4 =
-* Includes legacy blog CPT migration and heading-policy improvements for enhanced blog layouts.
+= 2.1.5 =
+* Includes Service Page template spacing and related-article layout fixes with compact defaults.
 
 == License ==
 NOVA Bridge Suite is proprietary software. Usage is governed by a separate commercial license agreement. See `LICENSE.txt`.

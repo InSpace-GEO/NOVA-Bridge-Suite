@@ -95,7 +95,10 @@ final class Plugin {
 	private const OPTION_ARCHIVE_SEO_TITLE = 'service_cpt_archive_seo_title';
 	private const OPTION_ARCHIVE_SEO_DESCRIPTION = 'service_cpt_archive_seo_description';
 	private const DEFAULT_HEADER_OFFSET     = '6rem';
-	private const DEFAULT_SPACE_SCALE       = '1';
+	private const DEFAULT_SPACE_SCALE       = '0.9';
+	private const DEFAULT_SPACE_SECTION_PADDING = '3rem 1.25rem';
+	private const DEFAULT_SPACE_SECTION_GAP = '18px';
+	private const DEFAULT_SPACE_CARD_PADDING = '18px';
 	private const DEFAULT_CONTENT_WIDTH     = '1600px';
 	private const DEFAULT_WIDE_WIDTH        = '1800px';
 	private const DEFAULT_TEMPLATE          = 'service-page-1-column';
@@ -258,6 +261,10 @@ final class Plugin {
 
 		\add_option( self::OPTION_CONTENT_WIDTH, self::DEFAULT_CONTENT_WIDTH );
 		\add_option( self::OPTION_WIDE_WIDTH, self::DEFAULT_WIDE_WIDTH );
+		\add_option( self::OPTION_SPACE_SCALE, self::DEFAULT_SPACE_SCALE );
+		\add_option( self::OPTION_SPACE_SECTION_PADDING, self::DEFAULT_SPACE_SECTION_PADDING );
+		\add_option( self::OPTION_SPACE_SECTION_GAP, self::DEFAULT_SPACE_SECTION_GAP );
+		\add_option( self::OPTION_SPACE_CARD_PADDING, self::DEFAULT_SPACE_CARD_PADDING );
 		if ( null !== self::$instance ) {
 			$presets = self::$instance->get_color_presets();
 			$defaults = $presets['modern-slate']['values'] ?? [];
@@ -1476,12 +1483,22 @@ final class Plugin {
 
 		$component = $this->get_component_slug_for_block( $block );
 		$block_name = $block['blockName'] ?? '';
-
-		if ( ! $component ) {
-			return $block_content;
-		}
+		$is_latest_posts_block = 'core/latest-posts' === $block_name
+			|| ( '' === $block_name && false !== strpos( $block_content, 'wp-block-latest-posts' ) );
 
 		$template_slug = $this->get_effective_template_slug( $this->current_service_post_id );
+
+		if ( ! $component ) {
+			// Backward compatibility: older template content may miss related component metadata.
+			if ( $is_latest_posts_block && $this->template_component_active( $template_slug, 'related' ) ) {
+				$related_posts = $this->get_related_post_ids();
+				if ( ! empty( $related_posts ) ) {
+					return $this->render_related_posts_block( $related_posts, $block['attrs'] ?? [] );
+				}
+			}
+
+			return $block_content;
+		}
 
 		// Template 1 should not render the legacy intro spacer block.
 		if ( 'service-page-1-column' === $template_slug && 'spacer' === $component ) {
@@ -1500,15 +1517,7 @@ final class Plugin {
 				return '';
 			}
 
-			if ( 'core/latest-posts' === $block_name ) {
-				return $this->render_related_posts_block( $related_posts, $block['attrs'] ?? [] );
-			}
-		}
-
-		// Backward compatibility: older template content may miss related component metadata.
-		if ( ! $component && 'core/latest-posts' === $block_name && $this->template_component_active( $template_slug, 'related' ) ) {
-			$related_posts = $this->get_related_post_ids();
-			if ( ! empty( $related_posts ) ) {
+			if ( $is_latest_posts_block ) {
 				return $this->render_related_posts_block( $related_posts, $block['attrs'] ?? [] );
 			}
 		}
@@ -6214,6 +6223,12 @@ final class Plugin {
 			$default = self::DEFAULT_CONTENT_WIDTH;
 		} elseif ( self::OPTION_WIDE_WIDTH === $option ) {
 			$default = self::DEFAULT_WIDE_WIDTH;
+		} elseif ( self::OPTION_SPACE_SECTION_PADDING === $option ) {
+			$default = self::DEFAULT_SPACE_SECTION_PADDING;
+		} elseif ( self::OPTION_SPACE_SECTION_GAP === $option ) {
+			$default = self::DEFAULT_SPACE_SECTION_GAP;
+		} elseif ( self::OPTION_SPACE_CARD_PADDING === $option ) {
+			$default = self::DEFAULT_SPACE_CARD_PADDING;
 		}
 
 		$value = \get_option( $option, $default );
