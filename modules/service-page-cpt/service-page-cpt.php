@@ -122,7 +122,7 @@ final class Plugin {
 		],
 	];
 	private const TEMPLATE_COMPONENTS       = [
-		'service-page-1-column' => [ 'hero', 'intro', 'spacer', 'content', 'cta_cover', 'cta_wide', 'faq', 'related' ],
+		'service-page-1-column' => [ 'hero', 'intro', 'content', 'cta_cover', 'cta_wide', 'faq', 'related' ],
 		'service-page-2'        => [ 'hero', 'spacer', 'intro', 'image_text', 'text_image', 'cta_wide', 'faq', 'content', 'related' ],
 		'service-page-3'        => [ 'hero', 'intro', 'content', 'cta_cover', 'cta_wide', 'tabs', 'faq' ],
 	];
@@ -1482,6 +1482,11 @@ final class Plugin {
 		}
 
 		$template_slug = $this->get_effective_template_slug( $this->current_service_post_id );
+
+		// Template 1 should not render the legacy intro spacer block.
+		if ( 'service-page-1-column' === $template_slug && 'spacer' === $component ) {
+			return '';
+		}
 
 		if ( ! $this->component_enabled_for_template( $component, $template_slug ) ) {
 			return '';
