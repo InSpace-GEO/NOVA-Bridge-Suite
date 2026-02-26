@@ -201,7 +201,7 @@ if ( $show_breadcrumbs ) {
 
 						$card_date_readable = get_the_date( get_option( 'date_format' ) );
 						$card_date_attr     = get_the_date( DATE_W3C );
-						$summary            = \SEORAI\BodycleanCPT\Plugin::summary( 30 );
+							$summary            = \SEORAI\BodycleanCPT\Plugin::summary( 120 );
 
 						if ( '' === $summary ) {
 							$summary_source = get_the_excerpt();
@@ -213,7 +213,7 @@ if ( $show_breadcrumbs ) {
 							$summary_source = wp_strip_all_tags( (string) $summary_source );
 
 							if ( '' !== $summary_source ) {
-								$summary = wp_html_excerpt( $summary_source, 30, '…' );
+								$summary = wp_html_excerpt( $summary_source, 120, '…' );
 							}
 						}
 

@@ -12,6 +12,8 @@
 	const showContentSection = componentVisibility.content !== false;
 	const showTableSection = componentVisibility.table !== false;
 	const showImagesSection = componentVisibility.images !== false;
+	const mainTextSlots = Number( blockSettings.mainTextSlots || 3 );
+	const imageSlots = Number( blockSettings.imageSlots || ( showImagesSection ? 2 : 0 ) );
 	const showSidebarCtaSection = componentVisibility.sidebarCta !== false;
 	const showWideCtaSection = componentVisibility.wideCta !== false;
 	const showFaqSection = componentVisibility.faq !== false;
@@ -23,6 +25,7 @@
 		|| ( showSidebarCtaSection && ! showSidebarCtaFields )
 		|| ( showWideCtaSection && ! showWideCtaFields );
 
+	const isTemplateOneFlow = mainTextSlots === 2 && imageSlots === 1;
 	const bulletSlots = [ 0, 1, 2 ];
 	const faqSlots = [ 0, 1, 2, 3 ];
 	const formatTable = ( table ) => {
@@ -191,20 +194,30 @@
 								{ showContentSection && (
 									<Fragment>
 										<TextareaControl
-											label={ __( 'Main text 1', 'service-cpt' ) }
+											label={
+												isTemplateOneFlow
+													? __( 'Main text 1 (before inline image)', 'service-cpt' )
+													: __( 'Main text 1', 'service-cpt' )
+											}
 											value={ meta.sp_main_1 || '' }
 											onChange={ ( value ) => updateMeta( 'sp_main_1', value ) }
 										/>
 										<TextareaControl
-											label={ __( 'Main text 2', 'service-cpt' ) }
+											label={
+												isTemplateOneFlow
+													? __( 'Main text 2 (after inline image)', 'service-cpt' )
+													: __( 'Main text 2', 'service-cpt' )
+											}
 											value={ meta.sp_main_2 || '' }
 											onChange={ ( value ) => updateMeta( 'sp_main_2', value ) }
 										/>
-										<TextareaControl
-											label={ __( 'Main text 3', 'service-cpt' ) }
-											value={ meta.sp_main_3 || '' }
-											onChange={ ( value ) => updateMeta( 'sp_main_3', value ) }
-										/>
+										{ mainTextSlots >= 3 && (
+											<TextareaControl
+												label={ __( 'Main text 3', 'service-cpt' ) }
+												value={ meta.sp_main_3 || '' }
+												onChange={ ( value ) => updateMeta( 'sp_main_3', value ) }
+											/>
+										) }
 									</Fragment>
 								) }
 								{ showTableSection && (
@@ -216,20 +229,24 @@
 								) }
 								{ showImagesSection && (
 									<Fragment>
-										<div style={ { marginTop: '12px' } }>
-											{ mediaPicker(
-												__( 'Image 1', 'service-cpt' ),
-												meta.sp_image_1,
-												( value ) => updateMeta( 'sp_image_1', parseInt( value, 10 ) || 0 )
-											) }
-										</div>
-										<div style={ { marginTop: '8px' } }>
-											{ mediaPicker(
-												__( 'Image 2', 'service-cpt' ),
-												meta.sp_image_2,
-												( value ) => updateMeta( 'sp_image_2', parseInt( value, 10 ) || 0 )
-											) }
-										</div>
+										{ imageSlots >= 1 && (
+											<div style={ { marginTop: '12px' } }>
+												{ mediaPicker(
+													__( 'Image 1', 'service-cpt' ),
+													meta.sp_image_1,
+													( value ) => updateMeta( 'sp_image_1', parseInt( value, 10 ) || 0 )
+												) }
+											</div>
+										) }
+										{ imageSlots >= 2 && (
+											<div style={ { marginTop: '8px' } }>
+												{ mediaPicker(
+													__( 'Image 2', 'service-cpt' ),
+													meta.sp_image_2,
+													( value ) => updateMeta( 'sp_image_2', parseInt( value, 10 ) || 0 )
+												) }
+											</div>
+										) }
 									</Fragment>
 								) }
 							</PanelBody>

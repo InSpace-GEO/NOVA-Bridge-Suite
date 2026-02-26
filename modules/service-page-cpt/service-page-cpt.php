@@ -793,11 +793,16 @@ final class Plugin {
 			'sp_tab_2_content'           => 'Optional tab 2 rich text content.',
 			'sp_tab_3_title'             => 'Optional tab 3 label.',
 			'sp_tab_3_content'           => 'Optional tab 3 rich text content.',
-			'sp_faq'                     => 'FAQ items. Array of objects with question and answer (answer supports rich text).',
+			'sp_faq'                     => 'FAQ items. Array of objects with question and answer (answer supports rich text). Add FAQs here so they render as proper FAQ accordions.',
 			'sp_related_posts'           => 'Optional related post IDs. If empty, the related section is hidden.',
 		];
 
-		if ( 'service-page-3' === $template_slug ) {
+		if ( 'service-page-1-column' === $template_slug ) {
+			$descriptions['sp_main_1'] = 'First rich-text section shown before the inline image. After writing the intro, place roughly 40% of the remaining article content here.';
+			$descriptions['sp_image_1'] = 'Inline image attachment ID shown between sp_main_1 and sp_main_2.';
+			$descriptions['sp_main_2'] = 'Second rich-text section shown after the inline image. After writing the intro, place the remaining ~60% of article content here.';
+			$descriptions['sp_faq'] = 'FAQ items shown as accordion entries ({question,answer}[]). Put FAQ content only here; do not duplicate FAQ Q&A in sp_main_1 or sp_main_2.';
+		} elseif ( 'service-page-3' === $template_slug ) {
 			$descriptions['sp_main_1'] = 'Section 1 rich text. One full row, next to a sidebar CTA. Max 300 words.';
 			$descriptions['sp_main_2'] = 'Section 2 rich text. Half row, below section 1. Max 100 words, can be used to expand on section 1 content too. Tables and lists take more space, so even less words allowed.';
 			$descriptions['sp_main_3'] = 'Section 3 rich text. Half row, next to section 2. Max 100 words, can be used to expand on section 1 content too. Tables and lists take more space, so even less words allowed.';
@@ -1112,22 +1117,31 @@ final class Plugin {
 			}
 		}
 		$template_slug = $post_id ? $this->get_effective_template_slug( $post_id ) : $this->get_selected_template_slug();
+		$template_one = 'service-page-1-column' === $template_slug;
+		$has_content_component = $this->template_component_active( $template_slug, 'content' )
+			|| $this->template_component_active( $template_slug, 'image_text' )
+			|| $this->template_component_active( $template_slug, 'text_image' );
+		$has_image_component = $template_one
+			? $has_content_component
+			: (
+				$this->template_component_active( $template_slug, 'image_text' )
+				|| $this->template_component_active( $template_slug, 'text_image' )
+			);
 		$component_flags = [
 			'hero'       => $this->template_component_active( $template_slug, 'hero' ),
 			'intro'      => $this->template_component_active( $template_slug, 'intro' ),
-			'content'    => $this->template_component_active( $template_slug, 'content' )
-				|| $this->template_component_active( $template_slug, 'image_text' )
-				|| $this->template_component_active( $template_slug, 'text_image' ),
+			'content'    => $has_content_component,
 			'table'      => 'service-page-3' === $template_slug
 				&& $this->template_component_active( $template_slug, 'content' ),
-			'images'     => $this->template_component_active( $template_slug, 'image_text' )
-				|| $this->template_component_active( $template_slug, 'text_image' ),
+			'images'     => $has_image_component,
 			'sidebarCta' => $this->template_component_active( $template_slug, 'cta_cover' ),
 			'wideCta'    => $this->template_component_active( $template_slug, 'cta_wide' ),
 			'faq'        => $this->template_component_active( $template_slug, 'faq' ),
 		];
 		$editor_payload = [
 			'components'          => $component_flags,
+			'mainTextSlots'       => $template_one ? 2 : 3,
+			'imageSlots'          => $template_one ? 1 : 2,
 			'showHeroCtaFields'   => ! $this->cta_has_content( $this->get_global_hero_cta() ),
 			'showSidebarCtaFields'=> ! $this->cta_has_content( $this->get_global_sidebar_cta() ),
 			'showWideCtaFields'   => ! $this->cta_has_content( $this->get_global_wide_cta() ),
@@ -2808,14 +2822,21 @@ final class Plugin {
 		$media_2 = $this->format_media( (int) $meta['sp_image_2'] );
 		$table_text = $this->format_table_for_editor( $meta['sp_table'] );
 		$template_slug = $this->get_effective_template_slug( $post->ID );
+		$template_one = 'service-page-1-column' === $template_slug;
+		$main_text_slots = $template_one ? 2 : 3;
+		$image_slots = $template_one ? 1 : 2;
 		$show_hero_section = $this->template_component_active( $template_slug, 'hero' );
 		$show_intro_section = $this->template_component_active( $template_slug, 'intro' );
 		$show_content_section = $this->template_component_active( $template_slug, 'content' )
 			|| $this->template_component_active( $template_slug, 'image_text' )
 			|| $this->template_component_active( $template_slug, 'text_image' );
 		$show_table_section = 'service-page-3' === $template_slug && $show_content_section;
-		$show_images_section = $this->template_component_active( $template_slug, 'image_text' )
-			|| $this->template_component_active( $template_slug, 'text_image' );
+		$show_images_section = $template_one
+			? $show_content_section
+			: (
+				$this->template_component_active( $template_slug, 'image_text' )
+				|| $this->template_component_active( $template_slug, 'text_image' )
+			);
 		$show_sidebar_cta_section = $this->template_component_active( $template_slug, 'cta_cover' );
 		$show_wide_cta_section = $this->template_component_active( $template_slug, 'cta_wide' );
 		$show_extra_section = 'service-page-3' === $template_slug && $show_content_section;
@@ -2885,11 +2906,14 @@ final class Plugin {
 			$meta['sp_hero_secondary_url'],
 		] );
 		$has_intro = $section_has_content( [ $meta['sp_intro'] ] );
-		$has_main = $section_has_content( [
+		$main_values = [
 			$meta['sp_main_1'],
 			$meta['sp_main_2'],
-			$meta['sp_main_3'],
-		] );
+		];
+		if ( $main_text_slots >= 3 ) {
+			$main_values[] = $meta['sp_main_3'];
+		}
+		$has_main = $section_has_content( $main_values );
 		$has_table = '' !== \trim( (string) $table_text );
 		$global_sidebar = $this->get_global_sidebar_cta();
 		$global_wide = $this->get_global_wide_cta();
@@ -2929,7 +2953,7 @@ final class Plugin {
 		] );
 		$has_faq = $section_has_content( $meta['sp_faq'] );
 		$has_related = ! empty( $meta['sp_related_posts'] );
-		$has_images = ! empty( $media_1['url'] ) || ! empty( $media_2['url'] );
+		$has_images = ! empty( $media_1['url'] ) || ( $image_slots >= 2 && ! empty( $media_2['url'] ) );
 		$related_posts = \get_posts( [
 			'post_type'      => 'post',
 			'post_status'    => 'publish',
@@ -2984,11 +3008,19 @@ final class Plugin {
 				<div class="service-cpt-section-body">
 					<div class="service-cpt-meta-grid">
 						<?php
-						$field( __( 'Main text 1', 'nova-bridge-suite' ), 'sp_main_1', $meta['sp_main_1'], 'richtext' );
-						$field( __( 'Main text 2', 'nova-bridge-suite' ), 'sp_main_2', $meta['sp_main_2'], 'richtext' );
-						$field( __( 'Main text 3', 'nova-bridge-suite' ), 'sp_main_3', $meta['sp_main_3'], 'richtext' );
+						if ( $template_one ) {
+							$field( __( 'Main text 1 (before inline image)', 'nova-bridge-suite' ), 'sp_main_1', $meta['sp_main_1'], 'richtext' );
+							$field( __( 'Main text 2 (after inline image)', 'nova-bridge-suite' ), 'sp_main_2', $meta['sp_main_2'], 'richtext' );
+						} else {
+							$field( __( 'Main text 1', 'nova-bridge-suite' ), 'sp_main_1', $meta['sp_main_1'], 'richtext' );
+							$field( __( 'Main text 2', 'nova-bridge-suite' ), 'sp_main_2', $meta['sp_main_2'], 'richtext' );
+							$field( __( 'Main text 3', 'nova-bridge-suite' ), 'sp_main_3', $meta['sp_main_3'], 'richtext' );
+						}
 						?>
 					</div>
+					<?php if ( $template_one ) : ?>
+						<p class="description"><?php esc_html_e( 'Template 1 flow: Intro -> Main text 1 -> Inline image -> Main text 2. After the intro, target roughly 40% of the remaining content in Main text 1 and 60% in Main text 2. Put FAQ content only in the FAQ fields below.', 'nova-bridge-suite' ); ?></p>
+					<?php endif; ?>
 				</div>
 			</details>
 		<?php endif; ?>
@@ -3102,12 +3134,13 @@ final class Plugin {
 						$field( __( 'FAQ 3 question', 'nova-bridge-suite' ), 'sp_faq_q3', $meta['sp_faq'][2]['question'] ?? '' );
 						$field( __( 'FAQ 3 answer', 'nova-bridge-suite' ), 'sp_faq_a3', $meta['sp_faq'][2]['answer'] ?? '', 'richtext' );
 						$field( __( 'FAQ 4 question', 'nova-bridge-suite' ), 'sp_faq_q4', $meta['sp_faq'][3]['question'] ?? '' );
-						$field( __( 'FAQ 4 answer', 'nova-bridge-suite' ), 'sp_faq_a4', $meta['sp_faq'][3]['answer'] ?? '', 'richtext' );
-						?>
+							$field( __( 'FAQ 4 answer', 'nova-bridge-suite' ), 'sp_faq_a4', $meta['sp_faq'][3]['answer'] ?? '', 'richtext' );
+							?>
+						</div>
+						<p class="description"><?php esc_html_e( 'FAQ content should be placed in these FAQ fields so it renders as accordion items. Avoid duplicating FAQ Q&A in the main rich-text sections.', 'nova-bridge-suite' ); ?></p>
 					</div>
-				</div>
-			</details>
-		<?php endif; ?>
+				</details>
+			<?php endif; ?>
 
 		<?php if ( $show_related_section ) : ?>
 			<details class="service-cpt-section" data-autotoggle="1" <?php echo $has_related ? 'open' : ''; ?>>
@@ -3184,39 +3217,45 @@ final class Plugin {
 							</div>
 						</div>
 
-						<div class="service-cpt-meta-field">
-							<label><?php esc_html_e( 'Image 2', 'nova-bridge-suite' ); ?></label>
-							<input type="hidden" name="sp_image_2" value="<?php echo esc_attr( (int) $media_2['id'] ); ?>" />
-							<div id="sp_image_2_preview" class="service-cpt-image-preview <?php echo $media_2['url'] ? 'has-image' : 'is-empty'; ?>">
-								<img src="<?php echo esc_url( $media_2['url'] ); ?>" alt="" />
-								<span class="service-cpt-image-placeholder"><?php esc_html_e( 'No image selected', 'nova-bridge-suite' ); ?></span>
-								<button
-									type="button"
-									class="service-cpt-media-remove service-cpt-image-remove"
-									data-target="sp_image_2"
-									data-preview="#sp_image_2_preview"
-									data-button="button.service-cpt-media-button[data-target='sp_image_2']"
-									aria-label="<?php esc_attr_e( 'Remove image 2', 'nova-bridge-suite' ); ?>"
-									<?php disabled( ! $media_2['id'] ); ?>
-								>
-									X
-								</button>
+						<?php if ( $image_slots >= 2 ) : ?>
+							<div class="service-cpt-meta-field">
+								<label><?php esc_html_e( 'Image 2', 'nova-bridge-suite' ); ?></label>
+								<input type="hidden" name="sp_image_2" value="<?php echo esc_attr( (int) $media_2['id'] ); ?>" />
+								<div id="sp_image_2_preview" class="service-cpt-image-preview <?php echo $media_2['url'] ? 'has-image' : 'is-empty'; ?>">
+									<img src="<?php echo esc_url( $media_2['url'] ); ?>" alt="" />
+									<span class="service-cpt-image-placeholder"><?php esc_html_e( 'No image selected', 'nova-bridge-suite' ); ?></span>
+									<button
+										type="button"
+										class="service-cpt-media-remove service-cpt-image-remove"
+										data-target="sp_image_2"
+										data-preview="#sp_image_2_preview"
+										data-button="button.service-cpt-media-button[data-target='sp_image_2']"
+										aria-label="<?php esc_attr_e( 'Remove image 2', 'nova-bridge-suite' ); ?>"
+										<?php disabled( ! $media_2['id'] ); ?>
+									>
+										X
+									</button>
+								</div>
+								<div class="service-cpt-image-actions">
+									<button
+										type="button"
+										class="button service-cpt-media-button"
+										data-target="sp_image_2"
+										data-preview="#sp_image_2_preview"
+										data-select-label="<?php echo esc_attr__( 'Select image 2', 'nova-bridge-suite' ); ?>"
+										data-change-label="<?php echo esc_attr__( 'Change image 2', 'nova-bridge-suite' ); ?>"
+									>
+										<?php echo $media_2['id'] ? esc_html__( 'Change image 2', 'nova-bridge-suite' ) : esc_html__( 'Select image 2', 'nova-bridge-suite' ); ?>
+									</button>
+								</div>
 							</div>
-							<div class="service-cpt-image-actions">
-								<button
-									type="button"
-									class="button service-cpt-media-button"
-									data-target="sp_image_2"
-									data-preview="#sp_image_2_preview"
-									data-select-label="<?php echo esc_attr__( 'Select image 2', 'nova-bridge-suite' ); ?>"
-									data-change-label="<?php echo esc_attr__( 'Change image 2', 'nova-bridge-suite' ); ?>"
-								>
-									<?php echo $media_2['id'] ? esc_html__( 'Change image 2', 'nova-bridge-suite' ) : esc_html__( 'Select image 2', 'nova-bridge-suite' ); ?>
-								</button>
-							</div>
-						</div>
+						<?php endif; ?>
 					</div>
-					<p class="description"><?php esc_html_e( 'Images: set Featured Image for the main hero image, or set media IDs via API for sp_image_1 / sp_image_2.', 'nova-bridge-suite' ); ?></p>
+					<?php if ( $template_one ) : ?>
+						<p class="description"><?php esc_html_e( 'Template 1: sp_image_1 renders directly between Main text 1 and Main text 2. Set the Featured Image separately for the hero image.', 'nova-bridge-suite' ); ?></p>
+					<?php else : ?>
+						<p class="description"><?php esc_html_e( 'Images: set Featured Image for the main hero image, or set media IDs via API for sp_image_1 / sp_image_2.', 'nova-bridge-suite' ); ?></p>
+					<?php endif; ?>
 				</div>
 			</details>
 		<?php endif; ?>
@@ -7255,6 +7294,11 @@ final class Plugin {
 			$note = '' === $note ? $tabs_note : $note . ' ' . $tabs_note;
 		}
 
+		if ( 'service-page-1-column' === $template_slug ) {
+			$template_note = __( 'Template 1 flow: intro, main text 1, inline image (sp_image_1), then main text 2. After the intro, place roughly 40% of remaining body content in sp_main_1 and the remaining ~60% in sp_main_2. Put FAQs only in sp_faq so they render in FAQ accordions, and do not duplicate FAQ Q&A in main text fields.', 'nova-bridge-suite' );
+			$note = '' === $note ? $template_note : $note . ' ' . $template_note;
+		}
+
 		return $note;
 	}
 
@@ -7274,12 +7318,11 @@ final class Plugin {
 			'sp_hero_secondary_label',
 			'sp_hero_secondary_url',
 		];
-		$content_keys = [
-			'sp_main_1',
-			'sp_main_2',
-			'sp_main_3',
-		];
-		$image_keys = [ 'sp_image_1', 'sp_image_2' ];
+		$template_one = 'service-page-1-column' === $template_slug;
+		$content_keys = $template_one
+			? [ 'sp_main_1', 'sp_main_2' ]
+			: [ 'sp_main_1', 'sp_main_2', 'sp_main_3' ];
+		$image_keys = $template_one ? [ 'sp_image_1' ] : [ 'sp_image_1', 'sp_image_2' ];
 		$sidebar_keys = [
 			'sp_sidebar_title',
 			'sp_sidebar_copy',
@@ -7330,8 +7373,12 @@ final class Plugin {
 			$keys   = array_merge( $keys, $extra_keys );
 		}
 
-		$has_images = $this->template_component_active( $template_slug, 'image_text' )
-			|| $this->template_component_active( $template_slug, 'text_image' );
+		$has_images = $template_one
+			? $has_content
+			: (
+				$this->template_component_active( $template_slug, 'image_text' )
+				|| $this->template_component_active( $template_slug, 'text_image' )
+			);
 		if ( $has_images ) {
 			$keys = array_merge( $keys, $image_keys );
 		}
@@ -7430,16 +7477,34 @@ final class Plugin {
 		$has_content = $this->template_component_active( $effective_template, 'content' )
 			|| $this->template_component_active( $effective_template, 'image_text' )
 			|| $this->template_component_active( $effective_template, 'text_image' );
+		$template_one = 'service-page-1-column' === $effective_template;
 		$has_table = 'service-page-3' === $effective_template
 			&& $this->template_component_active( $effective_template, 'content' );
-		$has_images = $this->template_component_active( $effective_template, 'image_text' )
-			|| $this->template_component_active( $effective_template, 'text_image' );
+		$has_images = $template_one
+			? $has_content
+			: (
+				$this->template_component_active( $effective_template, 'image_text' )
+				|| $this->template_component_active( $effective_template, 'text_image' )
+			);
 		$has_sidebar_cta = $this->template_component_active( $effective_template, 'cta_cover' );
 		$has_wide_cta = $this->template_component_active( $effective_template, 'cta_wide' );
 		$has_faq = $this->template_component_active( $effective_template, 'faq' );
 		$has_tabs = $this->template_component_active( $effective_template, 'tabs' );
 		$has_related = $this->template_component_active( $effective_template, 'related' );
 		$has_extra = 'service-page-3' === $effective_template && $has_content;
+		$content_sections = [
+			$meta['sp_main_1'],
+			$meta['sp_main_2'],
+		];
+		if ( ! $template_one ) {
+			$content_sections[] = $meta['sp_main_3'];
+		}
+		$image_payload = [
+			'image_1' => $this->format_media( (int) $meta['sp_image_1'] ),
+		];
+		if ( ! $template_one ) {
+			$image_payload['image_2'] = $this->format_media( (int) $meta['sp_image_2'] );
+		}
 
 		$data = [
 			'id'         => $post_id,
@@ -7469,17 +7534,10 @@ final class Plugin {
 			],
 			'intro'      => $meta['sp_intro'],
 			'content'    => [
-				'sections' => [
-					$meta['sp_main_1'],
-					$meta['sp_main_2'],
-					$meta['sp_main_3'],
-				],
+				'sections' => $content_sections,
 				'table'    => $meta['sp_table'],
 			],
-			'images'     => [
-				'image_1' => $this->format_media( (int) $meta['sp_image_1'] ),
-				'image_2' => $this->format_media( (int) $meta['sp_image_2'] ),
-			],
+			'images'     => $image_payload,
 			'sidebar_cta'=> [
 				'title'          => $sidebar_cta['title'],
 				'copy'           => $sidebar_cta['copy'],

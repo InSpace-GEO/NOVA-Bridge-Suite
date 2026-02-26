@@ -13,6 +13,8 @@
 	const showContentSection = componentVisibility.content !== false;
 	const showTableSection = componentVisibility.table !== false;
 	const showImagesSection = componentVisibility.images !== false;
+	const mainTextSlots = Number( sidebarSettings.mainTextSlots || 3 );
+	const imageSlots = Number( sidebarSettings.imageSlots || ( showImagesSection ? 2 : 0 ) );
 	const showSidebarCtaSection = componentVisibility.sidebarCta !== false;
 	const showWideCtaSection = componentVisibility.wideCta !== false;
 	const showFaqSection = componentVisibility.faq !== false;
@@ -24,6 +26,7 @@
 		|| ( showSidebarCtaSection && ! showSidebarCtaFields )
 		|| ( showWideCtaSection && ! showWideCtaFields );
 
+	const isTemplateOneFlow = mainTextSlots === 2 && imageSlots === 1;
 	const bulletSlots = [ 0, 1, 2 ];
 	const faqSlots = [ 0, 1, 2, 3 ];
 	const formatTable = ( table ) => {
@@ -98,26 +101,30 @@
 			>
 				{ showImagesSection && (
 					<div style={ { display: 'flex', gap: '8px', marginBottom: '12px' } }>
-						<MediaUpload
-							onSelect={ ( media ) => updateMeta( 'sp_image_1', media?.id || 0 ) }
-							allowedTypes={ [ 'image' ] }
-							value={ meta.sp_image_1 || 0 }
-							render={ ( { open } ) => (
-								<Button variant="secondary" onClick={ open }>
-									{ meta.sp_image_1 ? __( 'Change Image 1', 'service-cpt' ) : __( 'Select Image 1', 'service-cpt' ) }
-								</Button>
-							) }
-						/>
-						<MediaUpload
-							onSelect={ ( media ) => updateMeta( 'sp_image_2', media?.id || 0 ) }
-							allowedTypes={ [ 'image' ] }
-							value={ meta.sp_image_2 || 0 }
-							render={ ( { open } ) => (
-								<Button variant="secondary" onClick={ open }>
-									{ meta.sp_image_2 ? __( 'Change Image 2', 'service-cpt' ) : __( 'Select Image 2', 'service-cpt' ) }
-								</Button>
-							) }
-						/>
+						{ imageSlots >= 1 && (
+							<MediaUpload
+								onSelect={ ( media ) => updateMeta( 'sp_image_1', media?.id || 0 ) }
+								allowedTypes={ [ 'image' ] }
+								value={ meta.sp_image_1 || 0 }
+								render={ ( { open } ) => (
+									<Button variant="secondary" onClick={ open }>
+										{ meta.sp_image_1 ? __( 'Change Image 1', 'service-cpt' ) : __( 'Select Image 1', 'service-cpt' ) }
+									</Button>
+								) }
+							/>
+						) }
+						{ imageSlots >= 2 && (
+							<MediaUpload
+								onSelect={ ( media ) => updateMeta( 'sp_image_2', media?.id || 0 ) }
+								allowedTypes={ [ 'image' ] }
+								value={ meta.sp_image_2 || 0 }
+								render={ ( { open } ) => (
+									<Button variant="secondary" onClick={ open }>
+										{ meta.sp_image_2 ? __( 'Change Image 2', 'service-cpt' ) : __( 'Select Image 2', 'service-cpt' ) }
+									</Button>
+								) }
+							/>
+						) }
 					</div>
 				) }
 
@@ -176,20 +183,30 @@
 				{ showContentSection && (
 					<Fragment>
 						<TextareaControl
-							label={ __( 'Main text 1', 'service-cpt' ) }
+							label={
+								isTemplateOneFlow
+									? __( 'Main text 1 (before inline image)', 'service-cpt' )
+									: __( 'Main text 1', 'service-cpt' )
+							}
 							value={ meta.sp_main_1 || '' }
 							onChange={ ( value ) => updateMeta( 'sp_main_1', value ) }
 						/>
 						<TextareaControl
-							label={ __( 'Main text 2', 'service-cpt' ) }
+							label={
+								isTemplateOneFlow
+									? __( 'Main text 2 (after inline image)', 'service-cpt' )
+									: __( 'Main text 2', 'service-cpt' )
+							}
 							value={ meta.sp_main_2 || '' }
 							onChange={ ( value ) => updateMeta( 'sp_main_2', value ) }
 						/>
-						<TextareaControl
-							label={ __( 'Main text 3', 'service-cpt' ) }
-							value={ meta.sp_main_3 || '' }
-							onChange={ ( value ) => updateMeta( 'sp_main_3', value ) }
-						/>
+						{ mainTextSlots >= 3 && (
+							<TextareaControl
+								label={ __( 'Main text 3', 'service-cpt' ) }
+								value={ meta.sp_main_3 || '' }
+								onChange={ ( value ) => updateMeta( 'sp_main_3', value ) }
+							/>
+						) }
 					</Fragment>
 				) }
 				{ showTableSection && (
@@ -303,7 +320,9 @@
 
 				{ showImagesSection && (
 					<p style={ { fontSize: '12px', color: '#6b7280' } }>
-						{ __( 'Images are selected via the Featured Image panel or media IDs (sp_image_1 / sp_image_2) via the API.', 'service-cpt' ) }
+						{ imageSlots >= 2
+							? __( 'Images are selected via the Featured Image panel or media IDs (sp_image_1 / sp_image_2) via the API.', 'service-cpt' )
+							: __( 'Image is selected via the Featured Image panel or the media ID in sp_image_1 via the API.', 'service-cpt' ) }
 					</p>
 				) }
 			</PluginDocumentSettingPanel>

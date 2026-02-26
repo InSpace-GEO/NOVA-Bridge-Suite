@@ -324,6 +324,238 @@ if (!function_exists('cf_tmrb_apply_genesis_fallback')) {
   }
 }
 
+/** ---------- SEO plugin detection + key mapping for POSTS ---------- **/
+if (!function_exists('cf_tmrb_get_active_plugin_basenames')) {
+  function cf_tmrb_get_active_plugin_basenames() {
+    $active = get_option('active_plugins');
+    if (!is_array($active)) $active = [];
+
+    if (is_multisite()) {
+      $sitewide = get_site_option('active_sitewide_plugins');
+      if (is_array($sitewide)) $active = array_merge($active, array_keys($sitewide));
+    }
+
+    $active = array_map('strval', $active);
+    return array_values(array_unique($active));
+  }
+}
+
+if (!function_exists('cf_tmrb_detect_active_seo_plugins')) {
+  function cf_tmrb_detect_active_seo_plugins() {
+    $active_plugins = cf_tmrb_get_active_plugin_basenames();
+    $plugin_active = function($basename) use ($active_plugins) {
+      return in_array((string) $basename, $active_plugins, true);
+    };
+
+    $detected = [
+      'yoast' => $plugin_active('wordpress-seo/wp-seo.php'),
+      'rank_math' => $plugin_active('seo-by-rank-math/rank-math.php'),
+      'tsf' => $plugin_active('autodescription/autodescription.php'),
+      'aioseo' => $plugin_active('all-in-one-seo-pack/all_in_one_seo_pack.php'),
+      'seopress' => $plugin_active('wp-seopress/seopress.php'),
+      'smartcrawl' => $plugin_active('smartcrawl-seo/wpmu-dev-seo.php') || $plugin_active('wpmu-dev-seo/wpmu-dev-seo.php'),
+      'squirrly' => $plugin_active('squirrly-seo/squirrly.php'),
+      'slim_seo' => $plugin_active('slim-seo/slim-seo.php'),
+    ];
+
+    return (array) apply_filters('cf_tmrb_active_seo_plugins', $detected);
+  }
+}
+
+if (!function_exists('cf_tmrb_post_seo_key_map')) {
+  function cf_tmrb_post_seo_key_map() {
+    $map = [
+      'yoast' => [
+        'title'       => '_yoast_wpseo_title',
+        'description' => '_yoast_wpseo_metadesc',
+      ],
+      'rank_math' => [
+        'title'       => 'rank_math_title',
+        'description' => 'rank_math_description',
+      ],
+      'tsf' => [
+        'title'       => '_genesis_title',
+        'description' => '_genesis_description',
+      ],
+      'aioseo' => [
+        'title'       => '_aioseo_title',
+        'description' => '_aioseo_description',
+      ],
+      'seopress' => [
+        'title'       => '_seopress_titles_title',
+        'description' => '_seopress_titles_desc',
+      ],
+      'smartcrawl' => [
+        'title'       => '_wds_title',
+        'description' => '_wds_metadesc',
+      ],
+      'squirrly' => [
+        'title'       => '_sq_title',
+        'description' => '_sq_description',
+      ],
+      'slim_seo' => [
+        'title'       => 'slim_seo.title',
+        'description' => 'slim_seo.description',
+      ],
+    ];
+
+    return (array) apply_filters('cf_tmrb_post_seo_key_map', $map);
+  }
+}
+
+if (!function_exists('cf_tmrb_post_seo_alias_groups')) {
+  function cf_tmrb_post_seo_alias_groups() {
+    $groups = [
+      'title' => [
+        'meta_title',
+        '_yoast_wpseo_title',
+        'wpseo_title',
+        'rank_math_title',
+        '_genesis_title',
+        'autodescription-meta.title',
+        'autodescription-meta.doctitle',
+        '_aioseo_title',
+        'aioseo_title',
+        '_seopress_titles_title',
+        'seopress_titles_title',
+        '_wds_title',
+        'wds_title',
+        '_sq_title',
+        'sq_title',
+        'slim_seo.title',
+        'slim_seo_title',
+      ],
+      'description' => [
+        'meta_description',
+        '_yoast_wpseo_metadesc',
+        '_yoast_wpseo_metadescription',
+        'wpseo_desc',
+        'wpseo_metadesc',
+        'wpseo_metadescription',
+        'rank_math_description',
+        '_genesis_description',
+        'autodescription-meta.description',
+        '_aioseo_description',
+        'aioseo_description',
+        '_seopress_titles_desc',
+        'seopress_titles_desc',
+        '_wds_metadesc',
+        'wds_metadesc',
+        '_sq_description',
+        'sq_description',
+        'slim_seo.description',
+        'slim_seo_description',
+      ],
+    ];
+
+    return (array) apply_filters('cf_tmrb_post_seo_alias_groups', $groups);
+  }
+}
+
+if (!function_exists('cf_tmrb_coerce_post_seo_string')) {
+  function cf_tmrb_coerce_post_seo_string($value, &$ok = true) {
+    $ok = false;
+    if (is_scalar($value) || $value === null) {
+      $ok = true;
+      return (string) $value;
+    }
+    return '';
+  }
+}
+
+if (!function_exists('cf_tmrb_resolve_post_seo_from_meta_input')) {
+  function cf_tmrb_resolve_post_seo_from_meta_input(array $meta_input) {
+    $aliases = cf_tmrb_post_seo_alias_groups();
+    $consumed = [];
+    $title = null;
+    $description = null;
+
+    $resolver = function(array $keys) use ($meta_input, &$consumed) {
+      $resolved = null;
+      foreach ($keys as $key) {
+        if (!array_key_exists($key, $meta_input)) continue;
+        $consumed[] = $key;
+        if ($resolved !== null) continue;
+        $ok = false;
+        $resolved = cf_tmrb_coerce_post_seo_string($meta_input[$key], $ok);
+        if (!$ok) $resolved = null;
+      }
+      return $resolved;
+    };
+
+    if (isset($aliases['title']) && is_array($aliases['title'])) {
+      $title = $resolver($aliases['title']);
+    }
+    if (isset($aliases['description']) && is_array($aliases['description'])) {
+      $description = $resolver($aliases['description']);
+    }
+
+    $key_map = cf_tmrb_post_seo_key_map();
+    $active_plugins = cf_tmrb_detect_active_seo_plugins();
+
+    $target_plugins = [];
+    foreach ($active_plugins as $slug => $is_active) {
+      if (!empty($is_active) && isset($key_map[$slug])) $target_plugins[] = $slug;
+    }
+    if (empty($target_plugins)) $target_plugins = array_keys($key_map);
+
+    $updates = [];
+    if ($title !== null) {
+      foreach ($target_plugins as $slug) {
+        $target_key = $key_map[$slug]['title'] ?? '';
+        if (is_string($target_key) && $target_key !== '') $updates[$target_key] = $title;
+      }
+    }
+    if ($description !== null) {
+      foreach ($target_plugins as $slug) {
+        $target_key = $key_map[$slug]['description'] ?? '';
+        if (is_string($target_key) && $target_key !== '') $updates[$target_key] = $description;
+      }
+    }
+
+    $consumed = array_values(array_unique($consumed));
+    $updates  = (array) apply_filters(
+      'cf_tmrb_post_seo_updates',
+      $updates,
+      $meta_input,
+      $active_plugins,
+      $target_plugins,
+      $title,
+      $description
+    );
+
+    return [
+      'title'          => $title,
+      'description'    => $description,
+      'consumed_keys'  => $consumed,
+      'updates'        => $updates,
+      'active_plugins' => $active_plugins,
+      'target_plugins' => $target_plugins,
+    ];
+  }
+}
+
+if (!function_exists('cf_tmrb_enrich_post_meta_with_seo_aliases')) {
+  function cf_tmrb_enrich_post_meta_with_seo_aliases(array $meta_values, $include_private = false) {
+    $resolved = cf_tmrb_resolve_post_seo_from_meta_input($meta_values);
+
+    if ($resolved['title'] !== null && !array_key_exists('meta_title', $meta_values)) {
+      $meta_values['meta_title'] = $resolved['title'];
+    }
+    if ($resolved['description'] !== null && !array_key_exists('meta_description', $meta_values)) {
+      $meta_values['meta_description'] = $resolved['description'];
+    }
+
+    if ($include_private) {
+      foreach ((array) $resolved['updates'] as $k => $v) {
+        if (!array_key_exists($k, $meta_values)) $meta_values[$k] = $v;
+      }
+    }
+
+    return $meta_values;
+  }
+}
+
 /** ===========================================================
  *  product_cat: meta_all & meta_all_flat  (conditional private)
  *  =========================================================== */
@@ -685,6 +917,159 @@ add_action('init', function () {
   }
 });
 
+if (!function_exists('cf_tmrb_update_post_meta_all_payload')) {
+  function cf_tmrb_update_post_meta_all_payload($value, $post_obj) {
+    if (!($post_obj instanceof WP_Post)) return new WP_Error('rest_invalid','Invalid post object.',['status'=>400]);
+    $post_id = (int) $post_obj->ID;
+    if (!current_user_can('edit_post', $post_id)) return new WP_Error('rest_forbidden','Insufficient permissions.',['status'=>403]);
+    if (!is_array($value)) return new WP_Error('rest_invalid_param','meta_all must be an object.',['status'=>400]);
+
+    // Caller is authorized -> allow private and public keys alike.
+    $existing = [];
+    foreach (get_post_meta($post_id) as $k => $vals) {
+      $existing[$k] = count($vals) === 1 ? maybe_unserialize($vals[0]) : array_map('maybe_unserialize', $vals);
+    }
+
+    $aliases = (array) apply_filters('cf_tmrb_post_key_aliases', array(
+      'autodescription-term-settings.' => 'autodescription-meta.',
+      'autodescription-term-settings'  => 'autodescription-meta',
+    ));
+
+    $normalized_input = [];
+    foreach ($value as $k => $v) {
+      $nk = cf_tmrb_normalize_key($k);
+      foreach ($aliases as $from => $to) {
+        if ($nk === $from) { $nk = $to; break; }
+        if (strpos($nk, $from) === 0) { $nk = $to . substr($nk, strlen($from)); break; }
+      }
+      $normalized_input[$nk] = $v;
+    }
+
+    // Normalize incoming SEO fields to the active SEO plugin's storage keys.
+    $seo_resolution = cf_tmrb_resolve_post_seo_from_meta_input($normalized_input);
+    foreach ((array) ($seo_resolution['consumed_keys'] ?? []) as $consumed_key) {
+      unset($normalized_input[$consumed_key]);
+    }
+    foreach ((array) ($seo_resolution['updates'] ?? []) as $seo_key => $seo_value) {
+      $normalized_input[$seo_key] = $seo_value;
+    }
+
+    foreach ($normalized_input as $k => $v) {
+      $normKey = cf_tmrb_normalize_key($k);
+      $san     = cf_tmrb_sanitize_deep($v);
+
+      // Dotted/bracket path -> container write
+      if (strpos($normKey, '.') !== false) {
+        list($top, $rest) = explode('.', $normKey, 2);
+        $container = (isset($existing[$top]) && is_array($existing[$top])) ? $existing[$top] : [];
+        cf_tmrb_set_by_path($container, $rest, $san);
+
+        if (function_exists('get_field_object')) {
+          $fo = get_field_object($top, $post_id);
+          if (is_array($fo) && isset($fo['key'])) { update_field($fo['key'], $container, $post_id); }
+          else { update_post_meta($post_id, $top, $container); }
+        } else {
+          update_post_meta($post_id, $top, $container);
+        }
+        $existing[$top] = $container;
+
+        cf_tmrb_apply_genesis_fallback($post_id, $normKey, $san);
+        continue;
+      }
+
+      // Plain key present -> update in place
+      if (array_key_exists($normKey, $existing)) {
+        if (function_exists('get_field_object')) {
+          $fo = get_field_object($normKey, $post_id);
+          if (is_array($fo) && isset($fo['key'])) { update_field($fo['key'], $san, $post_id); }
+          else { update_post_meta($post_id, $normKey, $san); }
+        } else {
+          update_post_meta($post_id, $normKey, $san);
+        }
+        cf_tmrb_apply_genesis_fallback($post_id, $normKey, $san);
+        $existing[$normKey] = $san;
+        continue;
+      }
+
+      // Leaf-only auto-resolve
+      $paths = [];
+      foreach ($existing as $topKey => $val) {
+        if (is_array($val)) {
+          foreach (cf_tmrb_find_leaf_paths([$topKey => $val], $normKey) as $p) $paths[] = $p;
+        }
+      }
+      $paths = array_values(array_unique($paths));
+
+      if (count($paths) === 1) {
+        list($top, $rest) = explode('.', $paths[0], 2);
+        $container = isset($existing[$top]) && is_array($existing[$top]) ? $existing[$top] : [];
+        cf_tmrb_set_by_path($container, $rest, $san);
+
+        if (function_exists('get_field_object')) {
+          $fo = get_field_object($top, $post_id);
+          if (is_array($fo) && isset($fo['key'])) { update_field($fo['key'], $container, $post_id); }
+          else { update_post_meta($post_id, $top, $container); }
+        } else {
+          update_post_meta($post_id, $top, $container);
+        }
+        $existing[$top] = $container;
+
+        cf_tmrb_apply_genesis_fallback($post_id, $paths[0], $san);
+        continue;
+      } elseif (count($paths) > 1) {
+        return new WP_Error(
+          'rest_ambiguous',
+          sprintf('Key "%s" found in multiple places (%s). Provide a dotted path.',
+            $normKey, implode(', ', $paths)),
+          ['status' => 409]
+        );
+      }
+
+      // Guess container from other posts
+      $guess = cf_tmrb_guess_post_container_for_leaf($post_obj->post_type, $normKey);
+      if (is_array($guess) && isset($guess['type']) && $guess['type'] === 'post' && !empty($guess['top'])) {
+        $container = [];
+        cf_tmrb_set_by_path($container, $normKey, $san);
+        if (function_exists('get_field_object')) {
+          $fo = get_field_object($guess['top'], $post_id);
+          if (is_array($fo) && isset($fo['key'])) { update_field($fo['key'], $container, $post_id); }
+          else { update_post_meta($post_id, $guess['top'], $container); }
+        } else {
+          update_post_meta($post_id, $guess['top'], $container);
+        }
+        $existing[$guess['top']] = $container;
+
+        cf_tmrb_apply_genesis_fallback($post_id, $normKey, $san);
+        continue;
+      }
+
+      // Fallback: create as top-level post meta
+      update_post_meta($post_id, $normKey, $san);
+      cf_tmrb_apply_genesis_fallback($post_id, $normKey, $san);
+      $existing[$normKey] = $san;
+    }
+
+    return true;
+  }
+}
+
+if (!function_exists('cf_tmrb_apply_nested_meta_payload_updates')) {
+  function cf_tmrb_apply_nested_meta_payload_updates($post_obj, $request) {
+    if (!($post_obj instanceof WP_Post) || !($request instanceof WP_REST_Request)) return;
+
+    $meta = $request->get_param('meta');
+    if (!is_array($meta)) return;
+
+    if (isset($meta['meta_all']) && is_array($meta['meta_all'])) {
+      cf_tmrb_update_post_meta_all_payload($meta['meta_all'], $post_obj);
+    }
+
+    if (isset($meta['meta_all_flat']) && is_array($meta['meta_all_flat'])) {
+      cf_tmrb_update_post_meta_all_payload($meta['meta_all_flat'], $post_obj);
+    }
+  }
+}
+
 add_action('rest_api_init', function () {
 
   $pts = cf_tmrb_supported_post_types();
@@ -719,137 +1104,11 @@ add_action('rest_api_init', function () {
         }
       }
 
+      $out = cf_tmrb_enrich_post_meta_with_seo_aliases($out, $include_private);
       return $out;
     },
 
-    'update_callback' => function ($value, $post_obj) {
-      if (!($post_obj instanceof WP_Post)) return new WP_Error('rest_invalid','Invalid post object.',['status'=>400]);
-      $post_id = (int) $post_obj->ID;
-      if (!current_user_can('edit_post', $post_id)) return new WP_Error('rest_forbidden','Insufficient permissions.',['status'=>403]);
-      if (!is_array($value)) return new WP_Error('rest_invalid_param','meta_all must be an object.',['status'=>400]);
-
-      // Caller is authorized -> allow private and public keys alike.
-      $existing = [];
-      foreach (get_post_meta($post_id) as $k => $vals) {
-        $existing[$k] = count($vals) === 1 ? maybe_unserialize($vals[0]) : array_map('maybe_unserialize', $vals);
-      }
-
-      $aliases = (array) apply_filters('cf_tmrb_post_key_aliases', array(
-        'autodescription-term-settings.' => 'autodescription-meta.',
-        'autodescription-term-settings'  => 'autodescription-meta',
-      ));
-
-      $normalized_input = [];
-      foreach ($value as $k => $v) {
-        $nk = cf_tmrb_normalize_key($k);
-        foreach ($aliases as $from => $to) {
-          if ($nk === $from) { $nk = $to; break; }
-          if (strpos($nk, $from) === 0) { $nk = $to . substr($nk, strlen($from)); break; }
-        }
-        $normalized_input[$nk] = $v;
-      }
-
-      foreach ($normalized_input as $k => $v) {
-        $normKey = cf_tmrb_normalize_key($k);
-        $san     = cf_tmrb_sanitize_deep($v);
-
-        // Dotted/bracket path -> container write
-        if (strpos($normKey, '.') !== false) {
-          list($top, $rest) = explode('.', $normKey, 2);
-          $container = (isset($existing[$top]) && is_array($existing[$top])) ? $existing[$top] : [];
-          cf_tmrb_set_by_path($container, $rest, $san);
-
-          if (function_exists('get_field_object')) {
-            $fo = get_field_object($top, $post_id);
-            if (is_array($fo) && isset($fo['key'])) { update_field($fo['key'], $container, $post_id); }
-            else { update_post_meta($post_id, $top, $container); }
-          } else {
-            update_post_meta($post_id, $top, $container);
-          }
-          $existing[$top] = $container;
-
-          $leafSegs = array_values(array_filter(explode('.', $rest), 'strlen'));
-          $lastLeaf = end($leafSegs);
-          if ($lastLeaf !== false) cf_tmrb_apply_genesis_fallback($post_id, $lastLeaf, $san);
-          continue;
-        }
-
-        // Plain key present -> update in place
-        if (array_key_exists($normKey, $existing)) {
-          if (function_exists('get_field_object')) {
-            $fo = get_field_object($normKey, $post_id);
-            if (is_array($fo) && isset($fo['key'])) { update_field($fo['key'], $san, $post_id); }
-            else { update_post_meta($post_id, $normKey, $san); }
-          } else {
-            update_post_meta($post_id, $normKey, $san);
-          }
-          cf_tmrb_apply_genesis_fallback($post_id, $normKey, $san);
-          $existing[$normKey] = $san;
-          continue;
-        }
-
-        // Leaf-only auto-resolve
-        $paths = [];
-        foreach ($existing as $topKey => $val) {
-          if (is_array($val)) {
-            foreach (cf_tmrb_find_leaf_paths([$topKey => $val], $normKey) as $p) $paths[] = $p;
-          }
-        }
-        $paths = array_values(array_unique($paths));
-
-        if (count($paths) === 1) {
-          list($top, $rest) = explode('.', $paths[0], 2);
-          $container = isset($existing[$top]) && is_array($existing[$top]) ? $existing[$top] : [];
-          cf_tmrb_set_by_path($container, $rest, $san);
-
-          if (function_exists('get_field_object')) {
-            $fo = get_field_object($top, $post_id);
-            if (is_array($fo) && isset($fo['key'])) { update_field($fo['key'], $container, $post_id); }
-            else { update_post_meta($post_id, $top, $container); }
-          } else {
-            update_post_meta($post_id, $top, $container);
-          }
-          $existing[$top] = $container;
-
-          $leafSegs = array_values(array_filter(explode('.', $rest), 'strlen'));
-          $lastLeaf = end($leafSegs);
-          if ($lastLeaf !== false) cf_tmrb_apply_genesis_fallback($post_id, $lastLeaf, $san);
-          continue;
-        } elseif (count($paths) > 1) {
-          return new WP_Error(
-            'rest_ambiguous',
-            sprintf('Key "%s" found in multiple places (%s). Provide a dotted path.',
-              $normKey, implode(', ', $paths)),
-            ['status' => 409]
-          );
-        }
-
-        // Guess container from other posts
-        $guess = cf_tmrb_guess_post_container_for_leaf($post_obj->post_type, $normKey);
-        if (is_array($guess) && isset($guess['type']) && $guess['type'] === 'post' && !empty($guess['top'])) {
-          $container = [];
-          cf_tmrb_set_by_path($container, $normKey, $san);
-          if (function_exists('get_field_object')) {
-            $fo = get_field_object($guess['top'], $post_id);
-            if (is_array($fo) && isset($fo['key'])) { update_field($fo['key'], $container, $post_id); }
-            else { update_post_meta($post_id, $guess['top'], $container); }
-          } else {
-            update_post_meta($post_id, $guess['top'], $container);
-          }
-          $existing[$guess['top']] = $container;
-
-          cf_tmrb_apply_genesis_fallback($post_id, $normKey, $san);
-          continue;
-        }
-
-        // Fallback: create as top-level post meta
-        update_post_meta($post_id, $normKey, $san);
-        cf_tmrb_apply_genesis_fallback($post_id, $normKey, $san);
-        $existing[$normKey] = $san;
-      }
-
-      return true;
-    },
+    'update_callback' => 'cf_tmrb_update_post_meta_all_payload',
 
     'schema' => [
       'description' => 'All post meta (ACF-aware). Public keys always; private keys only for authenticated callers with edit_post.',
@@ -883,8 +1142,10 @@ add_action('rest_api_init', function () {
         }
       }
 
+      $flat = cf_tmrb_enrich_post_meta_with_seo_aliases($flat, $include_private);
       return $flat;
     },
+    'update_callback' => 'cf_tmrb_update_post_meta_all_payload',
     'schema' => [
       'description' => 'Flattened view of post meta (ACF-aware). Public only unless authenticated.',
       'type' => 'object',
@@ -892,6 +1153,12 @@ add_action('rest_api_init', function () {
       'additionalProperties' => true,
     ],
   ]);
+
+  foreach ($pts as $pt) {
+    add_action("rest_after_insert_{$pt}", function($post, $request, $creating) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed
+      cf_tmrb_apply_nested_meta_payload_updates($post, $request);
+    }, 15, 3);
+  }
 
   /* Optional discovery endpoint for post meta keys (kept, excludes private in SQL) */
   register_rest_route('cf-bridge/v1', '/post/meta-keys', [
