@@ -30,6 +30,10 @@ function nova_bridge_suite_module_definitions(): array {
             'path'                 => 'modules/wpml/wpml-translation-api.php',
             'standalone_filenames' => [ 'wpml-translation-api.php' ],
         ],
+        'multilingual_polylang'  => [
+            'path'                 => 'modules/polylang/polylang-translation-api.php',
+            'standalone_filenames' => [ 'polylang-translation-api.php' ],
+        ],
         'woocommerce_rich_text'  => [
             'path'                 => 'modules/woocommerce/wc-content-below-products.php',
             'standalone_filenames' => [ 'wc-content-below-products.php' ],
@@ -98,7 +102,14 @@ function nova_bridge_suite_has_active_plugin( array $filenames ): bool {
             return true;
         }
 
-        if ( in_array( basename( $filename ), $active_basenames, true ) ) {
+        // Only allow basename fallback when the candidate itself is a filename.
+        // If the candidate includes a folder (eg "breakdance/plugin.php"), require
+        // an exact active_plugins match to avoid false positives like any "plugin.php".
+        if ( false !== strpos( $filename, '/' ) ) {
+            continue;
+        }
+
+        if ( in_array( $filename, $active_basenames, true ) ) {
             return true;
         }
     }
@@ -288,34 +299,39 @@ function nova_bridge_suite_get_recommended_modules(): array {
     $recommendations = [];
     $plugin_candidates = [
         'pagebuilder_wpbakery'   => [
-            'label'       => 'Enable WPBakery bridge',
+            'label'       => 'Enable NOVA WPBakery Bridge',
             'description' => 'WPBakery detected. Enable the bridge to update WPBakery pages.',
             'plugins'     => [ 'js_composer/js_composer.php', 'wpbakery/js_composer.php' ],
         ],
         'pagebuilder_elementor'  => [
-            'label'       => 'Enable Elementor bridge',
+            'label'       => 'Enable NOVA Elementor Bridge',
             'description' => 'Elementor detected. Enable the bridge to update Elementor pages.',
             'plugins'     => [ 'elementor/elementor.php', 'elementor-pro/elementor-pro.php' ],
         ],
         'pagebuilder_breakdance' => [
-            'label'       => 'Enable Breakdance bridge',
+            'label'       => 'Enable NOVA Breakdance Bridge',
             'description' => 'Breakdance detected. Enable the bridge to update Breakdance pages.',
             'plugins'     => [ 'breakdance/plugin.php', 'breakdance/breakdance.php' ],
         ],
         'pagebuilder_avada'      => [
-            'label'       => 'Enable Avada bridge',
+            'label'       => 'Enable NOVA Avada Bridge',
             'description' => 'Avada detected. Enable the bridge to update Avada Builder pages.',
             'plugins'     => [ 'fusion-builder/fusion-builder.php', 'avada-builder/avada-builder.php' ],
         ],
         'gutenberg_bridge'       => [
-            'label'       => 'Enable Gutenberg bridge',
-            'description' => 'Gutenberg detected. Enable the bridge to update Gutenberg pages.',
+            'label'       => 'Enable NOVA Gutenberg Bridge',
+            'description' => 'Gutenberg detected. Enable the bridge to allow NOVA to update Gutenberg pages.',
             'plugins'     => [ 'gutenberg/gutenberg.php' ],
         ],
         'multilingual_wpml'      => [
-            'label'       => 'Enable WPML bridge',
+            'label'       => 'Enable NOVA WPML Bridge',
             'description' => 'WPML detected. Enable the bridge to manage translations.',
             'plugins'     => [ 'sitepress-multilingual-cms/sitepress.php' ],
+        ],
+        'multilingual_polylang'  => [
+            'label'       => 'Enable NOVA Polylang Bridge',
+            'description' => 'Polylang detected. Enable the bridge to manage translations.',
+            'plugins'     => [ 'polylang/polylang.php' ],
         ],
     ];
 
@@ -513,6 +529,14 @@ function nova_bridge_suite_register_settings(): void {
         'nova_bridge_core'
     );
 
+    add_settings_field(
+        'nova_bridge_core_post_resolver_status',
+        'NOVA Post Resolver',
+        'nova_bridge_suite_render_post_resolver_field',
+        'nova-settings',
+        'nova_bridge_core'
+    );
+
     add_settings_section(
         'nova_bridge_pagebuilders',
         'Pagebuilder Bridges',
@@ -528,7 +552,7 @@ function nova_bridge_suite_register_settings(): void {
         'nova_bridge_pagebuilders',
         [
             'key'         => 'pagebuilder_wpbakery',
-            'label'       => 'Enable WPBakery bridge',
+            'label'       => 'Enable NOVA WPBakery Bridge',
             'description' => 'REST bridge for WPBakery pages.',
         ]
     );
@@ -541,7 +565,7 @@ function nova_bridge_suite_register_settings(): void {
         'nova_bridge_pagebuilders',
         [
             'key'         => 'pagebuilder_elementor',
-            'label'       => 'Enable Elementor bridge',
+            'label'       => 'Enable NOVA Elementor Bridge',
             'description' => 'REST bridge for Elementor pages.',
         ]
     );
@@ -554,7 +578,7 @@ function nova_bridge_suite_register_settings(): void {
         'nova_bridge_pagebuilders',
         [
             'key'         => 'pagebuilder_breakdance',
-            'label'       => 'Enable Breakdance bridge',
+            'label'       => 'Enable NOVA Breakdance Bridge',
             'description' => 'REST bridge for Breakdance pages.',
         ]
     );
@@ -567,7 +591,7 @@ function nova_bridge_suite_register_settings(): void {
         'nova_bridge_pagebuilders',
         [
             'key'         => 'pagebuilder_avada',
-            'label'       => 'Enable Avada bridge',
+            'label'       => 'Enable NOVA Avada Bridge',
             'description' => 'REST bridge for Avada Builder pages.',
         ]
     );
@@ -580,14 +604,14 @@ function nova_bridge_suite_register_settings(): void {
         'nova_bridge_pagebuilders',
         [
             'key'         => 'gutenberg_bridge',
-            'label'       => 'Enable Gutenberg bridge',
+            'label'       => 'Enable NOVA Gutenberg Bridge',
             'description' => 'REST bridge for Gutenberg pages.',
         ]
     );
 
     add_settings_section(
         'nova_bridge_multilingual',
-        'Multilingual',
+        'Multilingual Bridges',
         '__return_false',
         'nova-settings'
     );
@@ -600,14 +624,27 @@ function nova_bridge_suite_register_settings(): void {
         'nova_bridge_multilingual',
         [
             'key'         => 'multilingual_wpml',
-            'label'       => 'Enable WPML bridge',
+            'label'       => 'Enable NOVA WPML Bridge',
             'description' => 'REST bridge for WPML translations.',
+        ]
+    );
+
+    add_settings_field(
+        'nova_bridge_polylang',
+        'Polylang',
+        'nova_bridge_suite_render_checkbox_field',
+        'nova-settings',
+        'nova_bridge_multilingual',
+        [
+            'key'         => 'multilingual_polylang',
+            'label'       => 'Enable NOVA Polylang Bridge',
+            'description' => 'REST bridge for Polylang translations.',
         ]
     );
 
     add_settings_section(
         'nova_bridge_woocommerce',
-        'WooCommerce',
+        'WooCommerce Insertions',
         '__return_false',
         'nova-settings'
     );
@@ -621,7 +658,7 @@ function nova_bridge_suite_register_settings(): void {
         [
             'key'         => 'woocommerce_rich_text',
             'label'       => 'Enable WooCommerce rich text field',
-            'description' => 'Rich text field for below products on category pages.',
+            'description' => 'Optional rich text field for below products on category pages.',
         ]
     );
 
@@ -634,7 +671,7 @@ function nova_bridge_suite_register_settings(): void {
 
     add_settings_field(
         'nova_bridge_cpt_toggle',
-        'NOVA Blog CPT',
+        'Blog CPT',
         'nova_bridge_suite_render_checkbox_field',
         'nova-settings',
         'nova_bridge_cpt',
@@ -647,7 +684,7 @@ function nova_bridge_suite_register_settings(): void {
 
     add_settings_field(
         'nova_bridge_service_cpt_toggle',
-        'NOVA Service CPT',
+        'Service CPT',
         'nova_bridge_suite_render_checkbox_field',
         'nova-settings',
         'nova_bridge_cpt',
@@ -662,16 +699,200 @@ function nova_bridge_suite_register_settings(): void {
 
 add_action( 'admin_init', 'nova_bridge_suite_register_settings' );
 
+function nova_bridge_suite_render_settings_section_fields( string $page, string $section_id ): void {
+    global $wp_settings_sections, $wp_settings_fields;
+
+    $section = $wp_settings_sections[ $page ][ $section_id ] ?? null;
+    if ( ! is_array( $section ) ) {
+        return;
+    }
+
+    if ( ! empty( $section['callback'] ) && is_callable( $section['callback'] ) ) {
+        call_user_func( $section['callback'], $section );
+    }
+
+    if ( empty( $wp_settings_fields[ $page ][ $section_id ] ) ) {
+        return;
+    }
+
+    if ( in_array( $section_id, [ 'nova_bridge_pagebuilders', 'nova_bridge_multilingual' ], true ) ) {
+        uasort(
+            $wp_settings_fields[ $page ][ $section_id ],
+            static function ( array $a, array $b ): int {
+                $title_a = wp_strip_all_tags( (string) ( $a['title'] ?? '' ) );
+                $title_b = wp_strip_all_tags( (string) ( $b['title'] ?? '' ) );
+                return strnatcasecmp( $title_a, $title_b );
+            }
+        );
+    }
+
+    echo '<table class="form-table" role="presentation">';
+    do_settings_fields( $page, $section_id );
+    echo '</table>';
+}
+
+function nova_bridge_suite_render_settings_accordion( string $page, string $section_id, string $title, bool $open = false ): void {
+    global $wp_settings_fields;
+
+    if ( empty( $wp_settings_fields[ $page ][ $section_id ] ) ) {
+        return;
+    }
+
+    echo '<details class="nova-bridge-accordion"' . ( $open ? ' open' : '' ) . '>';
+    echo '<summary>' . esc_html( $title ) . '</summary>';
+    echo '<div class="nova-bridge-accordion__body">';
+    nova_bridge_suite_render_settings_section_fields( $page, $section_id );
+    echo '</div>';
+    echo '</details>';
+}
+
 function nova_bridge_suite_render_settings_page(): void {
+    $version = defined( 'NOVA_BRIDGE_SUITE_VERSION' ) ? (string) NOVA_BRIDGE_SUITE_VERSION : '';
     ?>
     <div class="wrap">
-        <h1><?php echo esc_html__( 'NOVA Settings', 'nova-bridge-suite' ); ?></h1>
+        <h1>
+            <?php echo esc_html__( 'NOVA Settings', 'nova-bridge-suite' ); ?>
+            <?php if ( '' !== $version ) : ?>
+                <span style="margin-left:8px;font-size:13px;font-weight:500;color:#646970;"><?php echo esc_html( 'v' . $version ); ?></span>
+            <?php endif; ?>
+        </h1>
         <p><?php echo esc_html__( 'Choose which NOVA modules are active. The core bridge and post resolver always remain on.', 'nova-bridge-suite' ); ?></p>
         <?php nova_bridge_suite_render_recommendation_notice(); ?>
+        <style>
+            .nova-bridge-accordions {
+                display: inline-grid;
+                grid-template-columns: minmax(0, 1fr);
+                gap: 12px;
+                width: max-content;
+                max-width: 100%;
+            }
+            .nova-bridge-accordions.is-measuring {
+                visibility: hidden;
+            }
+            .nova-bridge-accordion {
+                margin: 0;
+                border: 1px solid #dcdcde;
+                border-radius: 8px;
+                background: #fff;
+                overflow: hidden;
+                width: 100%;
+                max-width: 100%;
+                box-sizing: border-box;
+            }
+            .nova-bridge-accordion summary {
+                padding: 14px 40px 14px 16px;
+                cursor: pointer;
+                font-size: 15px;
+                font-weight: 700;
+                color: #1d2327;
+                background: #f6f7f7;
+                user-select: none;
+                position: relative;
+                list-style: none;
+            }
+            .nova-bridge-accordion summary::-webkit-details-marker {
+                display: none;
+            }
+            .nova-bridge-accordion summary::after {
+                content: '+';
+                position: absolute;
+                right: 16px;
+                top: 50%;
+                transform: translateY(-50%);
+                color: #50575e;
+                font-weight: 700;
+            }
+            .nova-bridge-accordion[open] summary::after {
+                content: '-';
+            }
+            .nova-bridge-accordion__body {
+                padding: 6px 12px 12px;
+            }
+            .nova-bridge-accordion__body .form-table {
+                width: auto;
+                margin-top: 0;
+            }
+            .nova-bridge-accordion__body .form-table th {
+                width: 170px;
+                font-size: 13px;
+                font-weight: 500;
+                color: #50575e;
+                padding-top: 12px;
+            }
+            .nova-bridge-accordion__body label {
+                font-size: 13px;
+                font-weight: 500;
+                color: #2c3338;
+            }
+            .nova-bridge-accordion__body .description {
+                font-size: 12px;
+                color: #646970;
+            }
+            @media (max-width: 960px) {
+                .nova-bridge-accordions {
+                    display: block;
+                    width: 100%;
+                }
+                .nova-bridge-accordion {
+                    width: 100%;
+                }
+                .nova-bridge-accordion__body .form-table {
+                    width: 100%;
+                }
+            }
+        </style>
         <form method="post" action="options.php">
             <?php
             settings_fields( 'nova_bridge_settings' );
-            do_settings_sections( 'nova-settings' );
+
+            echo '<div class="nova-bridge-accordions">';
+            nova_bridge_suite_render_settings_accordion( 'nova-settings', 'nova_bridge_core', 'NOVA Core', true );
+            nova_bridge_suite_render_settings_accordion( 'nova-settings', 'nova_bridge_pagebuilders', 'Pagebuilder Bridges' );
+            nova_bridge_suite_render_settings_accordion( 'nova-settings', 'nova_bridge_multilingual', 'Multilingual Bridges' );
+            nova_bridge_suite_render_settings_accordion( 'nova-settings', 'nova_bridge_woocommerce', 'WooCommerce Insertions' );
+            nova_bridge_suite_render_settings_accordion( 'nova-settings', 'nova_bridge_cpt', 'Custom Post Types' );
+            echo '</div>';
+            ?>
+            <script>
+                (function() {
+                    const wrap = document.querySelector('.nova-bridge-accordions');
+                    if (!wrap) return;
+
+                    const accordions = Array.from(wrap.querySelectorAll('.nova-bridge-accordion'));
+                    if (!accordions.length) return;
+
+                    const measure = () => {
+                        if (window.matchMedia('(max-width: 960px)').matches) {
+                            wrap.style.width = '';
+                            return;
+                        }
+
+                        const initialStates = accordions.map((el) => el.open);
+                        wrap.classList.add('is-measuring');
+
+                        let maxWidth = 0;
+                        for (const el of accordions) {
+                            el.open = true;
+                            maxWidth = Math.max(maxWidth, el.scrollWidth);
+                        }
+
+                        accordions.forEach((el, idx) => {
+                            el.open = initialStates[idx];
+                        });
+
+                        if (maxWidth > 0) {
+                            wrap.style.width = maxWidth + 'px';
+                        }
+
+                        wrap.classList.remove('is-measuring');
+                    };
+
+                    measure();
+                    window.addEventListener('resize', measure);
+                })();
+            </script>
+            <?php
+
             submit_button();
             ?>
         </form>
@@ -684,6 +905,10 @@ function nova_bridge_suite_render_core_section(): void {
 }
 
 function nova_bridge_suite_render_core_field(): void {
+    echo '<label><input type="checkbox" checked disabled> ' . esc_html__( 'Enabled', 'nova-bridge-suite' ) . '</label>';
+}
+
+function nova_bridge_suite_render_post_resolver_field(): void {
     echo '<label><input type="checkbox" checked disabled> ' . esc_html__( 'Enabled', 'nova-bridge-suite' ) . '</label>';
 }
 
