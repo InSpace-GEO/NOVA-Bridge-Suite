@@ -24,6 +24,19 @@ if ( ! defined( 'ABSPATH' ) ) {
  * @return bool|WP_Error
  */
 function nova_gut_permission_check( WP_REST_Request $request ) {
+	// GET requests only need read capabilities — allows authenticated API
+	// consumers (application passwords, GPT actions) to query content without
+	// full edit permissions.
+	if ( 'GET' === $request->get_method() ) {
+		if ( $request->has_param( 'id' ) ) {
+			$post_id = absint( $request->get_param( 'id' ) );
+			if ( $post_id > 0 ) {
+				return current_user_can( 'read_post', $post_id );
+			}
+		}
+		return current_user_can( 'read' );
+	}
+
 	// Update route: check capability for the specific post.
 	if ( $request->has_param( 'id' ) ) {
 		$post_id = absint( $request->get_param( 'id' ) );
@@ -335,6 +348,16 @@ function nova_gut_create_page( WP_REST_Request $request ) {
 		$postarr['post_name'] = sanitize_title( $params['slug'] );
 	}
 
+	// Author support — accepts a WordPress user ID.
+	if ( isset( $params['author'] ) ) {
+		$author_id = absint( $params['author'] );
+		if ( $author_id > 0 && get_userdata( $author_id ) ) {
+			$postarr['post_author'] = $author_id;
+		} else {
+			$warnings[] = 'Invalid author ID ' . $author_id . '. Falling back to current user.';
+		}
+	}
+
 	// Parent page support.
 	if ( 'page' === $type && isset( $params['parent_id'] ) ) {
 		$postarr['post_parent'] = absint( $params['parent_id'] );
@@ -482,6 +505,16 @@ function nova_gut_update_page( WP_REST_Request $request ) {
 
 	if ( isset( $params['excerpt'] ) ) {
 		$postarr['post_excerpt'] = (string) $params['excerpt'];
+	}
+
+	// Author support — accepts a WordPress user ID.
+	if ( isset( $params['author'] ) ) {
+		$author_id = absint( $params['author'] );
+		if ( $author_id > 0 && get_userdata( $author_id ) ) {
+			$postarr['post_author'] = $author_id;
+		} else {
+			$warnings[] = 'Invalid author ID ' . $author_id . '. Falling back to current author.';
+		}
 	}
 
 	// Parent page support.
@@ -722,8 +755,10 @@ function nova_gut_merge_source_with_content( string $source_content, string $app
 
 	$source_blocks = parse_blocks( $source_content );
 
-	// Strip FAQ plugin blocks from source — new content provides its own FAQ via core/details.
-	$faq_block_names = array( 'powerkraut/faq', 'yoast/faq-block', 'rank-math/faq-block' );
+	// Strip FAQ blocks from source — new content provides its own FAQ.
+	// Includes core/details because previous bridge runs may have already
+	// converted plugin FAQ blocks into native details blocks on the source page.
+	$faq_block_names = array( 'powerkraut/faq', 'yoast/faq-block', 'rank-math/faq-block', 'core/details' );
 	$source_blocks   = array_values( array_filter( $source_blocks, function ( $b ) use ( $faq_block_names ) {
 		return ! in_array( $b['blockName'] ?? null, $faq_block_names, true );
 	} ) );
@@ -731,6 +766,8 @@ function nova_gut_merge_source_with_content( string $source_content, string $app
 	// Replace H1 headings in the source with the new page title.
 	if ( '' !== $title ) {
 		$source_blocks = nova_gut_replace_h1_text( $source_blocks, $title );
+		// Also replace the heading inside cover/hero blocks (often H2, not H1).
+		$source_blocks = nova_gut_replace_cover_title( $source_blocks, $title );
 	}
 
 	$new_blocks    = array_values( array_filter(
@@ -740,8 +777,21 @@ function nova_gut_merge_source_with_content( string $source_content, string $app
 		}
 	) );
 
+	nova_gut_debug_log( 'merge_new_blocks_before_dedup', array(
+		'count' => count( $new_blocks ),
+		'types' => array_map( function ( $b ) {
+			$name = $b['blockName'] ?? '(null)';
+			$txt  = substr( trim( strip_tags( $b['innerHTML'] ?? '' ) ), 0, 60 );
+			return $name . ': ' . $txt;
+		}, $new_blocks ),
+	) );
+
 	// Deduplicate: upstream may concatenate overlapping content (e.g. top_content + raw_html + bottom_content).
 	$new_blocks = nova_gut_dedup_content_blocks( $new_blocks );
+
+	nova_gut_debug_log( 'merge_new_blocks_after_dedup', array(
+		'count' => count( $new_blocks ),
+	) );
 
 	// Strip H1 headings from new blocks — the page title is set via post_title
 	// and the theme renders it. An H1 in content would duplicate it.
@@ -984,28 +1034,112 @@ function nova_gut_walk_and_replace( array $blocks, array $new_blocks, int &$idx 
 			continue;
 		}
 
-		// Replaceable text block → swap with next new block.
-		if ( $idx < count( $new_blocks ) && nova_gut_is_replaceable_block( $blocks[ $i ] ) ) {
-			$blocks[ $i ] = $new_blocks[ $idx ];
-			$idx++;
+		// Replaceable text block → swap with next new block, or mark for
+		// removal if all new content has been placed (prevents leftover
+		// source text from leaking into the output).
+		if ( nova_gut_is_replaceable_block( $blocks[ $i ] ) ) {
+			if ( $idx < count( $new_blocks ) ) {
+				$blocks[ $i ] = $new_blocks[ $idx ];
+				$idx++;
+			} else {
+				$blocks[ $i ] = null; // Mark for removal.
+			}
 			continue;
 		}
 
-		// Container blocks → recurse into inner blocks, but only if the
-		// container does not hold custom/third-party blocks whose text
-		// slots are contextual labels (e.g. dtcmedia/grid-block captions).
+		// Cover blocks are hero/header sections — their inner text (date,
+		// title) is structural layout, not body-content slots. Skip them
+		// so that body content doesn't get consumed by the hero.
+		if ( 'core/cover' === $name ) {
+			continue;
+		}
+
+		// Source-page images and galleries are content-specific and should
+		// not carry over. Hero/banner images (inside covers, already skipped
+		// above) and CTA images (in footer_src, not processed here) are safe.
+		if ( in_array( $name, array( 'core/image', 'core/gallery' ), true ) ) {
+			$blocks[ $i ] = null;
+			continue;
+		}
+
+		// Container blocks that hold ONLY media (images, covers) and no text
+		// are source-specific image sections (e.g. a 3-column photo row).
+		// Remove them so source imagery doesn't leak into the new page.
+		if ( ! empty( $blocks[ $i ]['innerBlocks'] ) && 0 === nova_gut_count_text_blocks( $blocks[ $i ]['innerBlocks'] ) ) {
+			if ( nova_gut_has_media_blocks( $blocks[ $i ]['innerBlocks'] ) && ! nova_gut_has_button_blocks( $blocks[ $i ]['innerBlocks'] ) ) {
+				$blocks[ $i ] = null;
+				continue;
+			}
+		}
+
+		// Containers with custom/third-party blocks (e.g. dtcmedia/grid-block)
+		// are source-page-specific widgets. Remove the entire container so
+		// source content (model selectors, custom widgets) doesn't leak.
+		if ( ! empty( $blocks[ $i ]['innerBlocks'] ) && nova_gut_has_custom_blocks( $blocks[ $i ]['innerBlocks'] ) ) {
+			$blocks[ $i ] = null;
+			continue;
+		}
+
+		// Container blocks → recurse into inner blocks.
 		if ( ! empty( $blocks[ $i ]['innerBlocks'] ) ) {
-			if ( ! nova_gut_has_custom_blocks( $blocks[ $i ]['innerBlocks'] ) ) {
-				$blocks[ $i ]['innerBlocks'] = nova_gut_walk_and_replace(
-					$blocks[ $i ]['innerBlocks'],
-					$new_blocks,
-					$idx
+			$old_count = count( $blocks[ $i ]['innerBlocks'] );
+			$blocks[ $i ]['innerBlocks'] = nova_gut_walk_and_replace(
+				$blocks[ $i ]['innerBlocks'],
+				$new_blocks,
+				$idx
+			);
+			// If inner blocks were removed, rebuild innerContent to keep
+			// the null-slot mapping in sync with the remaining innerBlocks.
+			$new_count = count( $blocks[ $i ]['innerBlocks'] );
+			if ( $new_count < $old_count && ! empty( $blocks[ $i ]['innerContent'] ) ) {
+				$blocks[ $i ]['innerContent'] = nova_gut_rebuild_inner_content(
+					$blocks[ $i ]['innerContent'],
+					$new_count
 				);
 			}
 		}
 	}
 
-	return $blocks;
+	// Filter out blocks marked for removal (null entries).
+	return array_values( array_filter( $blocks, function ( $b ) {
+		return null !== $b;
+	} ) );
+}
+
+/**
+ * Rebuild a container block's innerContent after inner blocks were removed.
+ *
+ * WordPress innerContent uses null entries as placeholders for innerBlocks
+ * (1:1 positional mapping). When inner blocks are removed, the extra null
+ * slots must be collapsed to keep serialization correct.
+ *
+ * @param  array $inner_content  Original innerContent array.
+ * @param  int   $target_count   New number of innerBlocks.
+ * @return array                  Adjusted innerContent.
+ */
+function nova_gut_rebuild_inner_content( array $inner_content, int $target_count ): array {
+	$result    = array();
+	$null_seen = 0;
+
+	foreach ( $inner_content as $entry ) {
+		if ( null === $entry ) {
+			$null_seen++;
+			if ( $null_seen <= $target_count ) {
+				$result[] = null;
+			}
+			// Else: skip the extra null slot (block was removed).
+		} else {
+			// String entry (HTML between blocks). If the previous action
+			// skipped a null, also skip pure-whitespace separators to avoid
+			// double newlines in the output.
+			if ( $null_seen > $target_count && is_string( $entry ) && '' === trim( $entry ) ) {
+				continue;
+			}
+			$result[] = $entry;
+		}
+	}
+
+	return $result;
 }
 
 /**
@@ -1239,10 +1373,11 @@ function nova_gut_has_custom_blocks( array $blocks ): bool {
  * @return array           Deduplicated blocks.
  */
 function nova_gut_dedup_content_blocks( array $blocks ): array {
-	$seen_headings = array();
-	$result        = array();
-	$i             = 0;
-	$total         = count( $blocks );
+	$seen_headings  = array();
+	$seen_paragraphs = array();
+	$result         = array();
+	$i              = 0;
+	$total          = count( $blocks );
 
 	while ( $i < $total ) {
 		$block = $blocks[ $i ];
@@ -1253,12 +1388,21 @@ function nova_gut_dedup_content_blocks( array $blocks ): array {
 			$text = strtolower( trim( strip_tags( $block['innerHTML'] ?? '' ) ) );
 
 			if ( '' !== $text && isset( $seen_headings[ $text ] ) ) {
-				// Skip this heading and all following content until the next heading.
+				// Skip this heading and all following content until the next
+				// heading that hasn't been seen yet. This collapses entire
+				// duplicate sections, even if the duplicate copy has extra
+				// paragraphs or FAQ blocks mixed in.
 				$i++;
 				while ( $i < $total ) {
 					$next_name = $blocks[ $i ]['blockName'] ?? null;
 					if ( 'core/heading' === $next_name ) {
-						break;
+						$next_txt = strtolower( trim( strip_tags( $blocks[ $i ]['innerHTML'] ?? '' ) ) );
+						if ( '' !== $next_txt && ! isset( $seen_headings[ $next_txt ] ) ) {
+							break; // Genuinely new heading — stop skipping.
+						}
+						// This heading was also seen → skip it and its section.
+						$i++;
+						continue;
 					}
 					$i++;
 				}
@@ -1270,15 +1414,17 @@ function nova_gut_dedup_content_blocks( array $blocks ): array {
 			}
 		}
 
-		// Paragraph dedup: skip consecutive identical paragraphs.
-		if ( 'core/paragraph' === $name && ! empty( $result ) ) {
-			$text     = trim( strip_tags( $block['innerHTML'] ?? '' ) );
-			$prev     = end( $result );
-			$prev_txt = trim( strip_tags( $prev['innerHTML'] ?? '' ) );
-
-			if ( '' !== $text && $text === $prev_txt ) {
-				$i++;
-				continue;
+		// Paragraph dedup: skip any paragraph whose exact text was already seen.
+		// This catches duplicates even when they aren't consecutive (e.g. when
+		// upstream concatenates overlapping content blocks).
+		if ( 'core/paragraph' === $name ) {
+			$text = trim( strip_tags( $block['innerHTML'] ?? '' ) );
+			if ( '' !== $text ) {
+				if ( isset( $seen_paragraphs[ $text ] ) ) {
+					$i++;
+					continue;
+				}
+				$seen_paragraphs[ $text ] = true;
 			}
 		}
 
@@ -1341,6 +1487,165 @@ function nova_gut_replace_h1_text( array $blocks, string $title ): array {
 			$blocks[ $i ]['innerBlocks'] = nova_gut_replace_h1_text(
 				$blocks[ $i ]['innerBlocks'],
 				$title
+			);
+		}
+	}
+
+	return $blocks;
+}
+
+/**
+ * Replace the first heading inside each core/cover block with the page title.
+ *
+ * Cover blocks serve as hero/header sections. Their heading is typically a
+ * placeholder (e.g. "Titel") that should display the actual page title.
+ * This is complementary to nova_gut_replace_h1_text() which only targets H1s.
+ *
+ * @param  array  $blocks  Parsed blocks.
+ * @param  string $title   New title text.
+ * @return array            Blocks with cover headings replaced.
+ */
+function nova_gut_replace_cover_title( array $blocks, string $title ): array {
+	for ( $i = 0, $len = count( $blocks ); $i < $len; $i++ ) {
+		$name = $blocks[ $i ]['blockName'] ?? null;
+
+		if ( 'core/cover' === $name && ! empty( $blocks[ $i ]['innerBlocks'] ) ) {
+			// Replace the heading text with the new page title.
+			$blocks[ $i ]['innerBlocks'] = nova_gut_replace_first_heading_in_tree(
+				$blocks[ $i ]['innerBlocks'],
+				$title
+			);
+			// Strip source-specific text from inside the cover (paragraphs,
+			// lists, tables). These are content from the source page that
+			// would leak into the hero section. Structural elements (spacers,
+			// headings, buttons, images) are kept.
+			$blocks[ $i ]['innerBlocks'] = nova_gut_strip_cover_text(
+				$blocks[ $i ]['innerBlocks']
+			);
+			// Rebuild innerContent to match the updated innerBlocks.
+			$blocks[ $i ] = nova_gut_rebuild_block_inner_content( $blocks[ $i ] );
+			continue;
+		}
+
+		// Recurse into other containers to find nested covers.
+		if ( ! empty( $blocks[ $i ]['innerBlocks'] ) ) {
+			$blocks[ $i ]['innerBlocks'] = nova_gut_replace_cover_title(
+				$blocks[ $i ]['innerBlocks'],
+				$title
+			);
+		}
+	}
+
+	return $blocks;
+}
+
+/**
+ * Strip text-bearing blocks from inside a cover's inner block tree.
+ *
+ * Removes paragraphs (non-empty), lists, and tables that are source-page
+ * content. Preserves structural elements: spacers, headings, buttons,
+ * images, and container blocks (groups — recursed into).
+ *
+ * @param  array $blocks  Inner blocks of a cover or nested container.
+ * @return array           Filtered blocks.
+ */
+function nova_gut_strip_cover_text( array $blocks ): array {
+	$result = array();
+
+	foreach ( $blocks as $block ) {
+		$name = $block['blockName'] ?? null;
+
+		// Always keep whitespace/freeform.
+		if ( null === $name ) {
+			$result[] = $block;
+			continue;
+		}
+
+		// Remove non-empty paragraphs (source text).
+		if ( 'core/paragraph' === $name && '' !== trim( strip_tags( $block['innerHTML'] ?? '' ) ) ) {
+			continue;
+		}
+
+		// Remove lists and tables (source content).
+		if ( in_array( $name, array( 'core/list', 'core/table' ), true ) ) {
+			continue;
+		}
+
+		// Recurse into groups to strip nested source text.
+		if ( 'core/group' === $name && ! empty( $block['innerBlocks'] ) ) {
+			$block['innerBlocks'] = nova_gut_strip_cover_text( $block['innerBlocks'] );
+			$block = nova_gut_rebuild_block_inner_content( $block );
+		}
+
+		$result[] = $block;
+	}
+
+	return array_values( $result );
+}
+
+/**
+ * Rebuild a single block's innerContent array to match its current innerBlocks.
+ *
+ * Regenerates the innerContent by keeping string entries (HTML) and adjusting
+ * null slots to match the number of remaining innerBlocks.
+ *
+ * @param  array $block  A parsed block.
+ * @return array          Block with rebuilt innerContent.
+ */
+function nova_gut_rebuild_block_inner_content( array $block ): array {
+	if ( empty( $block['innerContent'] ) || empty( $block['innerBlocks'] ) ) {
+		return $block;
+	}
+
+	$target_count = count( $block['innerBlocks'] );
+	$block['innerContent'] = nova_gut_rebuild_inner_content(
+		$block['innerContent'],
+		$target_count
+	);
+
+	return $block;
+}
+
+/**
+ * Replace the first heading found (any level) in a block tree.
+ *
+ * @param  array  $blocks  Inner blocks of a container.
+ * @param  string $title   Replacement text.
+ * @param  bool   $found   (internal) Whether replacement already happened.
+ * @return array            Modified blocks.
+ */
+function nova_gut_replace_first_heading_in_tree( array $blocks, string $title, bool &$found = false ): array {
+	for ( $i = 0, $len = count( $blocks ); $i < $len; $i++ ) {
+		if ( $found ) {
+			break;
+		}
+		$name = $blocks[ $i ]['blockName'] ?? null;
+
+		if ( 'core/heading' === $name ) {
+			$html     = $blocks[ $i ]['innerHTML'];
+			$old_text = trim( strip_tags( $html ) );
+
+			if ( '' !== $old_text ) {
+				$pos = strpos( $html, $old_text );
+				if ( false !== $pos ) {
+					$html = substr_replace( $html, esc_html( $title ), $pos, strlen( $old_text ) );
+				}
+			}
+
+			$blocks[ $i ]['innerHTML'] = $html;
+			if ( isset( $blocks[ $i ]['innerContent'][0] ) && is_string( $blocks[ $i ]['innerContent'][0] ) ) {
+				$blocks[ $i ]['innerContent'][0] = $html;
+			}
+
+			$found = true;
+			break;
+		}
+
+		if ( ! empty( $blocks[ $i ]['innerBlocks'] ) ) {
+			$blocks[ $i ]['innerBlocks'] = nova_gut_replace_first_heading_in_tree(
+				$blocks[ $i ]['innerBlocks'],
+				$title,
+				$found
 			);
 		}
 	}
