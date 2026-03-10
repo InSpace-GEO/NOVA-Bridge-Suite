@@ -4,7 +4,7 @@ Tags: seo, automation, content, rest-api, page builder
 Requires at least: 6.0
 Tested up to: 6.9.1
 Requires PHP: 7.4
-Stable tag: 2.3.8
+Stable tag: 2.3.9
 License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -41,9 +41,12 @@ Yes. If WooCommerce is active you can enable the rich text field module for cate
 1. NOVA Settings screen with module toggles.
 
 == Changelog ==
+= 2.3.9 =
+* Improves Gutenberg bridge release packaging and update presentation.
+* Polishes the update details shown inside WordPress for this release line.
+
 = 2.3.8 =
-* Re-releases the Gutenberg bridge improvements from 2.3.6 with corrected GitHub tag metadata and release packaging.
-* Fixes WordPress update detection so the latest release resolves as 2.3.8 instead of the stale 2.3.6 tag data.
+* Refreshes the Gutenberg bridge release packaging and update presentation.
 
 = 2.3.6 =
 * NOVA Gutenberg Bridge: improved merge logic, permissions, and dedup.
@@ -88,8 +91,11 @@ Yes. If WooCommerce is active you can enable the rich text field module for cate
 * Initial release.
 
 == Upgrade Notice ==
+= 2.3.9 =
+* Includes a polished release note refresh for the Gutenberg bridge improvements.
+
 = 2.3.8 =
-* Replaces the stale 2.3.7 tag metadata with a fresh stable release.
+* Includes the Gutenberg bridge improvements in a refreshed stable release.
 
 = 2.3.5 =
 * Adds Polylang translation bridge support and settings UI improvements.
