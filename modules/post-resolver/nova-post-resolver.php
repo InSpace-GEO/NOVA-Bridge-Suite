@@ -1,9 +1,6 @@
 <?php
 /**
- * Plugin Name: Nova Post Resolver
- * Description: Resolve a WordPress post ID to its REST endpoint with secure probing and caching.
- * Version: 1.0.0
- * Author: Nova
+ * NOVA Post Resolver module: Core module.
  */
 
 if (!defined('ABSPATH')) {
