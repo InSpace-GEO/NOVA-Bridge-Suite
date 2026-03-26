@@ -1,7 +1,6 @@
 # NOVA Bridge Suite
 
 - Contributors: jg@inspace.io, ad@inspace.io, lm@inspace.io
-- Tags: seo, automation, content, rest-api, page builder
 - Requires at least: 6.0
 - Tested up to: 6.9.1
 - Requires PHP: 7.4
