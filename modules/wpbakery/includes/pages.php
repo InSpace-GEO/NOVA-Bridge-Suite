@@ -644,12 +644,29 @@ function nova_wpb_create_page( $request ) {
 			);
 		}
 
+		// Pull FAQ sections out before slot-filling — they need the FAQ-to-toggle
+		// conversion in nova_wpb_apply_transformations(), not raw HTML in a slot.
+		$faq_sections = array();
+		$non_faq      = array();
+		foreach ( $append_sections as $sec ) {
+			if ( is_array( $sec ) && isset( $sec['type'] ) && 'faq' === strtolower( (string) $sec['type'] ) ) {
+				$faq_sections[] = $sec;
+			} else {
+				$non_faq[] = $sec;
+			}
+		}
+
 		list( $base_shortcodes, $append_sections ) = nova_wpb_replace_template_slots_with_sections(
 			$base_shortcodes,
-			$append_sections,
+			$non_faq,
 			$postarr['post_title'],
 			true
 		);
+
+		// Re-add FAQ sections so they reach nova_wpb_apply_transformations().
+		if ( ! empty( $faq_sections ) ) {
+			$append_sections = array_merge( $append_sections, $faq_sections );
+		}
 	}
 
 	$postarr['post_content'] = $base_shortcodes;

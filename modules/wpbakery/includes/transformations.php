@@ -211,11 +211,30 @@ function nova_wpb_apply_transformations( $shortcodes, $remove_paths, $text_updat
 			if ( isset( $section['type'] ) && 'faq' === strtolower( (string) $section['type'] ) ) {
 				$faq_title = isset( $section['title'] ) ? wp_strip_all_tags( (string) $section['title'] ) : '';
 				$faq_body  = isset( $section['body'] ) ? wp_kses_post( (string) $section['body'] ) : '';
-				if ( '' !== trim( $faq_title ) && '' !== trim( $faq_body ) ) {
-					// Put FAQs inside a text container so nested shortcodes render reliably.
-					$shortcodes .= '[vc_row][vc_column][vc_column_text]'
-						. '[ot_faqs title="' . esc_attr( $faq_title ) . '"]' . $faq_body . '[/ot_faqs]'
-						. '[/vc_column_text][/vc_column][/vc_row]';
+				$faq_title_tag = isset( $section['title_tag'] ) ? strtolower( trim( (string) $section['title_tag'] ) ) : 'h2';
+				if ( ! in_array( $faq_title_tag, array( 'h2', 'h3', 'h4' ), true ) ) {
+					$faq_title_tag = 'h2';
+				}
+
+				if ( '' !== trim( $faq_body ) ) {
+					$converted = nova_wpb_convert_faq_html_to_ot_faqs( $faq_body );
+
+					if ( false !== strpos( $converted, '[ot_faqs' ) ) {
+						// Successfully parsed into individual Q&A toggles.
+						$shortcodes .= '[vc_row][vc_column]';
+						if ( '' !== trim( $faq_title ) ) {
+							$shortcodes .= '[vc_custom_heading text="'
+								. esc_attr( $faq_title )
+								. '" use_theme_fonts="yes" font_container="tag:' . esc_attr( $faq_title_tag ) . '" /]';
+						}
+						$shortcodes .= $converted;
+						$shortcodes .= '[/vc_column][/vc_row]';
+					} elseif ( '' !== trim( $faq_title ) ) {
+						// Fallback: couldn't parse pairs, wrap as single toggle.
+						$shortcodes .= '[vc_row][vc_column]'
+							. '[ot_faqs title="' . esc_attr( $faq_title ) . '"]' . $faq_body . '[/ot_faqs]'
+							. '[/vc_column][/vc_row]';
+					}
 				}
 				continue;
 			}
