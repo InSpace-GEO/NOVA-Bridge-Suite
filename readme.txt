@@ -4,7 +4,7 @@ Tags: seo, automation, content, rest-api, page builder
 Requires at least: 6.0
 Tested up to: 6.9.1
 Requires PHP: 7.4
-Stable tag: 2.3.8
+Stable tag: 2.3.9
 License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -41,6 +41,10 @@ Yes. If WooCommerce is active you can enable the rich text field module for cate
 1. NOVA Settings screen with module toggles.
 
 == Changelog ==
+= 2.3.9 =
+* Fix deprecated `mb_convert_encoding(..., 'HTML-ENTITIES', ...)` handling in the Blog CPT DOM parsing flow for public post renders.
+* Switch blog heading annotation and H1 stripping to numeric-entity encoding so PHP 8.2+ no longer emits deprecation notices.
+
 = 2.3.8 =
 * Improve Elementor full-document persistence so verified `_elementor_data` replacements are applied live instead of silently falling back to stale content.
 * Correct Elementor JSON decoding to read stored and incoming document payloads raw-first, with unslashed fallback only for legacy escaped inputs.

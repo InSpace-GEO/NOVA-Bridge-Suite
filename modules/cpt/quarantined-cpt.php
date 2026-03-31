@@ -5209,6 +5209,20 @@ final class Plugin {
 	}
 
 	/**
+	 * Prepares UTF-8 HTML for DOMDocument without using deprecated HTML-ENTITIES conversion.
+	 *
+	 * @param string $html HTML fragment.
+	 * @return string
+	 */
+	private function encode_html_for_dom_document( string $html ): string {
+		if ( '' === $html || ! function_exists( 'mb_encode_numericentity' ) ) {
+			return $html;
+		}
+
+		return mb_encode_numericentity( $html, [ 0x80, 0x10FFFF, 0, 0x1FFFFF ], 'UTF-8' );
+	}
+
+	/**
 	 * Injects heading IDs for H2/H3 and appends TOC entries.
 	 *
 	 * @param string              $html         HTML content.
@@ -5224,7 +5238,7 @@ final class Plugin {
 		if ( class_exists( '\DOMDocument' ) && class_exists( '\DOMXPath' ) ) {
 			$previous_errors = libxml_use_internal_errors( true );
 			$dom             = new \DOMDocument( '1.0', 'UTF-8' );
-			$encoded_html    = function_exists( 'mb_convert_encoding' ) ? mb_convert_encoding( $html, 'HTML-ENTITIES', 'UTF-8' ) : $html;
+			$encoded_html    = $this->encode_html_for_dom_document( $html );
 			$options         = 0;
 
 			if ( defined( 'LIBXML_HTML_NOIMPLIED' ) ) {
@@ -5613,7 +5627,7 @@ final class Plugin {
 		if ( class_exists( '\DOMDocument' ) && class_exists( '\DOMXPath' ) ) {
 			$previous_errors = libxml_use_internal_errors( true );
 			$dom             = new \DOMDocument( '1.0', 'UTF-8' );
-			$encoded_html    = function_exists( 'mb_convert_encoding' ) ? mb_convert_encoding( $html, 'HTML-ENTITIES', 'UTF-8' ) : $html;
+			$encoded_html    = $this->encode_html_for_dom_document( $html );
 			$options         = 0;
 
 			if ( defined( 'LIBXML_HTML_NOIMPLIED' ) ) {
