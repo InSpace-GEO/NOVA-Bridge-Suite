@@ -9117,10 +9117,11 @@ final class Plugin {
 
 		$sanitized = [];
 		$sanitize_cta_payload = function ( array $payload ): array {
-			$title = $this->sanitize_text_option( $payload['title'] ?? '' );
-			$copy  = $this->sanitize_blog_rich_text( is_string( $payload['copy'] ?? '' ) ? $payload['copy'] : '' );
-			$label = $this->sanitize_text_option( $payload['button_label'] ?? '' );
-			$url   = self::sanitize_blog_cta_url( $payload['button_url'] ?? '' );
+			$title    = $this->sanitize_text_option( $payload['title'] ?? '' );
+			$copy_raw = $payload['copy'] ?? '';
+			$copy     = $this->sanitize_blog_rich_text( is_string( $copy_raw ) ? $copy_raw : '' );
+			$label    = $this->sanitize_text_option( $payload['button_label'] ?? '' );
+			$url      = self::sanitize_blog_cta_url( $payload['button_url'] ?? '' );
 
 			return [
 				'title'        => $title,
@@ -9130,10 +9131,15 @@ final class Plugin {
 			];
 		};
 		$cta_has_content = function ( array $payload ): bool {
-			return '' !== $payload['title']
-				|| $this->blog_html_has_text( $payload['copy'] )
-				|| '' !== $payload['button_label']
-				|| '' !== $payload['button_url'];
+			$title = isset( $payload['title'] ) ? (string) $payload['title'] : '';
+			$copy  = isset( $payload['copy'] ) ? (string) $payload['copy'] : '';
+			$label = isset( $payload['button_label'] ) ? (string) $payload['button_label'] : '';
+			$url   = isset( $payload['button_url'] ) ? (string) $payload['button_url'] : '';
+
+			return '' !== $title
+				|| $this->blog_html_has_text( $copy )
+				|| '' !== $label
+				|| '' !== $url;
 		};
 
 		foreach ( $value as $post_type => $payload ) {
