@@ -971,6 +971,7 @@ if (!function_exists('cf_tmrb_update_post_meta_all_payload')) {
     foreach ((array) ($seo_resolution['updates'] ?? []) as $seo_key => $seo_value) {
       $normalized_input[$seo_key] = $seo_value;
     }
+    $seo_resolved_keys = array_keys((array) ($seo_resolution['updates'] ?? []));
 
     foreach ($normalized_input as $k => $v) {
       $normKey = cf_tmrb_normalize_key($k);
@@ -1009,6 +1010,13 @@ if (!function_exists('cf_tmrb_update_post_meta_all_payload')) {
         }
         cf_tmrb_apply_genesis_fallback($post_id, $normKey, $nextValue);
         $existing[$normKey] = $nextValue;
+        continue;
+      }
+
+      // SEO-resolved keys are always top-level post meta — skip guess/leaf resolution
+      if (in_array($normKey, $seo_resolved_keys, true)) {
+        update_post_meta($post_id, $normKey, $san);
+        $existing[$normKey] = $san;
         continue;
       }
 
