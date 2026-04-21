@@ -700,6 +700,8 @@ final class Plugin {
 		add_action( 'init', [ $this, 'register_post_type' ] );
 		add_action( 'init', [ $this, 'register_author_rewrites' ], 9 );
 		add_action( 'init', [ $this, 'register_blog_meta_fields' ], 11 );
+		add_action( 'init', [ $this, 'maybe_normalize_managed_draft_slugs' ], 98 );
+		add_filter( 'pre_wp_unique_post_slug', [ $this, 'preserve_managed_cpt_slug' ], 10, 6 );
 		add_filter( 'template_include', [ $this, 'force_isolated_template' ] );
 		add_filter( 'body_class', [ $this, 'append_body_class' ] );
 		add_filter( 'enter_title_here', [ $this, 'update_title_placeholder' ], 10, 2 );
@@ -734,6 +736,188 @@ final class Plugin {
 		add_action( 'personal_options_update', [ $this, 'save_user_fields' ] );
 		add_action( 'edit_user_profile_update', [ $this, 'save_user_fields' ] );
 		self::log( 'constructor hooks registered' );
+	}
+
+	/**
+	 * Preserves requested slugs for managed CPT items when the only collision is an attachment.
+	 *
+	 * WordPress treats hierarchical post types like pages during slug generation and checks
+	 * sibling attachments too. That causes uploaded hero images such as `example.jpg` to force
+	 * a managed article slug like `example` to become `example-2`, even though the public URLs
+	 * live under distinct CPT bases like `/kennisbank/` and `/how-to/`.
+	 *
+	 * @param string|null $override_slug Short-circuit return value from earlier filters.
+	 * @param string      $slug          Requested slug.
+	 * @param int         $post_id       Post ID.
+	 * @param string      $_post_status  Post status.
+	 * @param string      $post_type     Post type.
+	 * @param int         $post_parent   Parent ID.
+	 * @return string|null
+	 */
+	public function preserve_managed_cpt_slug( $override_slug, $slug, $post_id, $_post_status, $post_type, $post_parent ) {
+		if ( null !== $override_slug ) {
+			return $override_slug;
+		}
+
+		$post_type = sanitize_key( (string) $post_type );
+		$slug      = sanitize_title( (string) $slug );
+
+		if ( $this->should_preserve_managed_cpt_slug( $slug, $post_type, (int) $post_id, (int) $post_parent ) ) {
+			return $slug;
+		}
+
+		return null;
+	}
+
+	/**
+	 * Determines whether a managed CPT slug can safely ignore attachment collisions.
+	 *
+	 * @param string $slug Requested slug.
+	 * @param string $post_type Post type.
+	 * @param int    $post_id Post ID.
+	 * @param int    $post_parent Parent ID.
+	 * @return bool
+	 */
+	private function should_preserve_managed_cpt_slug( string $slug, string $post_type, int $post_id, int $post_parent ): bool {
+		if ( ! $this->is_managed_post_type( $post_type ) || '' === $slug ) {
+			return false;
+		}
+
+		global $wpdb, $wp_rewrite;
+
+		$feeds = $wp_rewrite->feeds;
+		if ( ! is_array( $feeds ) ) {
+			$feeds = [];
+		}
+
+		$pagination_base = is_string( $wp_rewrite->pagination_base ) ? preg_quote( $wp_rewrite->pagination_base, '@' ) : '';
+
+		if ( in_array( $slug, $feeds, true )
+			|| 'embed' === $slug
+			|| preg_match( '@^(' . $pagination_base . ')?\d+$@', $slug )
+		) {
+			return false;
+		}
+
+		$post_name_check = $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT post_name
+				FROM $wpdb->posts
+				WHERE post_name = %s
+					AND post_type = %s
+					AND ID != %d
+					AND post_parent = %d
+				LIMIT 1",
+				$slug,
+				$post_type,
+				$post_id,
+				$post_parent
+			)
+		);
+
+		if ( $post_name_check ) {
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Normalizes existing managed draft slugs that were suffixed only because of attachment collisions.
+	 *
+	 * Runs once after upgrading to a new plugin version, before the main plugin version option is
+	 * updated. Published entries are intentionally excluded to avoid changing live URLs implicitly.
+	 *
+	 * @return void
+	 */
+	public function maybe_normalize_managed_draft_slugs(): void {
+		if ( ! defined( 'NOVA_BRIDGE_SUITE_VERSION' ) || ! defined( 'NOVA_BRIDGE_SUITE_VERSION_OPTION' ) ) {
+			return;
+		}
+
+		$installed_version = (string) get_option( NOVA_BRIDGE_SUITE_VERSION_OPTION, '' );
+
+		if ( NOVA_BRIDGE_SUITE_VERSION === $installed_version ) {
+			return;
+		}
+
+		$post_types = $this->get_cpt_types( false );
+
+		if ( empty( $post_types ) ) {
+			return;
+		}
+
+		global $wpdb;
+
+		$type_placeholders = implode( ', ', array_fill( 0, count( $post_types ), '%s' ) );
+		$args              = array_merge( $post_types, [ 'draft', 'pending', '-[0-9]+$' ] );
+		$candidates        = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT ID, post_name, post_parent, post_type
+				FROM $wpdb->posts
+				WHERE post_type IN ( $type_placeholders )
+					AND post_status IN ( %s, %s )
+					AND post_name REGEXP %s",
+				...$args
+			)
+		);
+
+		if ( empty( $candidates ) ) {
+			return;
+		}
+
+		$normalized = 0;
+
+		foreach ( $candidates as $candidate ) {
+			$post_id     = isset( $candidate->ID ) ? (int) $candidate->ID : 0;
+			$post_parent = isset( $candidate->post_parent ) ? (int) $candidate->post_parent : 0;
+			$post_type   = isset( $candidate->post_type ) ? sanitize_key( (string) $candidate->post_type ) : '';
+			$current     = isset( $candidate->post_name ) ? sanitize_title( (string) $candidate->post_name ) : '';
+			$desired     = preg_replace( '/-\d+$/', '', $current );
+
+			if ( ! is_string( $desired ) || '' === $desired || $desired === $current ) {
+				continue;
+			}
+
+			if ( ! $this->should_preserve_managed_cpt_slug( $desired, $post_type, $post_id, $post_parent ) ) {
+				continue;
+			}
+
+			$attachment_conflict = $wpdb->get_var(
+				$wpdb->prepare(
+					"SELECT ID
+					FROM $wpdb->posts
+					WHERE post_name = %s
+						AND post_type = 'attachment'
+						AND ID != %d
+						AND post_parent = %d
+					LIMIT 1",
+					$desired,
+					$post_id,
+					$post_parent
+				)
+			);
+
+			if ( ! $attachment_conflict ) {
+				continue;
+			}
+
+			$result = wp_update_post(
+				[
+					'ID'        => $post_id,
+					'post_name' => $desired,
+				],
+				true
+			);
+
+			if ( ! is_wp_error( $result ) ) {
+				++$normalized;
+			}
+		}
+
+		if ( $normalized > 0 ) {
+			self::log( 'Normalized ' . $normalized . ' managed draft slugs after attachment-only collisions.' );
+		}
 	}
 
 	/**
