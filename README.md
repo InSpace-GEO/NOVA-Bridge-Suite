@@ -49,7 +49,7 @@ Yes, NOVA can navigate WooCommerce products and categories. If WooCommerce is ac
 
 ### 2.4.6
 
-- Prevent recursive multilingual option resolution during REST create and update requests so WordPress mutations no longer trigger critical errors on multilingual sites.
+- Prevent recursive multilingual option resolution during REST create and update requests on multilingual sites.
 - Skip expensive `meta_all` and `meta_all_flat` expansion on non-GET REST responses by default to keep create and update responses lightweight and stable.
 - Avoid redundant Elementor cache clears during document finalization and stop clearing the global files cache unless a site explicitly opts in.
 
