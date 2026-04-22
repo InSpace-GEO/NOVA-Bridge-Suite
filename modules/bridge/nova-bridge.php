@@ -592,7 +592,11 @@ add_action('rest_api_init', function () {
 
   /* ---------- meta_all: read/write with nested paths + ACF + legacy options ---------- */
   register_rest_field('product_cat', 'meta_all', [
-    'get_callback' => function($term_arr) use ($include_private_term) {
+    'get_callback' => function($term_arr, $field_name = null, $request = null) use ($include_private_term) {
+      if (!cf_tmrb_should_expand_rest_meta_field($request)) {
+        return [];
+      }
+
       $term_id  = (int)$term_arr['id'];
       $taxonomy = isset($term_arr['taxonomy']) ? $term_arr['taxonomy'] : 'product_cat';
       $include_private = $include_private_term($term_id);
@@ -821,7 +825,11 @@ add_action('rest_api_init', function () {
 
   /* ---------- meta_all_flat: flattened view ---------- */
   register_rest_field('product_cat', 'meta_all_flat', [
-    'get_callback' => function($term_arr) use ($include_private_term) {
+    'get_callback' => function($term_arr, $field_name = null, $request = null) use ($include_private_term) {
+      if (!cf_tmrb_should_expand_rest_meta_field($request)) {
+        return [];
+      }
+
       $term_id  = (int)$term_arr['id'];
       $taxonomy = isset($term_arr['taxonomy']) ? $term_arr['taxonomy'] : 'product_cat';
       $include_private = $include_private_term($term_id);
@@ -914,6 +922,48 @@ if (!function_exists('cf_tmrb_supported_post_types')) {
   function cf_tmrb_supported_post_types() {
     $default = ['post','page'];
     return apply_filters('cf_tmrb_supported_post_types', $default);
+  }
+}
+
+if (!function_exists('cf_tmrb_should_expand_rest_meta_field')) {
+  /**
+   * Avoid expanding large meta payloads during mutation responses.
+   *
+   * Create, update, and delete responses serialize registered REST fields too.
+   * Keep these helpers fully available on GET by default, but skip them on
+   * non-GET requests unless a site explicitly opts back in.
+   *
+   * @param mixed $request Current REST request, when available.
+   * @return bool
+   */
+  function cf_tmrb_should_expand_rest_meta_field($request) {
+    if (!($request instanceof WP_REST_Request)) {
+      return true;
+    }
+
+    $method = strtoupper((string) $request->get_method());
+    if (!in_array($method, ['GET', 'HEAD'], true)) {
+      return (bool) apply_filters('cf_tmrb_expand_meta_all_on_non_get', false, $request);
+    }
+
+    $override = $request->get_param('include_meta_all');
+    if ($override === null) {
+      return true;
+    }
+
+    if (is_bool($override)) {
+      return $override;
+    }
+
+    if (is_numeric($override)) {
+      return ((int) $override) === 1;
+    }
+
+    if (is_string($override)) {
+      return in_array(strtolower(trim($override)), ['1', 'true', 'yes', 'on'], true);
+    }
+
+    return !empty($override);
   }
 }
 
@@ -1110,7 +1160,11 @@ add_action('rest_api_init', function () {
 
   /* ---------- meta_all for posts ---------- */
   register_rest_field($pts, 'meta_all', [
-    'get_callback' => function ($post_arr) use ($include_private_post) {
+    'get_callback' => function ($post_arr, $field_name = null, $request = null) use ($include_private_post) {
+      if (!cf_tmrb_should_expand_rest_meta_field($request)) {
+        return [];
+      }
+
       $post_id = (int) $post_arr['id'];
       $include_private = $include_private_post($post_id);
 
@@ -1149,7 +1203,11 @@ add_action('rest_api_init', function () {
 
   /* ---------- meta_all_flat for posts ---------- */
   register_rest_field($pts, 'meta_all_flat', [
-    'get_callback' => function ($post_arr) use ($include_private_post) {
+    'get_callback' => function ($post_arr, $field_name = null, $request = null) use ($include_private_post) {
+      if (!cf_tmrb_should_expand_rest_meta_field($request)) {
+        return [];
+      }
+
       $post_id = (int) $post_arr['id'];
       $include_private = $include_private_post($post_id);
 

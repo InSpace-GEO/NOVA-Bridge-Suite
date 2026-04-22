@@ -1523,16 +1523,12 @@ class Elementor_Service {
 	 * @return true|WP_Error
 	 */
 	private function finalize_elementor_document( $post_id, array $payload ) {
-		$this->clear_elementor_cache( $post_id );
+		if ( $this->should_publish_document( $payload, $post_id ) ) {
+			$result = $this->bump_post_revision( $post_id );
 
-		if ( ! $this->should_publish_document( $payload, $post_id ) ) {
-			return true;
-		}
-
-		$result = $this->bump_post_revision( $post_id );
-
-		if ( is_wp_error( $result ) ) {
-			return $result;
+			if ( is_wp_error( $result ) ) {
+				return $result;
+			}
 		}
 
 		$this->clear_elementor_cache( $post_id );
@@ -1574,7 +1570,18 @@ class Elementor_Service {
 				$plugin->posts_css_manager->clear_cache( $post_id );
 			}
 
-			if ( isset( $plugin->files_manager ) && method_exists( $plugin->files_manager, 'clear_cache' ) ) {
+			$clear_global_files_cache = (bool) apply_filters(
+				'seor_eb_clear_global_elementor_files_cache',
+				false,
+				$post_id,
+				$plugin
+			);
+
+			if (
+				$clear_global_files_cache
+				&& isset( $plugin->files_manager )
+				&& method_exists( $plugin->files_manager, 'clear_cache' )
+			) {
 				$plugin->files_manager->clear_cache();
 			}
 		} catch ( \Throwable $e ) {

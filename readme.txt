@@ -4,7 +4,7 @@ Tags: seo, automation, content, rest-api, page builder
 Requires at least: 6.0
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 2.4.5
+Stable tag: 2.4.6
 License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -41,6 +41,11 @@ Yes. If WooCommerce is active you can enable the rich text field module for cate
 1. NOVA Settings screen with module toggles.
 
 == Changelog ==
+= 2.4.6 =
+* Prevent recursive multilingual option resolution during REST create and update requests so WordPress mutations no longer trigger critical errors on multilingual sites.
+* Skip expensive `meta_all` and `meta_all_flat` expansion on non-GET REST responses by default to keep create and update responses lightweight and stable.
+* Avoid redundant Elementor cache clears during document finalization and stop clearing the global files cache unless a site explicitly opts in.
+
 = 2.4.5 =
 * Prevent managed Blog CPT article slugs from being forced to `-2` when the only matching slug belongs to an uploaded attachment image.
 * Normalize existing draft and pending Blog CPT slugs after upgrading so attachment-only collisions no longer leave generated suffixes behind.
