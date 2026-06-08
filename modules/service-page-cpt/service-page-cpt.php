@@ -283,9 +283,12 @@ final class Plugin {
 		\add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_front_assets' ] );
 		\add_action( 'enqueue_block_editor_assets', [ $this, 'enqueue_editor_assets' ] );
 		\add_action( 'wp', [ $this, 'maybe_override_faq_schema' ] );
+		\add_action( 'wp_head', [ $this, 'print_critical_layout_styles' ], 8 );
 		\add_action( 'wp_head', [ $this, 'render_service_faq_schema' ], 9 );
 		\add_filter( 'template_include', [ $this, 'maybe_use_templates' ] );
 		\add_filter( 'body_class', [ $this, 'add_body_class' ] );
+		\add_filter( 'style_loader_tag', [ $this, 'mark_frontend_style_no_optimize' ], 10, 4 );
+		\add_filter( 'litespeed_optm_css_exc', [ $this, 'exclude_frontend_style_from_litespeed' ] );
 		\add_filter( 'pre_wp_unique_post_slug', [ $this, 'allow_service_slug_without_attachment_conflict' ], 10, 6 );
 		\add_filter( 'enter_title_here', [ $this, 'title_placeholder' ], 10, 2 );
 		\add_filter( 'use_block_editor_for_post_type', [ $this, 'force_block_editor' ], 100, 2 );
@@ -303,6 +306,8 @@ final class Plugin {
 		\add_action( 'admin_menu', [ $this, 'register_settings_page' ] );
 		\add_action( 'admin_init', [ $this, 'register_settings' ] );
 		\add_action( 'admin_menu', [ $this, 'register_cpt_settings_submenu' ] );
+		\add_action( 'add_option_' . self::OPTION_SLUG, [ $this, 'handle_slug_option_add' ], 10, 2 );
+		\add_action( 'update_option_' . self::OPTION_SLUG, [ $this, 'handle_slug_option_update' ], 10, 3 );
 		\add_action( 'update_option_' . self::OPTION_TEMPLATE, [ $this, 'handle_template_option_update' ], 10, 3 );
 
 		\add_action( 'rest_api_init', [ $this, 'register_rest_routes' ] );
@@ -428,10 +433,42 @@ final class Plugin {
 	}
 
 	private function get_base_slug(): string {
-		$slug = \get_option( self::OPTION_SLUG, self::BASE_SLUG );
-		$slug = \sanitize_title_with_dashes( (string) $slug );
+		return $this->normalize_base_slug_value( \get_option( self::OPTION_SLUG, self::BASE_SLUG ) );
+	}
 
+	private function normalize_base_slug_value( $value ): string {
+		$slug = \sanitize_title_with_dashes( (string) $value );
 		return '' === $slug ? self::BASE_SLUG : $slug;
+	}
+
+	public function handle_slug_option_add( string $option, $value ): void {
+		$slug = $this->normalize_base_slug_value( $value );
+
+		if ( self::BASE_SLUG === $slug ) {
+			return;
+		}
+
+		$this->refresh_rewrite_rules_for_base_slug();
+	}
+
+	public function handle_slug_option_update( $old_value, $value, string $option ): void {
+		$old_slug = $this->normalize_base_slug_value( $old_value );
+		$new_slug = $this->normalize_base_slug_value( $value );
+
+		if ( $old_slug === $new_slug ) {
+			return;
+		}
+
+		$this->refresh_rewrite_rules_for_base_slug();
+	}
+
+	private function refresh_rewrite_rules_for_base_slug(): void {
+		if ( \post_type_exists( self::CPT ) && \function_exists( 'unregister_post_type' ) ) {
+			\unregister_post_type( self::CPT );
+		}
+
+		$this->register_post_type();
+		\flush_rewrite_rules( false );
 	}
 
 	private function get_settings_option_name( string $option ): string {
@@ -1469,6 +1506,49 @@ final class Plugin {
 
 		\wp_enqueue_style( 'service-cpt-frontend' );
 		$this->enqueue_exclusion_styles( 'service-cpt-frontend' );
+	}
+
+	public function mark_frontend_style_no_optimize( string $html, string $handle, string $href, string $media ): string {
+		if ( 'service-cpt-frontend' !== $handle || false !== strpos( $html, 'data-no-optimize' ) ) {
+			return $html;
+		}
+
+		$tag = \preg_replace(
+			'/^<link\s+/',
+			'<link data-no-optimize="1" data-no-minify="1" ',
+			$html,
+			1
+		);
+
+		return \is_string( $tag ) ? $tag : $html;
+	}
+
+	public function exclude_frontend_style_from_litespeed( $excludes ): array {
+		if ( ! \is_array( $excludes ) ) {
+			$excludes = [];
+		}
+
+		$excludes[] = 'service-cpt-frontend-css';
+		$excludes[] = 'modules/service-page-cpt/assets/frontend.css';
+
+		return \array_values( \array_unique( $excludes ) );
+	}
+
+	public function print_critical_layout_styles(): void {
+		if ( ! $this->is_service_context() ) {
+			return;
+		}
+
+		echo "\n<style id=\"service-cpt-critical-layout\" data-no-optimize=\"1\">\n";
+		echo $this->get_critical_layout_css(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+		echo "\n</style>\n";
+	}
+
+	private function get_critical_layout_css(): string {
+		return 'body.service-cpt #service-cpt-primary,body.service-cpt #service-cpt-archive,body.service-cpt main.service-cpt{display:block;width:100%;max-width:none;flex:0 0 100%;align-self:stretch;box-sizing:border-box;clear:both;}'
+			. 'body.service-cpt.ast-page-builder-template #content .ast-container{display:block;width:100%;max-width:100%;}'
+			. 'body.service-cpt .service-cpt__wrap{display:block;width:100%;max-width:100%;margin-left:auto;margin-right:auto;box-sizing:border-box;}'
+			. 'body.service-cpt .service-cpt__wrap>*{box-sizing:border-box;}';
 	}
 
 	/**

@@ -1,4 +1,28 @@
+body.service-cpt #service-cpt-primary,
+body.service-cpt #service-cpt-archive,
+body.service-cpt main.service-cpt {
+	display: block;
+	width: 100%;
+	max-width: none;
+	flex: 0 0 100%;
+	align-self: stretch;
+	box-sizing: border-box;
+	clear: both;
+}
+
+body.service-cpt.ast-page-builder-template #content .ast-container {
+	display: block;
+	width: 100%;
+	max-width: 100%;
+}
+
 .service-cpt__wrap {
+	display: block;
+	width: 100%;
+	max-width: 100%;
+	margin-left: auto;
+	margin-right: auto;
+	box-sizing: border-box;
 	font-family: inherit;
 	color: var(--service-cpt-text, var(--wp--preset--color--contrast, inherit));
 	background: var(--service-cpt-surface, var(--wp--preset--color--base, transparent));
