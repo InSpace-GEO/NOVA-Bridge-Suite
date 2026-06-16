@@ -285,7 +285,8 @@ final class Plugin {
 		\add_action( 'wp', [ $this, 'maybe_override_faq_schema' ] );
 		\add_action( 'wp_head', [ $this, 'print_critical_layout_styles' ], 8 );
 		\add_action( 'wp_head', [ $this, 'render_service_faq_schema' ], 9 );
-		\add_filter( 'template_include', [ $this, 'maybe_use_templates' ] );
+		\add_filter( 'template_include', [ $this, 'maybe_use_templates' ], 9999 );
+		\add_filter( 'the_content', [ $this, 'filter_service_page_content' ], 9999 );
 		\add_filter( 'body_class', [ $this, 'add_body_class' ] );
 		\add_filter( 'style_loader_tag', [ $this, 'mark_frontend_style_no_optimize' ], 10, 4 );
 		\add_filter( 'litespeed_optm_css_exc', [ $this, 'exclude_frontend_style_from_litespeed' ] );
@@ -1726,6 +1727,28 @@ final class Plugin {
 		}
 
 		return $template;
+	}
+
+	/**
+	 * Renders service page CPT content when a theme builder prints post content directly.
+	 */
+	public function filter_service_page_content( string $content ): string {
+		if ( $this->rendering_service_page || \is_admin() || ! \is_singular( self::CPT ) ) {
+			return $content;
+		}
+
+		$post = \get_post();
+		if ( ! $post instanceof \WP_Post || self::CPT !== $post->post_type ) {
+			return $content;
+		}
+
+		if ( \post_password_required( $post ) ) {
+			return $content;
+		}
+
+		$rendered = $this->render_service_page( (int) $post->ID );
+
+		return '' !== \trim( $rendered ) ? $rendered : $content;
 	}
 
 	public function add_body_class( array $classes ): array {
