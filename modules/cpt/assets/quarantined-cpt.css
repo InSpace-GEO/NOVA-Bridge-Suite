@@ -504,9 +504,13 @@ body.admin-bar.quarantined-cpt-author .quarantined-cpt__inner {
 	box-sizing: border-box;
 }
 
-.quarantined-cpt__panel-title {
+.quarantined-cpt .quarantined-cpt__panel-title {
 	margin: 0 0 0.55rem;
-	font-size: 1.08rem;
+	font-size: clamp(1.2rem, 2.2vw, 1.35rem);
+	font-weight: 700;
+	line-height: 1.25;
+	max-width: 100%;
+	overflow-wrap: break-word;
 }
 
 .quarantined-cpt__panel ul,
@@ -576,6 +580,11 @@ body.admin-bar.quarantined-cpt-author .quarantined-cpt__inner {
 	font-weight: 600;
 	min-width: 2.8rem;
 	opacity: 0.8;
+}
+
+.quarantined-cpt__toc-label {
+	min-width: 0;
+	overflow-wrap: break-word;
 }
 
 .quarantined-cpt__toc-item.is-collapsed {

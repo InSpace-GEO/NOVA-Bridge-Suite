@@ -366,14 +366,14 @@ get_header();
 					<div class="quarantined-cpt__pre-cta-flow quarantined-cpt__component quarantined-cpt__component--content-1<?php echo $has_toc ? ' quarantined-cpt__pre-cta-flow--has-toc' : ''; ?><?php echo ( $has_toc && ! $has_takeaways ) ? ' quarantined-cpt__pre-cta-flow--toc-only' : ''; ?>">
 						<?php if ( $has_toc ) : ?>
 							<section class="quarantined-cpt__panel quarantined-cpt__panel--toc" aria-label="<?php echo esc_attr( $toc_label ); ?>">
-								<h2 class="quarantined-cpt__panel-title"><?php echo esc_html( $toc_label ); ?></h2>
+								<p class="quarantined-cpt__panel-title"><?php echo esc_html( $toc_label ); ?></p>
 								<?php echo $toc_primary_html; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
 							</section>
 						<?php endif; ?>
 
 						<?php if ( $has_takeaways ) : ?>
 							<section class="quarantined-cpt__panel quarantined-cpt__panel--takeaways" aria-label="<?php echo esc_attr( $key_takeaways_label ); ?>">
-								<h2 class="quarantined-cpt__panel-title"><?php echo esc_html( $key_takeaways_label ); ?></h2>
+								<p class="quarantined-cpt__panel-title"><?php echo esc_html( $key_takeaways_label ); ?></p>
 								<ul>
 									<?php foreach ( $key_takeaways as $takeaway ) : ?>
 										<li><?php echo esc_html( (string) $takeaway ); ?></li>
