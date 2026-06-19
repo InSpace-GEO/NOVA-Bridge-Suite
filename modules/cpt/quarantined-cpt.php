@@ -253,6 +253,16 @@ final class Plugin {
 	private const OPTION_BLOG_STYLE_BY_CPT = 'quarantined_cpt_bodyclean_blog_style_by_cpt';
 
 	/**
+	 * Option key storing global blog typography size overrides.
+	 */
+	private const OPTION_BLOG_SIZE_SETTINGS = 'quarantined_cpt_bodyclean_blog_size_settings';
+
+	/**
+	 * Option key storing module-wide custom CSS for Blog CPT pages.
+	 */
+	private const OPTION_BLOG_CUSTOM_CSS = 'quarantined_cpt_bodyclean_blog_custom_css';
+
+	/**
 	 * Option key storing author box background color.
 	 */
 	private const OPTION_BLOG_AUTHOR_BOX_BG = 'quarantined_cpt_bodyclean_blog_author_box_bg';
@@ -1283,6 +1293,109 @@ final class Plugin {
 	}
 
 	/**
+	 * Returns editable font-size controls for Blog CPT templates.
+	 *
+	 * @return array<string,array<string,string>>
+	 */
+	private function get_blog_size_fields(): array {
+		return [
+			'title_font_size'        => [
+				'label'       => __( 'Article title', 'nova-bridge-suite' ),
+				'selector'    => '.quarantined-cpt .quarantined-cpt__title',
+				'placeholder' => 'clamp(1.75rem, 3.5vw, 2.75rem)',
+			],
+			'intro_font_size'        => [
+				'label'       => __( 'Intro paragraph', 'nova-bridge-suite' ),
+				'selector'    => '.quarantined-cpt .quarantined-cpt__intro',
+				'placeholder' => '1.1rem',
+			],
+			'content_font_size'      => [
+				'label'       => __( 'Article body', 'nova-bridge-suite' ),
+				'selector'    => '.quarantined-cpt .quarantined-cpt__content, .quarantined-cpt .quarantined-cpt__content p, .quarantined-cpt .quarantined-cpt__content li, .quarantined-cpt .quarantined-cpt__content blockquote',
+				'placeholder' => '18px',
+			],
+			'content_h2_font_size'   => [
+				'label'       => __( 'Article H2', 'nova-bridge-suite' ),
+				'selector'    => '.quarantined-cpt .quarantined-cpt__content h2',
+				'placeholder' => '28px',
+			],
+			'content_h3_font_size'   => [
+				'label'       => __( 'Article H3', 'nova-bridge-suite' ),
+				'selector'    => '.quarantined-cpt .quarantined-cpt__content h3',
+				'placeholder' => '24px',
+			],
+			'content_h4_font_size'   => [
+				'label'       => __( 'Article H4', 'nova-bridge-suite' ),
+				'selector'    => '.quarantined-cpt .quarantined-cpt__content h4',
+				'placeholder' => '20px',
+			],
+			'meta_font_size'         => [
+				'label'       => __( 'Meta row / author chip', 'nova-bridge-suite' ),
+				'selector'    => '.quarantined-cpt .quarantined-cpt__meta, .quarantined-cpt .quarantined-cpt__meta-row, .quarantined-cpt .quarantined-cpt__author-chip',
+				'placeholder' => '0.95rem',
+			],
+			'panel_title_font_size'  => [
+				'label'       => __( 'Panel headings', 'nova-bridge-suite' ),
+				'selector'    => '.quarantined-cpt .quarantined-cpt__panel-title',
+				'placeholder' => '1rem',
+			],
+			'panel_font_size'        => [
+				'label'       => __( 'Panel text', 'nova-bridge-suite' ),
+				'selector'    => '.quarantined-cpt .quarantined-cpt__panel, .quarantined-cpt .quarantined-cpt__panel li, .quarantined-cpt .quarantined-cpt__panel a',
+				'placeholder' => '0.95rem',
+			],
+			'cta_title_font_size'    => [
+				'label'       => __( 'Wide CTA title', 'nova-bridge-suite' ),
+				'selector'    => '.quarantined-cpt .quarantined-cpt__wide-cta-title',
+				'placeholder' => 'clamp(1.25rem, 2.3vw, 1.75rem)',
+			],
+			'cta_copy_font_size'     => [
+				'label'       => __( 'Wide CTA copy', 'nova-bridge-suite' ),
+				'selector'    => '.quarantined-cpt .quarantined-cpt__wide-cta-copy',
+				'placeholder' => '1rem',
+			],
+			'faq_title_font_size'    => [
+				'label'       => __( 'FAQ section title', 'nova-bridge-suite' ),
+				'selector'    => '.quarantined-cpt .quarantined-cpt__faq-title',
+				'placeholder' => '1.25rem',
+			],
+			'faq_font_size'          => [
+				'label'       => __( 'FAQ questions / answers', 'nova-bridge-suite' ),
+				'selector'    => '.quarantined-cpt .quarantined-cpt__faq-item summary, .quarantined-cpt .quarantined-cpt__faq-answer',
+				'placeholder' => '1rem',
+			],
+			'related_title_font_size' => [
+				'label'       => __( 'Related section title', 'nova-bridge-suite' ),
+				'selector'    => '.quarantined-cpt .quarantined-cpt__related-title',
+				'placeholder' => '1.25rem',
+			],
+			'related_card_font_size' => [
+				'label'       => __( 'Related cards', 'nova-bridge-suite' ),
+				'selector'    => '.quarantined-cpt .quarantined-cpt__card-title, .quarantined-cpt .quarantined-cpt__card-summary, .quarantined-cpt .quarantined-cpt__card-meta',
+				'placeholder' => '1rem',
+			],
+			'author_box_font_size'   => [
+				'label'       => __( 'Author box', 'nova-bridge-suite' ),
+				'selector'    => '.quarantined-cpt .quarantined-cpt__author-box, .quarantined-cpt .quarantined-cpt__author-box-role, .quarantined-cpt .quarantined-cpt__author-box-description',
+				'placeholder' => '0.95rem',
+			],
+		];
+	}
+
+	/**
+	 * Returns global font-size overrides.
+	 *
+	 * @return array<string,string>
+	 */
+	private function get_blog_size_settings(): array {
+		return $this->sanitize_blog_size_settings( get_option( self::OPTION_BLOG_SIZE_SETTINGS, [] ) );
+	}
+
+	private function get_blog_custom_css(): string {
+		return $this->sanitize_blog_custom_css( get_option( self::OPTION_BLOG_CUSTOM_CSS, '' ) );
+	}
+
+	/**
 	 * Returns a sanitized color override option.
 	 *
 	 * @param string $option_name Option key.
@@ -1735,6 +1848,10 @@ final class Plugin {
 			$settings['card_radius'] = $custom_card_radius;
 		}
 
+		foreach ( $this->get_blog_size_settings() as $key => $size ) {
+			$settings[ $key ] = $size;
+		}
+
 		if ( '' === (string) ( $settings['link_hover_color'] ?? '' ) && '' !== (string) ( $settings['link_color'] ?? '' ) ) {
 			$settings['link_hover_color'] = (string) $settings['link_color'];
 		}
@@ -1752,14 +1869,21 @@ final class Plugin {
 	 * @return array<string,string>
 	 */
 	private function get_empty_blog_style_override_payload(): array {
-		return [
+		$payload = [
 			'text_color'            => '',
 			'link_color'            => '',
 			'link_hover_color'      => '',
 			'cta_button_background' => '',
 			'cta_button_text'       => '',
 			'cta_button_hover'      => '',
+			'custom_css'            => '',
 		];
+
+		foreach ( $this->get_blog_size_fields() as $key => $field ) {
+			$payload[ $key ] = '';
+		}
+
+		return $payload;
 	}
 
 	/**
@@ -2598,6 +2722,18 @@ final class Plugin {
 
 		if ( $custom_rules ) {
 			$inline_css .= "\n" . $custom_rules;
+		}
+
+		$module_custom_css = $this->get_blog_custom_css();
+
+		if ( '' !== $module_custom_css ) {
+			$inline_css .= "\n" . $module_custom_css;
+		}
+
+		$custom_cpt_css = trim( (string) ( $style_settings['custom_css'] ?? '' ) );
+
+		if ( '' !== $custom_cpt_css ) {
+			$inline_css .= "\n" . $custom_cpt_css;
 		}
 
 		wp_add_inline_style( $handle, $inline_css );
@@ -7963,6 +8099,26 @@ final class Plugin {
 
 		register_setting(
 			'quarantined_cpt_bodyclean',
+			self::OPTION_BLOG_SIZE_SETTINGS,
+			[
+				'type'              => 'array',
+				'sanitize_callback' => [ $this, 'sanitize_blog_size_settings' ],
+				'default'           => [],
+			]
+		);
+
+		register_setting(
+			'quarantined_cpt_bodyclean',
+			self::OPTION_BLOG_CUSTOM_CSS,
+			[
+				'type'              => 'string',
+				'sanitize_callback' => [ $this, 'sanitize_blog_custom_css' ],
+				'default'           => '',
+			]
+		);
+
+		register_setting(
+			'quarantined_cpt_bodyclean',
 			self::OPTION_BLOG_AUTHOR_BOX_BG,
 			[
 				'type'              => 'string',
@@ -8342,6 +8498,9 @@ final class Plugin {
 		$blog_author_border  = $this->get_blog_color_option_value( self::OPTION_BLOG_AUTHOR_BOX_BORDER );
 		$blog_card_radius    = $this->get_blog_card_radius_setting();
 		$style_overrides_by_cpt = $this->get_blog_style_overrides_by_cpt();
+		$blog_size_fields    = $this->get_blog_size_fields();
+		$blog_size_settings  = $this->get_blog_size_settings();
+		$blog_custom_css     = $this->get_blog_custom_css();
 		$schema_choices      = $this->get_article_schema_choices();
 
 		?>
@@ -8644,6 +8803,22 @@ final class Plugin {
 									<p class="description"><?php esc_html_e( 'Examples: 880px, 72rem, min(92vw, 980px).', 'nova-bridge-suite' ); ?></p>
 								</td>
 							</tr>
+							<?php foreach ( $blog_size_fields as $size_key => $size_field ) : ?>
+								<tr>
+									<th scope="row"><label for="quarantined-cpt-size-<?php echo esc_attr( $size_key ); ?>"><?php echo esc_html( (string) $size_field['label'] ); ?></label></th>
+									<td>
+										<input
+											type="text"
+											class="regular-text"
+											id="quarantined-cpt-size-<?php echo esc_attr( $size_key ); ?>"
+											name="<?php echo esc_attr( self::OPTION_BLOG_SIZE_SETTINGS ); ?>[<?php echo esc_attr( $size_key ); ?>]"
+											value="<?php echo esc_attr( (string) ( $blog_size_settings[ $size_key ] ?? '' ) ); ?>"
+											placeholder="<?php echo esc_attr( (string) ( $size_field['placeholder'] ?? '' ) ); ?>"
+										/>
+										<p class="description"><?php esc_html_e( 'Accepts CSS sizes like 18px, 1.125rem, or clamp(1rem, 2vw, 1.25rem).', 'nova-bridge-suite' ); ?></p>
+									</td>
+								</tr>
+							<?php endforeach; ?>
 							<tr>
 								<th scope="row"><label for="quarantined-cpt-text-color"><?php esc_html_e( 'Body text color', 'nova-bridge-suite' ); ?></label></th>
 								<td><input type="text" class="regular-text quarantined-cpt-color-control__value" id="quarantined-cpt-text-color" name="<?php echo esc_attr( self::OPTION_BLOG_TEXT_COLOR ); ?>" value="<?php echo esc_attr( $blog_text_color ); ?>" placeholder="<?php esc_attr_e( 'Theme default', 'nova-bridge-suite' ); ?>" /></td>
@@ -8902,8 +9077,8 @@ final class Plugin {
 										</ol>
 
 										<details class="quarantined-cpt-settings__dropdown quarantined-cpt-settings__dropdown--optional">
-											<summary><?php esc_html_e( 'Color overrides for this specific CPT (Optional)', 'nova-bridge-suite' ); ?></summary>
-											<p class="description"><?php esc_html_e( 'Leave empty to inherit the global design controls or your site theme. Use this when one CPT should have a different text, link, or button color treatment than the others.', 'nova-bridge-suite' ); ?></p>
+											<summary><?php esc_html_e( 'Style overrides for this specific CPT (Optional)', 'nova-bridge-suite' ); ?></summary>
+											<p class="description"><?php esc_html_e( 'Leave empty to inherit the global design controls or your site theme. Use this when one CPT should have different colors or small CSS fixes than the others.', 'nova-bridge-suite' ); ?></p>
 											<table class="form-table quarantined-cpt-settings__nested-table" role="presentation">
 												<tr>
 													<th scope="row"><label for="quarantined-cpt-style-text-<?php echo esc_attr( $tab_slug ); ?>"><?php esc_html_e( 'Body text color', 'nova-bridge-suite' ); ?></label></th>
@@ -8928,6 +9103,40 @@ final class Plugin {
 												<tr>
 													<th scope="row"><label for="quarantined-cpt-style-button-hover-<?php echo esc_attr( $tab_slug ); ?>"><?php esc_html_e( 'CTA button hover background', 'nova-bridge-suite' ); ?></label></th>
 													<td><input type="text" class="regular-text quarantined-cpt-color-control__value" id="quarantined-cpt-style-button-hover-<?php echo esc_attr( $tab_slug ); ?>" name="<?php echo esc_attr( self::OPTION_BLOG_STYLE_BY_CPT ); ?>[<?php echo esc_attr( $tab_slug ); ?>][cta_button_hover]" value="<?php echo esc_attr( (string) ( $tab_style['cta_button_hover'] ?? '' ) ); ?>" placeholder="<?php echo esc_attr( '' !== $blog_cta_button_hover ? $blog_cta_button_hover : __( 'Same as CTA button background', 'nova-bridge-suite' ) ); ?>" /></td>
+												</tr>
+												<?php foreach ( $blog_size_fields as $size_key => $size_field ) : ?>
+													<?php
+													$global_size_placeholder = (string) ( $blog_size_settings[ $size_key ] ?? '' );
+													if ( '' === $global_size_placeholder ) {
+														$global_size_placeholder = (string) ( $size_field['placeholder'] ?? '' );
+													}
+													?>
+													<tr>
+														<th scope="row"><label for="quarantined-cpt-style-size-<?php echo esc_attr( $tab_slug ); ?>-<?php echo esc_attr( $size_key ); ?>"><?php echo esc_html( (string) $size_field['label'] ); ?></label></th>
+														<td>
+															<input
+																type="text"
+																class="regular-text"
+																id="quarantined-cpt-style-size-<?php echo esc_attr( $tab_slug ); ?>-<?php echo esc_attr( $size_key ); ?>"
+																name="<?php echo esc_attr( self::OPTION_BLOG_STYLE_BY_CPT ); ?>[<?php echo esc_attr( $tab_slug ); ?>][<?php echo esc_attr( $size_key ); ?>]"
+																value="<?php echo esc_attr( (string) ( $tab_style[ $size_key ] ?? '' ) ); ?>"
+																placeholder="<?php echo esc_attr( $global_size_placeholder ); ?>"
+															/>
+														</td>
+													</tr>
+												<?php endforeach; ?>
+												<tr>
+													<th scope="row"><label for="quarantined-cpt-style-custom-css-<?php echo esc_attr( $tab_slug ); ?>"><?php esc_html_e( 'Custom CSS', 'nova-bridge-suite' ); ?></label></th>
+													<td>
+														<textarea
+															class="large-text code"
+															rows="8"
+															id="quarantined-cpt-style-custom-css-<?php echo esc_attr( $tab_slug ); ?>"
+															name="<?php echo esc_attr( self::OPTION_BLOG_STYLE_BY_CPT ); ?>[<?php echo esc_attr( $tab_slug ); ?>][custom_css]"
+															placeholder=".quarantined-cpt__content { font-size: 18px; }&#10;.quarantined-cpt__content h2 { font-size: 28px; }"
+														><?php echo esc_textarea( (string) ( $tab_style['custom_css'] ?? '' ) ); ?></textarea>
+														<p class="description"><?php esc_html_e( 'Printed only on this CPT after the plugin stylesheet. Use the quarantined-cpt classes to target title, content, panels, CTA, FAQ, author box, or related cards.', 'nova-bridge-suite' ); ?></p>
+													</td>
 												</tr>
 											</table>
 										</details>
@@ -9145,6 +9354,18 @@ final class Plugin {
 								</td>
 							</tr>
 						</table>
+						<details class="quarantined-cpt-settings__dropdown quarantined-cpt-settings__dropdown--optional">
+							<summary><?php esc_html_e( 'Custom CSS (optional)', 'nova-bridge-suite' ); ?></summary>
+							<p class="description"><?php esc_html_e( 'Printed on all plugin-managed Blog CPT single, archive, and author pages after the plugin stylesheet.', 'nova-bridge-suite' ); ?></p>
+							<textarea
+								name="<?php echo esc_attr( self::OPTION_BLOG_CUSTOM_CSS ); ?>"
+								id="quarantined-cpt-blog-custom-css"
+								rows="10"
+								cols="70"
+								class="large-text code"
+								placeholder=".quarantined-cpt__content { font-size: 18px; }&#10;.quarantined-cpt__wide-cta-title { font-size: 28px; }"
+							><?php echo esc_textarea( $blog_custom_css ); ?></textarea>
+						</details>
 						<details class="quarantined-cpt-settings__dropdown quarantined-cpt-settings__dropdown--optional">
 							<summary><?php esc_html_e( 'Element Exclusions (optional)', 'nova-bridge-suite' ); ?></summary>
 							<p class="description"><?php esc_html_e( 'Use CSS selectors (class-based, id, or other valid selectors) to hide matching elements on CPT pages only. One selector per line.', 'nova-bridge-suite' ); ?></p>
@@ -10013,6 +10234,7 @@ final class Plugin {
 		}
 
 		$defaults  = $this->get_empty_blog_style_override_payload();
+		$size_keys = array_fill_keys( array_keys( $this->get_blog_size_fields() ), true );
 		$sanitized = [];
 
 		foreach ( $value as $post_type => $payload ) {
@@ -10025,7 +10247,13 @@ final class Plugin {
 			$type_payload = [];
 
 			foreach ( $defaults as $key => $default ) {
-				$clean = $this->sanitize_blog_color_option( $payload[ $key ] ?? '' );
+				if ( 'custom_css' === $key ) {
+					$clean = $this->sanitize_blog_custom_css( $payload[ $key ] ?? '' );
+				} elseif ( isset( $size_keys[ $key ] ) ) {
+					$clean = $this->sanitize_blog_font_size_option( $payload[ $key ] ?? '' );
+				} else {
+					$clean = $this->sanitize_blog_color_option( $payload[ $key ] ?? '' );
+				}
 
 				if ( '' !== $clean ) {
 					$type_payload[ $key ] = $clean;
@@ -10264,8 +10492,53 @@ final class Plugin {
 		return '' === $normalized ? '' : $normalized;
 	}
 
+	public function sanitize_blog_font_size_option( $value ): string {
+		$value      = is_string( $value ) ? wp_strip_all_tags( $value ) : '';
+		$normalized = $this->normalize_header_offset( $value );
+
+		return '' === $normalized ? '' : $normalized;
+	}
+
+	/**
+	 * Sanitizes global font-size overrides.
+	 *
+	 * @param mixed $value Raw option value.
+	 * @return array<string,string>
+	 */
+	public function sanitize_blog_size_settings( $value ): array {
+		if ( ! is_array( $value ) ) {
+			return [];
+		}
+
+		$fields    = $this->get_blog_size_fields();
+		$sanitized = [];
+
+		foreach ( $fields as $key => $field ) {
+			$clean = $this->sanitize_blog_font_size_option( $value[ $key ] ?? '' );
+
+			if ( '' !== $clean ) {
+				$sanitized[ $key ] = $clean;
+			}
+		}
+
+		return $sanitized;
+	}
+
 	public function sanitize_blog_color_option( $value ): string {
 		return $this->sanitize_css_color_token( $value );
+	}
+
+	public function sanitize_blog_custom_css( $value ): string {
+		if ( ! is_string( $value ) ) {
+			return '';
+		}
+
+		$value = preg_replace( '#</?style[^>]*>#i', '', $value );
+		$value = is_string( $value ) ? wp_strip_all_tags( $value ) : '';
+		$value = preg_replace( '/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', $value );
+		$value = preg_replace( '/@import\s+[^;]+;?/i', '', is_string( $value ) ? $value : '' );
+
+		return trim( is_string( $value ) ? $value : '' );
 	}
 
 	/**
@@ -10941,6 +11214,22 @@ final class Plugin {
 
 		if ( '' !== $content_max_width ) {
 			$rules[] = ".quarantined-cpt .quarantined-cpt__entry--article{\n\tmax-width: var(--quarantined-cpt-entry-max-width) !important;\n}";
+		}
+
+		foreach ( $this->get_blog_size_fields() as $key => $field ) {
+			$font_size = trim( (string) ( $style_settings[ $key ] ?? '' ) );
+
+			if ( '' === $font_size ) {
+				continue;
+			}
+
+			$selector = trim( (string) ( $field['selector'] ?? '' ) );
+
+			if ( '' === $selector ) {
+				continue;
+			}
+
+			$rules[] = $selector . "{\n\tfont-size: " . $font_size . " !important;\n}";
 		}
 
 		$panel_background = trim( (string) ( $style_settings['panel_background'] ?? '' ) );
