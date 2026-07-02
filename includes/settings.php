@@ -22,6 +22,10 @@ function nova_bridge_suite_module_definitions(): array {
             'path'                 => 'modules/avada/nova-avada-bridge.php',
             'standalone_filenames' => [ 'nova-avada-bridge.php' ],
         ],
+        'pagebuilder_divi'       => [
+            'path'                 => 'modules/divi/divi-bridge.php',
+            'standalone_filenames' => [ 'divi-bridge.php', 'nova-divi-bridge.php' ],
+        ],
         'gutenberg_bridge'       => [
             'path'                 => 'modules/gutenberg/nova-gutenberg-bridge.php',
             'standalone_filenames' => [ 'nova-gutenberg-bridge.php' ],
@@ -318,6 +322,11 @@ function nova_bridge_suite_get_recommended_modules(): array {
             'description' => 'Avada detected. Enable the bridge to update Avada Builder pages.',
             'plugins'     => [ 'fusion-builder/fusion-builder.php', 'avada-builder/avada-builder.php' ],
         ],
+        'pagebuilder_divi'       => [
+            'label'       => 'Enable NOVA Divi Bridge',
+            'description' => 'Divi Builder detected. Enable the bridge to update Divi pages.',
+            'plugins'     => [ 'divi-builder/divi-builder.php' ],
+        ],
         'gutenberg_bridge'       => [
             'label'       => 'Enable NOVA Gutenberg Bridge',
             'description' => 'Gutenberg detected. Enable the bridge to allow NOVA to update Gutenberg pages.',
@@ -593,6 +602,19 @@ function nova_bridge_suite_register_settings(): void {
             'key'         => 'pagebuilder_avada',
             'label'       => 'Enable NOVA Avada Bridge',
             'description' => 'REST bridge for Avada Builder pages.',
+        ]
+    );
+
+    add_settings_field(
+        'nova_bridge_divi',
+        'Divi',
+        'nova_bridge_suite_render_checkbox_field',
+        'nova-settings',
+        'nova_bridge_pagebuilders',
+        [
+            'key'         => 'pagebuilder_divi',
+            'label'       => 'Enable NOVA Divi Bridge',
+            'description' => 'REST bridge for Divi Builder pages.',
         ]
     );
 

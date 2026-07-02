@@ -4,7 +4,7 @@
 - Requires at least: 6.0
 - Tested up to: 7.0
 - Requires PHP: 7.4
-- Stable tag: 2.5.13
+- Stable tag: 2.6.0
 - License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -39,13 +39,17 @@ This plugin is designed for NOVA. You can activate it without NOVA, but NOVA is 
 
 ### Will this replace my page builder?
 
-No. It works alongside builders like Avada, Elementor, WPBakery, and more. NOVA can update their content safely.
+No. It works alongside builders like Avada, Elementor, WPBakery, Divi, and more. NOVA can update their content safely.
 
 ### Does it work on WooCommerce sites?
 
 Yes, NOVA can navigate WooCommerce products and categories. If WooCommerce is active you can also enable the optional rich text field module for category pages - in case your category page template still needs this.
 
 ## Changelog
+
+### 2.6.0
+
+- Add Divi Bridge module: REST bridge (`nova-divi/v1`) that creates and updates Divi Builder pages using Divi 4 shortcode layouts (renders on Divi 5 via its backwards-compatibility layer). Supports clone-from-example templates, path-based text updates, section appending with FAQ accordions, SEO meta, and featured images.
 
 ### 2.5.13
 
