@@ -376,17 +376,41 @@ function nova_divi_sideload_image( $url, $post_id ) {
  * ------------------------------------------------------------------------- */
 
 /**
- * Resolve a page by ID or slug/path (supports hierarchical page paths).
+ * Whether a post type is a legitimate bridge target (filters out revisions,
+ * nav items, and other internal types when resolving by bare numeric ID).
  */
-function nova_divi_resolve_page( $id_or_slug, $post_types = array( 'page', 'post' ) ) {
-    $id_or_slug = trim( (string) $id_or_slug );
-    $post_types = (array) $post_types;
+function nova_divi_is_bridge_manageable_post_type( $post_type ) {
+    $obj = get_post_type_object( (string) $post_type );
+    return $obj && ( $obj->public || $obj->show_in_rest );
+}
+
+/**
+ * Resolve a page by ID or slug/path (supports hierarchical page paths).
+ *
+ * @param string|int        $id_or_slug Numeric ID, slug, or hierarchical path.
+ * @param array|string|null $post_types Explicit post type(s) to match. When
+ *                                      null, slug lookups default to
+ *                                      page/post but numeric IDs resolve any
+ *                                      public/REST-visible post type, so CPT
+ *                                      entries created through this bridge
+ *                                      stay readable and updatable by ID.
+ */
+function nova_divi_resolve_page( $id_or_slug, $post_types = null ) {
+    $id_or_slug     = trim( (string) $id_or_slug );
+    $explicit_types = null !== $post_types && array() !== (array) $post_types;
+    $post_types     = $explicit_types ? (array) $post_types : array( 'page', 'post' );
 
     // Numeric ID.
     if ( '' !== $id_or_slug && ctype_digit( $id_or_slug ) ) {
         $post = get_post( (int) $id_or_slug );
-        if ( $post && 'trash' !== $post->post_status && in_array( $post->post_type, $post_types, true ) ) {
-            return $post;
+        if ( $post && 'trash' !== $post->post_status ) {
+            $type_ok = $explicit_types
+                ? in_array( $post->post_type, $post_types, true )
+                : ( in_array( $post->post_type, $post_types, true ) || nova_divi_is_bridge_manageable_post_type( $post->post_type ) );
+
+            if ( $type_ok ) {
+                return $post;
+            }
         }
     }
 
@@ -523,7 +547,8 @@ function nova_divi_list_pages( $request ) {
  * GET /pages/{id-or-slug} – single page + outline.
  */
 function nova_divi_get_page( $request ) {
-    $post = nova_divi_resolve_page( $request['id_or_slug'] );
+    $requested_types = $request->get_param( 'post_type' );
+    $post            = nova_divi_resolve_page( $request['id_or_slug'], $requested_types ? (array) $requested_types : null );
     if ( ! $post ) {
         return new WP_Error( 'not_found', 'Page not found', array( 'status' => 404 ) );
     }
@@ -845,7 +870,8 @@ function nova_divi_create_page( $request ) {
  * PUT/PATCH /pages/{id-or-slug} – update.
  */
 function nova_divi_update_page( $request ) {
-    $post = nova_divi_resolve_page( $request['id_or_slug'] );
+    $requested_types = $request->get_param( 'post_type' );
+    $post            = nova_divi_resolve_page( $request['id_or_slug'], $requested_types ? (array) $requested_types : null );
     if ( ! $post ) {
         return new WP_Error( 'not_found', 'Page not found', array( 'status' => 404 ) );
     }

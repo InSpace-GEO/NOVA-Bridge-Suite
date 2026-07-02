@@ -9,7 +9,8 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 function nova_divi_permission_check( $request ) {
     if ( $request instanceof WP_REST_Request && $request->has_param( 'id_or_slug' ) ) {
-        $post = nova_divi_resolve_page( $request['id_or_slug'] );
+        $requested_types = $request->get_param( 'post_type' );
+        $post            = nova_divi_resolve_page( $request['id_or_slug'], $requested_types ? (array) $requested_types : null );
         if ( $post ) {
             return current_user_can( 'edit_post', $post->ID );
         }
@@ -124,6 +125,11 @@ add_action(
                         'text_map'         => array(
                             'type'    => 'boolean',
                             'default' => false,
+                        ),
+                        // Optional CPT hint for slug lookups (numeric IDs
+                        // resolve any public/REST-visible post type).
+                        'post_type'        => array(
+                            'type' => 'string',
                         ),
                     ),
                 ),
