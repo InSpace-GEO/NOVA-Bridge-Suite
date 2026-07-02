@@ -51,6 +51,99 @@ function nova_divi_get_request_json_params_safe( WP_REST_Request $request ) {
     );
 }
 
+/**
+ * Resolve the effective post type from request params (handles the `type`
+ * alias and the `service` convenience mapping the same way create does).
+ */
+function nova_divi_resolve_request_post_type( $params ) {
+    $post_type = isset( $params['post_type'] ) ? $params['post_type'] : null;
+    if ( ( null === $post_type || '' === trim( (string) $post_type ) ) && isset( $params['type'] ) ) {
+        $post_type = $params['type'];
+    }
+    if ( ! is_string( $post_type ) || '' === trim( $post_type ) ) {
+        $post_type = 'page';
+    }
+    if ( 'service' === strtolower( trim( $post_type ) ) ) {
+        $post_type = 'page';
+    }
+    return $post_type;
+}
+
+/**
+ * Validate post_type / status / author against the current user's
+ * capabilities. The route permission callback can't see values smuggled in
+ * via the `type` alias or the nested `content` JSON payload, so this runs
+ * again server-side after the payload is fully merged.
+ *
+ * @param  array        $params Merged request params.
+ * @param  WP_Post|null $post   Existing post on update, null on create.
+ * @return array|WP_Error       Possibly-adjusted params, or an error.
+ */
+function nova_divi_validate_write_request( $params, $post = null ) {
+    if ( $post instanceof WP_Post ) {
+        $post_type = $post->post_type;
+    } else {
+        $post_type = nova_divi_resolve_request_post_type( $params );
+    }
+
+    if ( ! post_type_exists( $post_type ) ) {
+        return new WP_Error(
+            'nova_divi_invalid_post_type',
+            sprintf( 'Unknown post type "%s".', $post_type ),
+            array( 'status' => 400 )
+        );
+    }
+
+    $pto = get_post_type_object( $post_type );
+
+    if ( $post instanceof WP_Post ) {
+        if ( ! current_user_can( 'edit_post', $post->ID ) ) {
+            return new WP_Error(
+                'nova_divi_forbidden',
+                'You are not allowed to edit this post.',
+                array( 'status' => 403 )
+            );
+        }
+    } elseif ( ! current_user_can( $pto->cap->edit_posts ) ) {
+        return new WP_Error(
+            'nova_divi_forbidden',
+            sprintf( 'You are not allowed to create content of type "%s".', $post_type ),
+            array( 'status' => 403 )
+        );
+    }
+
+    if ( isset( $params['status'] ) && '' !== trim( (string) $params['status'] ) ) {
+        $status  = (string) $params['status'];
+        $allowed = array( 'draft', 'publish', 'pending', 'private', 'future' );
+
+        if ( ! in_array( $status, $allowed, true ) ) {
+            return new WP_Error(
+                'nova_divi_invalid_status',
+                sprintf( 'Invalid status "%s". Allowed: %s.', $status, implode( ', ', $allowed ) ),
+                array( 'status' => 400 )
+            );
+        }
+
+        if ( in_array( $status, array( 'publish', 'future', 'private' ), true ) && ! current_user_can( $pto->cap->publish_posts ) ) {
+            return new WP_Error(
+                'nova_divi_forbidden_publish',
+                sprintf( 'You are not allowed to publish content of type "%s".', $post_type ),
+                array( 'status' => 403 )
+            );
+        }
+    }
+
+    // Assigning another author requires edit_others capability; drop silently.
+    if ( ! empty( $params['author'] ) && is_numeric( $params['author'] )
+        && (int) $params['author'] !== get_current_user_id()
+        && ! current_user_can( $pto->cap->edit_others_posts )
+    ) {
+        unset( $params['author'] );
+    }
+
+    return $params;
+}
+
 /* ----------------------------------------------------------------------------
  * Divi meta / finalization
  * ------------------------------------------------------------------------- */
@@ -538,19 +631,17 @@ function nova_divi_create_page( $request ) {
         }
     }
 
+    // Re-validate capabilities against the fully-merged payload (the route
+    // permission callback can't see `type` or nested-content values).
+    $params = nova_divi_validate_write_request( $params, null );
+    if ( is_wp_error( $params ) ) {
+        return $params;
+    }
+
     $clone_mode  = ! empty( $params['source_page_id'] ) || ! empty( $params['source_page'] );
     $source_post = null;
 
-    $post_type = isset( $params['post_type'] ) ? $params['post_type'] : 'page';
-    if ( isset( $params['type'] ) && '' === trim( (string) $post_type ) ) {
-        $post_type = $params['type'];
-    } elseif ( isset( $params['type'] ) && ! isset( $params['post_type'] ) ) {
-        $post_type = $params['type'];
-    }
-
-    if ( is_string( $post_type ) && 'service' === strtolower( $post_type ) ) {
-        $post_type = 'page';
-    }
+    $post_type = nova_divi_resolve_request_post_type( $params );
 
     $remove_paths    = ! empty( $params['remove_paths'] ) ? (array) $params['remove_paths'] : array();
     $text_updates    = ! empty( $params['text_updates'] ) ? (array) $params['text_updates'] : array();
@@ -645,7 +736,11 @@ function nova_divi_create_page( $request ) {
     }
 
     // Auto-split single huge section into multiple <h2>-based sections.
-    if ( ! empty( $append_sections ) && is_array( $append_sections ) && function_exists( 'nova_divi_expand_single_html_section_to_multiple' ) ) {
+    // Template mode only (parity with the WPBakery module) unless the caller
+    // opts in with split_sections — from-scratch creates keep their sections
+    // exactly as sent.
+    $should_split = $using_template || ( isset( $params['split_sections'] ) && nova_divi_to_bool( $params['split_sections'], false ) );
+    if ( $should_split && ! empty( $append_sections ) && is_array( $append_sections ) && function_exists( 'nova_divi_expand_single_html_section_to_multiple' ) ) {
         $append_sections = nova_divi_expand_single_html_section_to_multiple( $append_sections, $postarr['post_title'] );
     }
 
@@ -758,6 +853,11 @@ function nova_divi_update_page( $request ) {
     $params = nova_divi_get_request_json_params_safe( $request );
     if ( is_wp_error( $params ) ) {
         return $params; // 400 instead of fatal 500.
+    }
+
+    $params = nova_divi_validate_write_request( $params, $post );
+    if ( is_wp_error( $params ) ) {
+        return $params;
     }
 
     $post_id = $post->ID;

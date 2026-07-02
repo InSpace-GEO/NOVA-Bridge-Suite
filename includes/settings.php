@@ -324,8 +324,9 @@ function nova_bridge_suite_get_recommended_modules(): array {
         ],
         'pagebuilder_divi'       => [
             'label'       => 'Enable NOVA Divi Bridge',
-            'description' => 'Divi Builder detected. Enable the bridge to update Divi pages.',
+            'description' => 'Divi detected. Enable the bridge to update Divi pages.',
             'plugins'     => [ 'divi-builder/divi-builder.php' ],
+            'themes'      => [ 'Divi', 'Extra' ],
         ],
         'gutenberg_bridge'       => [
             'label'       => 'Enable NOVA Gutenberg Bridge',
@@ -345,7 +346,15 @@ function nova_bridge_suite_get_recommended_modules(): array {
     ];
 
     foreach ( $plugin_candidates as $key => $candidate ) {
-        if ( ! nova_bridge_suite_has_active_plugin( $candidate['plugins'] ?? [] ) ) {
+        $detected = nova_bridge_suite_has_active_plugin( $candidate['plugins'] ?? [] );
+
+        // Some builders (Divi, Extra) ship as a theme, not a plugin.
+        if ( ! $detected && ! empty( $candidate['themes'] ) && function_exists( 'get_template' ) ) {
+            $template = (string) get_template();
+            $detected = '' !== $template && in_array( $template, (array) $candidate['themes'], true );
+        }
+
+        if ( ! $detected ) {
             continue;
         }
 

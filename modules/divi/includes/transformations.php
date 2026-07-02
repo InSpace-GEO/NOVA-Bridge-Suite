@@ -320,11 +320,14 @@ function nova_divi_apply_transformations( $shortcodes, $remove_paths, $text_upda
 
     $compact = nova_divi_parse_shortcodes_to_compact( $shortcodes );
 
-    if ( ! empty( $remove_paths ) ) {
-        $compact = nova_divi_remove_paths_from_compact( $compact, $remove_paths );
-    }
+    // Text updates FIRST: both path sets come from the same GET outline, and
+    // removing nodes re-indexes siblings — applying removals first would make
+    // the text_update paths land on the wrong nodes.
     if ( ! empty( $text_updates ) ) {
         $compact = nova_divi_apply_text_updates_to_compact( $compact, $text_updates );
+    }
+    if ( ! empty( $remove_paths ) ) {
+        $compact = nova_divi_remove_paths_from_compact( $compact, $remove_paths );
     }
 
     // Normalize (fix divider-with-content issues before serializing).
@@ -386,12 +389,17 @@ function nova_divi_remove_paths_from_compact( $compact, $paths ) {
 /**
  * Apply text_updates to compact tree via path.
  *
- * - et_pb_button: update attributes["button_text"]
- * - et_pb_heading: update attributes["title"]
- * - et_pb_fullwidth_header: update attributes["title"]
- * - explicit {field: "..."} in the update: set that attribute (plain text)
+ * The default target field per tag comes from
+ * nova_divi_default_text_field_for_tag() — the SAME map the outline/text_map
+ * extraction uses, so an update always writes to the field the client saw:
+ * - et_pb_button: attributes["button_text"]
+ * - et_pb_accordion_item / et_pb_toggle / et_pb_blurb / et_pb_cta /
+ *   et_pb_heading / et_pb_fullwidth_header / ...: attributes["title"] etc.
+ * - body-text modules (et_pb_text, ...): inner body HTML
+ * - explicit {field: "..."} overrides: "body"/"content" targets the inner
+ *   body (e.g. an accordion item's answer), any other name targets that
+ *   attribute (plain text)
  * - image/divider modules: skipped (no text)
- * - everything else: update inner body HTML
  *
  * Attribute values are stored raw here; the serializer applies Divi's
  * percent-encoding (%22 / %91 / %93) when building the shortcode string.
@@ -416,20 +424,21 @@ function nova_divi_apply_text_updates_to_compact( $compact, $updates ) {
 
             if ( array_key_exists( $path, $map ) ) {
                 $new_text = $map[ $path ]['text'];
-                $field    = $map[ $path ]['field'];
+                $field    = strtolower( trim( $map[ $path ]['field'] ) );
                 $tag      = isset( $node['tag'] ) ? (string) $node['tag'] : '';
 
                 if ( ! isset( $node['attributes'] ) || ! is_array( $node['attributes'] ) ) {
                     $node['attributes'] = array();
                 }
 
-                if ( '' !== $field ) {
+                $default_field = nova_divi_default_text_field_for_tag( $tag );
+
+                if ( 'body' === $field || 'content' === $field ) {
+                    $node['text'] = wp_kses_post( (string) $new_text );
+                } elseif ( '' !== $field ) {
                     $node['attributes'][ sanitize_key( $field ) ] = wp_strip_all_tags( $new_text );
-                } elseif ( 'et_pb_button' === $tag ) {
-                    $node['attributes']['button_text'] = wp_strip_all_tags( $new_text );
-                    $node['text']                      = '';
-                } elseif ( 'et_pb_heading' === $tag || 'et_pb_fullwidth_header' === $tag ) {
-                    $node['attributes']['title'] = wp_strip_all_tags( $new_text );
+                } elseif ( null !== $default_field ) {
+                    $node['attributes'][ $default_field ] = wp_strip_all_tags( $new_text );
                 } elseif ( in_array( $tag, array( 'et_pb_image', 'et_pb_fullwidth_image', 'et_pb_divider' ), true ) ) {
                     // Never inject body content into images/dividers.
                 } else {
@@ -449,45 +458,43 @@ function nova_divi_apply_text_updates_to_compact( $compact, $updates ) {
 }
 
 /**
- * Clear visible text from a node (keeps structure/attributes not related to text).
+ * Whether an et_pb_text node is a CONTENT slot (article body) as opposed to
+ * template chrome (hero subtitle, CTA copy, footer note, ...).
+ *
+ * A content slot is an et_pb_text that is empty (placeholder), contains an
+ * h2/h3/h4 heading, or holds paragraph-scale text. Short heading-less texts
+ * are template chrome: they are neither filled nor cleared, so cloned
+ * branding copy survives — use text_updates/remove_paths to change those.
  */
-function nova_divi_clear_visible_text_in_node( &$node ) {
-    if ( ! is_array( $node ) ) {
-        return;
+function nova_divi_is_content_slot_node( $node ) {
+    if ( ! is_array( $node ) || ! isset( $node['tag'] ) || 'et_pb_text' !== (string) $node['tag'] ) {
+        return false;
     }
 
-    if ( isset( $node['text'] ) ) {
-        $node['text'] = '';
+    $body    = isset( $node['text'] ) ? (string) $node['text'] : '';
+    $visible = trim( wp_strip_all_tags( $body ) );
+
+    if ( '' === $visible ) {
+        return true; // Empty placeholder.
+    }
+    if ( preg_match( '/<h[234]\b/i', $body ) ) {
+        return true; // Heading-led content block.
     }
 
-    if ( ! isset( $node['attributes'] ) || ! is_array( $node['attributes'] ) ) {
-        return;
-    }
-
-    $keys = array(
-        'title',
-        'subhead',
-        'heading',
-        'button_text',
-        'author',
-        'name',
-    );
-
-    foreach ( $keys as $k ) {
-        if ( array_key_exists( $k, $node['attributes'] ) ) {
-            $node['attributes'][ $k ] = '';
-        }
-    }
+    return strlen( $visible ) >= 240; // Paragraph-scale body text.
 }
 
 /**
  * Replace template content slots with sections while preserving the template
  * layout (clone mode).
  *
- * Divi version: content slots are et_pb_text modules. Sections are written
- * into them sequentially (heading as <h2> HTML inside the body). Remaining
- * template text modules are cleared afterwards so no stale example content
- * survives. Sections that don't fit are returned for appending.
+ * Divi version: content slots are et_pb_text modules that pass
+ * nova_divi_is_content_slot_node(). Sections are written into them
+ * sequentially (heading as <h2> HTML inside the body). Remaining unfilled
+ * content slots are removed afterwards (and containers they leave empty are
+ * pruned) so no stale example content or empty bands survive. Sections that
+ * don't fit — plus FAQ sections, which need an accordion — are returned for
+ * appending.
  */
 function nova_divi_replace_template_slots_with_sections( $shortcodes, $sections, $page_title = '', $clear_remaining = true ) {
     $shortcodes = (string) $shortcodes;
@@ -537,9 +544,7 @@ function nova_divi_replace_template_slots_with_sections( $shortcodes, $sections,
 
     $walk_fill = function ( &$nodes ) use ( &$walk_fill, $fillable, &$section_i, $page_title_norm, &$first_slot_filled ) {
         foreach ( $nodes as &$node ) {
-            $tag = isset( $node['tag'] ) ? (string) $node['tag'] : '';
-
-            if ( 'et_pb_text' === $tag && $section_i < count( $fillable ) ) {
+            if ( nova_divi_is_content_slot_node( $node ) && $section_i < count( $fillable ) ) {
                 $sec_title = $fillable[ $section_i ]['title'];
                 $sec_body  = $fillable[ $section_i ]['body'];
                 $sec_tag   = $fillable[ $section_i ]['title_tag'];
@@ -576,21 +581,36 @@ function nova_divi_replace_template_slots_with_sections( $shortcodes, $sections,
     $walk_fill( $compact );
 
     if ( $clear_remaining ) {
-        $walk_clear = function ( &$nodes ) use ( &$walk_clear ) {
-            foreach ( $nodes as &$node ) {
-                $tag = isset( $node['tag'] ) ? (string) $node['tag'] : '';
+        // Remove unfilled content slots entirely (stale example article text),
+        // then prune containers that end up with no modules so the page
+        // doesn't render empty section bands. Template chrome (short texts,
+        // blurbs, CTAs, buttons, images) is intentionally left untouched.
+        $walk_prune = function ( $nodes ) use ( &$walk_prune ) {
+            $result = array();
 
-                if ( 'et_pb_text' === $tag && empty( $node['__nova_keep'] ) ) {
-                    nova_divi_clear_visible_text_in_node( $node );
+            foreach ( $nodes as $node ) {
+                if ( nova_divi_is_content_slot_node( $node ) && empty( $node['__nova_keep'] ) ) {
+                    continue;
                 }
 
                 if ( ! empty( $node['children'] ) && is_array( $node['children'] ) ) {
-                    $walk_clear( $node['children'] );
+                    $node['children'] = $walk_prune( $node['children'] );
+
+                    // Drop structural containers left without any children.
+                    $tag      = isset( $node['tag'] ) ? (string) $node['tag'] : '';
+                    $has_text = isset( $node['text'] ) && '' !== trim( (string) $node['text'] );
+                    if ( empty( $node['children'] ) && ! $has_text && nova_divi_is_structural_container_tag( $tag ) ) {
+                        continue;
+                    }
                 }
+
+                $result[] = $node;
             }
+
+            return $result;
         };
 
-        $walk_clear( $compact );
+        $compact = $walk_prune( $compact );
     }
 
     // Normalize before serialize.

@@ -105,7 +105,6 @@ function nova_divi_clone_post_meta( $source_id, $target_id, $skip_keys = array()
         '_wp_old_slug',
         '_wp_trash_meta_status',
         '_wp_trash_meta_time',
-        '_thumbnail_id',
     );
 
     if ( ! empty( $skip_keys ) ) {
@@ -195,6 +194,66 @@ function nova_divi_prepare_meta_updates( $params ) {
     }
 
     return $meta;
+}
+
+/**
+ * The attribute that carries a module's primary visible text, or null when
+ * the text lives in the module body.
+ *
+ * This single map keeps the outline/text_map extraction and text_updates
+ * application symmetric: whatever field the client SAW in the outline is the
+ * field a text_update for that path writes back to.
+ */
+function nova_divi_default_text_field_for_tag( $tag ) {
+    switch ( (string) $tag ) {
+        case 'et_pb_button':
+            return 'button_text';
+        case 'et_pb_heading':
+        case 'et_pb_fullwidth_header':
+        case 'et_pb_blurb':
+        case 'et_pb_cta':
+        case 'et_pb_accordion_item':
+        case 'et_pb_toggle':
+        case 'et_pb_number_counter':
+        case 'et_pb_pricing_table':
+            return 'title';
+        case 'et_pb_slide':
+            return 'heading';
+        case 'et_pb_team_member':
+            return 'name';
+        default:
+            return null; // Text lives in the module body (et_pb_text, et_pb_code, et_pb_testimonial, ...).
+    }
+}
+
+/**
+ * Divi structural containers: the only tags whose inner content is parsed
+ * into child nodes. Every other module's body is kept as opaque text so
+ * nested third-party shortcodes ([gallery], [caption], ...) and their
+ * surrounding HTML survive a parse -> serialize round-trip untouched.
+ */
+function nova_divi_is_structural_container_tag( $tag ) {
+    return in_array(
+        (string) $tag,
+        array(
+            'et_pb_section',
+            'et_pb_row',
+            'et_pb_row_inner',
+            'et_pb_column',
+            'et_pb_column_inner',
+            'et_pb_accordion',
+            'et_pb_tabs',
+            'et_pb_slider',
+            'et_pb_video_slider',
+            'et_pb_pricing_tables',
+            'et_pb_counters',
+            'et_pb_contact_form',
+            'et_pb_social_media_follow',
+            'et_pb_map',
+            'et_pb_fullwidth_slider',
+        ),
+        true
+    );
 }
 
 /**

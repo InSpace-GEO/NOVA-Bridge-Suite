@@ -36,10 +36,10 @@ JSON body (all keys optional unless noted):
 | `status` | `draft` (default on create) / `publish` / ... |
 | `post_type` | `page` (default) or `post` / CPT |
 | `author`, `parent` / `parent_id`, `excerpt` | Standard post fields |
-| `source_page_id` / `source_page` | Clone this post's Divi layout + meta as the template |
-| `text_updates` | `[{path, text}]` — replace module text at outline paths. Buttons update `button_text`; add `"field": "title"` to target a named attribute instead of the body |
-| `remove_paths` | `["0.1", ...]` — delete modules at outline paths |
-| `append_sections` | `[{title, body, title_tag, type?}]` — each becomes a section > row > column with the heading as `<h2>` HTML inside an `et_pb_text`. `type: "faq"` renders an `et_pb_accordion` from `<h3>Q</h3><p>A</p>` pairs in `body`. A single section whose body holds multiple `<h2>` blocks is auto-split into one section per `<h2>` (FAQ headings auto-detected) |
+| `source_page_id` / `source_page` | Clone this post's Divi layout + meta (incl. featured image) as the template |
+| `text_updates` | `[{path, text, field?}]` — replace module text at outline paths. Writes to **the same field the outline showed**: body for `et_pb_text`, `title` for accordion items / toggles / blurbs / CTAs / headings, `button_text` for buttons, `heading` for slides, `name` for team members. Override with `field`: `"body"`/`"content"` targets the inner body (e.g. an accordion item's answer), any other name targets that attribute |
+| `remove_paths` | `["0.1", ...]` — delete modules at outline paths. Safe to combine with `text_updates` in one request: both use the paths from the same GET (text updates apply first) |
+| `append_sections` | `[{title, body, title_tag, type?}]` — each becomes a section > row > column with the heading as `<h2>` HTML inside an `et_pb_text`. `type: "faq"` renders an `et_pb_accordion` from `<h3>Q</h3><p>A</p>` pairs in `body`. In clone mode (and on updates), a single section whose body holds multiple `<h2>` blocks is auto-split into one section per `<h2>` (FAQ headings auto-detected); for from-scratch creates pass `split_sections: true` to opt in |
 | `append_html` | One extra text module in its own section |
 | `layout.raw_shortcodes` / `layout.compact` | Replace the layout wholesale (power use) |
 | `keep_source_content` | Clone mode: `true` appends sections instead of replacing the template's text slots |
@@ -48,7 +48,9 @@ JSON body (all keys optional unless noted):
 | `page_layout` | `et_full_width_page` / `et_right_sidebar` / `et_left_sidebar` / `et_no_sidebar` |
 | `show_title`, `old_content`, `publish_builder` | Divi extras: hide/show default title, plain-HTML builder-off fallback, force the builder flag |
 
-Clone mode (`source_page_id` + `append_sections`) writes the sections **into the template's `et_pb_text` slots** in document order (the first slot skips a heading equal to the page title), clears leftover example text, and appends whatever didn't fit — FAQ sections are always appended as accordions.
+Clone mode (`source_page_id` + `append_sections`) writes the sections **into the template's content slots** in document order. A content slot is an `et_pb_text` that is empty, heading-led (`h2`–`h4`), or paragraph-scale (≥ 240 visible chars) — short heading-less texts (hero subtitles, CTA copy) are template chrome and are left untouched; edit those via `text_updates`. The first slot skips a heading equal to the page title. Unfilled content slots are removed and containers they leave empty are pruned, so no stale example text or empty section bands survive. Sections that don't fit are appended — FAQ sections are always appended as accordions.
+
+Capability model: the effective post type (including the `type` alias and values nested in a JSON `content` payload) is re-validated server-side — creating requires that type's `edit_posts` capability, `publish`/`future`/`private` status requires its `publish_posts`, and assigning another `author` requires `edit_others_posts` (silently dropped otherwise).
 
 ## Divi format notes (for maintainers)
 

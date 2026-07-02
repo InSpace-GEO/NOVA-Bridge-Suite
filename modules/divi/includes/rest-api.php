@@ -18,12 +18,17 @@ function nova_divi_permission_check( $request ) {
     $post_type = '';
     if ( $request instanceof WP_REST_Request ) {
         $post_type = $request->get_param( 'post_type' );
+        if ( null === $post_type || '' === $post_type ) {
+            $post_type = $request->get_param( 'type' ); // Body alias.
+        }
     }
 
     if ( is_array( $post_type ) ? in_array( 'post', $post_type, true ) : 'post' === $post_type ) {
         return current_user_can( 'edit_posts' );
     }
 
+    // Coarse gate only — nova_divi_validate_write_request() re-checks the
+    // exact post type, status, and author caps against the merged payload.
     return current_user_can( 'edit_pages' );
 }
 

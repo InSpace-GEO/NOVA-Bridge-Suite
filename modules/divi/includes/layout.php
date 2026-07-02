@@ -140,11 +140,21 @@ if ( ! function_exists( 'nova_divi_parse_shortcodes_to_compact' ) ) {
 
             $self_closing = ( isset( $m[4] ) && '/' === $m[4] );
 
-            $children = nova_divi_parse_shortcodes_to_compact( $inner );
+            // Only structural containers get their inner content parsed into
+            // child nodes. Module bodies (et_pb_text etc.) are kept as opaque
+            // text so nested third-party shortcodes and the HTML around them
+            // survive re-serialization untouched.
+            $children = array();
+            $text     = '';
 
-            // Keep text only on leaf nodes (no children).
-            $text = '';
-            if ( empty( $children ) && '' !== trim( $inner ) ) {
+            if ( nova_divi_is_structural_container_tag( $tag ) ) {
+                $children = nova_divi_parse_shortcodes_to_compact( $inner );
+
+                // Keep text only when the container has no parsed children.
+                if ( empty( $children ) && '' !== trim( $inner ) ) {
+                    $text = trim( $inner );
+                }
+            } elseif ( '' !== trim( $inner ) ) {
                 $text = trim( $inner );
             }
 
@@ -217,39 +227,21 @@ if ( ! function_exists( 'nova_divi_build_outline_from_compact' ) ) {
                 if ( $is_text_node ) {
                     $text = isset( $node['text'] ) ? (string) $node['text'] : '';
 
-                    // Visible text carried in attributes (Divi encodes " [ ] as %22 %91 %93).
+                    // Visible text carried in attributes (Divi encodes " [ ] as
+                    // %22 %91 %93). The default field map is shared with
+                    // text_updates so what the client sees here is the field an
+                    // update for this path writes back to.
                     $attr_text_candidates = array();
-                    switch ( $tag ) {
-                        case 'et_pb_button':
-                            $attr_text_candidates = array( 'button_text' );
-                            break;
-                        case 'et_pb_heading':
-                            $attr_text_candidates = array( 'title' );
-                            break;
-                        case 'et_pb_blurb':
-                        case 'et_pb_cta':
-                        case 'et_pb_accordion_item':
-                        case 'et_pb_toggle':
-                        case 'et_pb_number_counter':
-                        case 'et_pb_pricing_table':
-                            $attr_text_candidates = array( 'title' );
-                            break;
-                        case 'et_pb_fullwidth_header':
-                            $attr_text_candidates = array( 'title', 'subhead' );
-                            break;
-                        case 'et_pb_testimonial':
-                            $attr_text_candidates = array( 'author' );
-                            break;
-                        case 'et_pb_slide':
-                            $attr_text_candidates = array( 'heading' );
-                            break;
-                        case 'et_pb_image':
-                        case 'et_pb_fullwidth_image':
-                            $attr_text_candidates = array( 'title_text', 'alt' );
-                            break;
-                        case 'et_pb_team_member':
-                            $attr_text_candidates = array( 'name' );
-                            break;
+
+                    $default_field = nova_divi_default_text_field_for_tag( $tag );
+                    if ( null !== $default_field ) {
+                        $attr_text_candidates = array( $default_field );
+                        if ( 'et_pb_fullwidth_header' === $tag ) {
+                            $attr_text_candidates[] = 'subhead';
+                        }
+                    } elseif ( 'et_pb_image' === $tag || 'et_pb_fullwidth_image' === $tag ) {
+                        // Display-only: images have no updatable text.
+                        $attr_text_candidates = array( 'title_text', 'alt' );
                     }
 
                     foreach ( $attr_text_candidates as $attr_key ) {
