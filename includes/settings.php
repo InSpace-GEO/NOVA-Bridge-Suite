@@ -22,6 +22,10 @@ function nova_bridge_suite_module_definitions(): array {
             'path'                 => 'modules/avada/nova-avada-bridge.php',
             'standalone_filenames' => [ 'nova-avada-bridge.php' ],
         ],
+        'pagebuilder_beaver'     => [
+            'path'                 => 'modules/beaver/beaver-bridge.php',
+            'standalone_filenames' => [ 'beaver-bridge.php', 'nova-beaver-bridge.php' ],
+        ],
         'gutenberg_bridge'       => [
             'path'                 => 'modules/gutenberg/nova-gutenberg-bridge.php',
             'standalone_filenames' => [ 'nova-gutenberg-bridge.php' ],
@@ -318,6 +322,11 @@ function nova_bridge_suite_get_recommended_modules(): array {
             'description' => 'Avada detected. Enable the bridge to update Avada Builder pages.',
             'plugins'     => [ 'fusion-builder/fusion-builder.php', 'avada-builder/avada-builder.php' ],
         ],
+        'pagebuilder_beaver'     => [
+            'label'       => 'Enable NOVA Beaver Builder Bridge',
+            'description' => 'Beaver Builder detected. Enable the bridge to update Beaver Builder pages.',
+            'plugins'     => [ 'bb-plugin/fl-builder.php', 'beaver-builder-lite-version/fl-builder.php' ],
+        ],
         'gutenberg_bridge'       => [
             'label'       => 'Enable NOVA Gutenberg Bridge',
             'description' => 'Gutenberg detected. Enable the bridge to allow NOVA to update Gutenberg pages.',
@@ -606,6 +615,19 @@ function nova_bridge_suite_register_settings(): void {
             'key'         => 'gutenberg_bridge',
             'label'       => 'Enable NOVA Gutenberg Bridge',
             'description' => 'REST bridge for Gutenberg pages.',
+        ]
+    );
+
+    add_settings_field(
+        'nova_bridge_beaver',
+        'Beaver Builder',
+        'nova_bridge_suite_render_checkbox_field',
+        'nova-settings',
+        'nova_bridge_pagebuilders',
+        [
+            'key'         => 'pagebuilder_beaver',
+            'label'       => 'Enable NOVA Beaver Builder Bridge',
+            'description' => 'REST bridge for Beaver Builder pages.',
         ]
     );
 

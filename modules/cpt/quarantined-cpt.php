@@ -708,6 +708,89 @@ final class Plugin {
 	}
 
 	/**
+	 * Renders the site header for managed CPT templates.
+	 */
+	public static function render_theme_header(): void {
+		if ( self::should_render_block_theme_shell() ) {
+			echo '<!DOCTYPE html>' . "\n";
+			echo '<html ';
+			language_attributes();
+			echo '>' . "\n";
+			echo '<head>' . "\n";
+			echo '<meta charset="' . esc_attr( get_bloginfo( 'charset' ) ) . '">' . "\n";
+			wp_head();
+			echo '</head>' . "\n";
+			echo '<body ';
+			body_class();
+			echo '>' . "\n";
+
+			if ( function_exists( 'wp_body_open' ) ) {
+				wp_body_open();
+			}
+
+			echo '<div class="wp-site-blocks">' . "\n";
+			self::render_block_theme_part( 'header', 'header' );
+			return;
+		}
+
+		get_header();
+	}
+
+	/**
+	 * Renders the site footer for managed CPT templates.
+	 */
+	public static function render_theme_footer(): void {
+		if ( self::should_render_block_theme_shell() ) {
+			self::render_block_theme_part( 'footer', 'footer' );
+			echo '</div>' . "\n";
+			wp_footer();
+			echo '</body>' . "\n";
+			echo '</html>' . "\n";
+			return;
+		}
+
+		get_footer();
+	}
+
+	/**
+	 * Determines whether core block-theme template parts can be rendered directly.
+	 */
+	private static function should_render_block_theme_shell(): bool {
+		return function_exists( 'wp_is_block_theme' )
+			&& wp_is_block_theme()
+			&& function_exists( 'do_blocks' );
+	}
+
+	/**
+	 * Renders a block theme template part with a semantic wrapper.
+	 *
+	 * @param string $slug     Template part slug.
+	 * @param string $tag_name HTML tag name for the template-part wrapper.
+	 */
+	private static function render_block_theme_part( string $slug, string $tag_name ): void {
+		if ( 'header' === $slug && function_exists( 'block_header_area' ) ) {
+			block_header_area();
+			return;
+		}
+
+		if ( 'footer' === $slug && function_exists( 'block_footer_area' ) ) {
+			block_footer_area();
+			return;
+		}
+
+		$attrs = wp_json_encode(
+			[
+				'slug'    => $slug,
+				'tagName' => $tag_name,
+			]
+		);
+
+		if ( is_string( $attrs ) ) {
+			echo do_blocks( '<!-- wp:template-part ' . $attrs . ' /-->' );
+		}
+	}
+
+	/**
 	 * Hooks plugin internals into WordPress.
 	 */
 	private function __construct() {
@@ -3753,6 +3836,12 @@ final class Plugin {
 			'.menu-wrapper',
 			'.elementor-location-header',
 			'.elementor-location-top-bar',
+			'header.wp-block-template-part',
+			'footer.wp-block-template-part',
+			'nav.wp-block-template-part',
+			'.wp-block-template-part:has(header)',
+			'.wp-block-template-part:has(footer)',
+			'.wp-block-template-part:has(nav)',
 			'nav',
 			'.quarantined-keep',
 			'a.skip-link',
@@ -11401,6 +11490,12 @@ final class Plugin {
 			'.elementor-section-wrap',
 			'.elementor-kit__wrapper',
 			'.elementor-location-footer',
+			'header.wp-block-template-part',
+			'footer.wp-block-template-part',
+			'nav.wp-block-template-part',
+			'.wp-block-template-part:has(header)',
+			'.wp-block-template-part:has(footer)',
+			'.wp-block-template-part:has(nav)',
 			'.wp-site-blocks',
 			'#wp-site-blocks',
 		];

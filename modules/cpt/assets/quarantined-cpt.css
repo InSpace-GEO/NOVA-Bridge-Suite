@@ -46,6 +46,12 @@ body.quarantined-cpt-bodyclean > .elementor,
 body.quarantined-cpt-bodyclean > .elementor-section-wrap,
 body.quarantined-cpt-bodyclean > .elementor-kit__wrapper,
 body.quarantined-cpt-bodyclean > .elementor-location-footer,
+body.quarantined-cpt-bodyclean > header.wp-block-template-part,
+body.quarantined-cpt-bodyclean > footer.wp-block-template-part,
+body.quarantined-cpt-bodyclean > nav.wp-block-template-part,
+body.quarantined-cpt-bodyclean > .wp-block-template-part:has(header),
+body.quarantined-cpt-bodyclean > .wp-block-template-part:has(footer),
+body.quarantined-cpt-bodyclean > .wp-block-template-part:has(nav),
 body.quarantined-cpt-bodyclean > .wp-site-blocks,
 body.quarantined-cpt-bodyclean > #wp-site-blocks {
 	display: block !important;

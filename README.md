@@ -4,7 +4,7 @@
 - Requires at least: 6.0
 - Tested up to: 7.0
 - Requires PHP: 7.4
-- Stable tag: 2.5.13
+- Stable tag: 2.6.0
 - License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -39,13 +39,18 @@ This plugin is designed for NOVA. You can activate it without NOVA, but NOVA is 
 
 ### Will this replace my page builder?
 
-No. It works alongside builders like Avada, Elementor, WPBakery, and more. NOVA can update their content safely.
+No. It works alongside builders like Avada, Elementor, WPBakery, Beaver Builder, and more. NOVA can update their content safely.
 
 ### Does it work on WooCommerce sites?
 
 Yes, NOVA can navigate WooCommerce products and categories. If WooCommerce is active you can also enable the optional rich text field module for category pages - in case your category page template still needs this.
 
 ## Changelog
+
+### 2.6.0
+
+- Add Beaver Builder Bridge module: REST bridge (`nova-beaver/v1`) for creating, updating, cloning, and inspecting Beaver Builder pages. Supports clone-from-template workflows, path-based text updates, SEO metadata, featured images, and hardened appended sections that reuse safe layout/module prototypes from the source page.
+- Improve managed CPT templates on block themes by rendering native block header and footer template parts.
 
 ### 2.5.13
 

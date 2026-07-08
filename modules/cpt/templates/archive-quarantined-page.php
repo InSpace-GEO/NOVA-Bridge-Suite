@@ -10,7 +10,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // phpcs:disable WordPress.NamingConventions.PrefixAllGlobals
-get_header();
+\SEORAI\BodycleanCPT\Plugin::render_theme_header();
 
 $archive_title        = post_type_archive_title( '', false );
 $archive_description  = get_the_archive_description();
@@ -256,4 +256,4 @@ if ( $show_breadcrumbs ) {
 </main>
 <?php
 
-get_footer();
+\SEORAI\BodycleanCPT\Plugin::render_theme_footer();

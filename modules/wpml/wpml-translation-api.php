@@ -1,10 +1,5 @@
 <?php
-/**
- * Plugin Name: NOVA WPML Bridge
- * Description: Exposes REST endpoints for pushing translations into WPML.
- * Version: 1.1.14
- * Author: Hypernova Technologies
- */
+
 
 if (! defined('ABSPATH')) {
     exit;

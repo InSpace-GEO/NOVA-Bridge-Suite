@@ -10,7 +10,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // phpcs:disable WordPress.NamingConventions.PrefixAllGlobals
-get_header();
+\SEORAI\BodycleanCPT\Plugin::render_theme_header();
 
 $author              = get_queried_object();
 $author_id           = $author instanceof \WP_User ? $author->ID : 0;
@@ -286,4 +286,4 @@ if ( $show_breadcrumbs ) {
 </main>
 <?php
 
-get_footer();
+\SEORAI\BodycleanCPT\Plugin::render_theme_footer();
