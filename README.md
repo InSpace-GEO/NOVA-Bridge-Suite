@@ -4,7 +4,7 @@
 - Requires at least: 6.0
 - Tested up to: 7.0
 - Requires PHP: 7.4
-- Stable tag: 2.6.0
+- Stable tag: 2.6.1
 - License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -46,6 +46,10 @@ No. It works alongside builders like Avada, Elementor, WPBakery, Beaver Builder,
 Yes, NOVA can navigate WooCommerce products and categories. If WooCommerce is active you can also enable the optional rich text field module for category pages - in case your category page template still needs this.
 
 ## Changelog
+
+### 2.6.1
+
+- Beaver Builder appended rich text can now be placed after or before a top-level row, and renders without inheriting template tab, animation, custom CSS/JS, or dark-section color styles.
 
 ### 2.6.0
 

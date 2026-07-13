@@ -4,7 +4,7 @@ Tags: seo, automation, content, rest-api, page builder
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.6.0
+Stable tag: 2.6.1
 License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -41,6 +41,9 @@ Yes. If WooCommerce is active you can enable the rich text field module for cate
 1. NOVA Settings screen with module toggles.
 
 == Changelog ==
+
+= 2.6.1 =
+* Beaver Builder appended rich text can now be placed after or before a top-level row, and renders without inheriting template tab, animation, custom CSS/JS, or dark-section color styles.
 
 = 2.6.0 =
 * Add Beaver Builder Bridge module: REST bridge (nova-beaver/v1) for creating, updating, cloning, and inspecting Beaver Builder pages. Supports clone-from-template workflows, path-based text updates, SEO metadata, featured images, and hardened appended sections that reuse safe layout/module prototypes from the source page.

@@ -95,6 +95,38 @@ function nova_bb_has_module_prototype( $prototypes, $module ) {
     return isset( $prototypes['modules'][ $module ] ) && is_object( $prototypes['modules'][ $module ] );
 }
 
+function nova_bb_clear_append_state( &$settings ) {
+    if ( ! is_object( $settings ) && ! is_array( $settings ) ) {
+        return;
+    }
+
+    foreach ( array( 'id', 'class', 'node_label', 'bb_css_code', 'bb_js_code' ) as $key ) {
+        nova_bb_setting_set( $settings, $key, '' );
+    }
+
+    nova_bb_setting_set( $settings, 'responsive_display', 'desktop,large,medium,mobile' );
+    nova_bb_setting_set( $settings, 'visibility_display', '' );
+    nova_bb_setting_set( $settings, 'visibility_logic', '[]' );
+
+    $animation = nova_bb_setting_get( $settings, 'animation', null );
+    if ( is_object( $animation ) || is_array( $animation ) ) {
+        nova_bb_setting_set( $animation, 'style', '' );
+        nova_bb_setting_set( $animation, 'delay', '0' );
+        nova_bb_setting_set( $animation, 'duration', '1' );
+        nova_bb_setting_set( $settings, 'animation', $animation );
+    }
+}
+
+function nova_bb_clear_append_colors( &$settings ) {
+    if ( ! is_object( $settings ) && ! is_array( $settings ) ) {
+        return;
+    }
+
+    foreach ( array( 'color', 'text_color', 'heading_color', 'link_color', 'hover_color' ) as $key ) {
+        nova_bb_setting_set( $settings, $key, '' );
+    }
+}
+
 function nova_bb_build_module_node( $module, $settings_pairs = array(), $prototypes = array() ) {
     $settings = isset( $prototypes['modules'][ $module ] )
         ? nova_bb_clone_layout_value( $prototypes['modules'][ $module ] )
@@ -109,6 +141,9 @@ function nova_bb_build_module_node( $module, $settings_pairs = array(), $prototy
     foreach ( (array) $settings_pairs as $key => $value ) {
         $settings->{$key} = $value;
     }
+
+    nova_bb_clear_append_state( $settings );
+    nova_bb_clear_append_colors( $settings );
 
     return array(
         'node_id'  => null,
@@ -157,6 +192,13 @@ function nova_bb_wrap_in_row( $module_nodes, $prototypes = array() ) {
     if ( ! is_object( $column_settings ) ) {
         $column_settings = (object) array( 'size' => 100 );
     }
+
+    nova_bb_clear_append_state( $row_settings );
+    nova_bb_clear_append_state( $column_settings );
+    nova_bb_clear_append_colors( $row_settings );
+    nova_bb_clear_append_colors( $column_settings );
+    nova_bb_setting_set( $column_settings, 'bg_type', 'none' );
+    nova_bb_setting_set( $column_settings, 'bg_color', '' );
     nova_bb_setting_set( $column_settings, 'size', 100 );
 
     $column = array(
@@ -441,12 +483,35 @@ function nova_bb_apply_transformations( $tree, $remove_paths, $text_updates, $ap
 
     // Append sections.
     if ( ! empty( $append_sections ) && is_array( $append_sections ) ) {
+        $insert_offsets = array();
+
         foreach ( $append_sections as $section ) {
             if ( ! is_array( $section ) ) {
                 continue;
             }
             $row = nova_bb_build_section_row( $section, '', $append_prototypes );
             if ( null !== $row ) {
+                $insert_after_path  = isset( $section['insert_after_path'] ) ? trim( (string) $section['insert_after_path'] ) : '';
+                $insert_before_path = isset( $section['insert_before_path'] ) ? trim( (string) $section['insert_before_path'] ) : '';
+                $insert_index       = null;
+
+                if ( preg_match( '/^\d+$/', $insert_after_path ) ) {
+                    $insert_index = (int) $insert_after_path + 1;
+                } elseif ( preg_match( '/^\d+$/', $insert_before_path ) ) {
+                    $insert_index = (int) $insert_before_path;
+                }
+
+                if ( null !== $insert_index ) {
+                    if ( $insert_index >= 0 && $insert_index <= count( $tree ) ) {
+                        $offset_key = (string) $insert_index;
+                        $offset     = isset( $insert_offsets[ $offset_key ] ) ? (int) $insert_offsets[ $offset_key ] : 0;
+
+                        array_splice( $tree, $insert_index + $offset, 0, array( $row ) );
+                        $insert_offsets[ $offset_key ] = $offset + 1;
+                        continue;
+                    }
+                }
+
                 $tree[] = $row;
             }
         }
