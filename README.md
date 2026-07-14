@@ -1,6 +1,6 @@
 # NOVA Bridge Suite
 
-- Contributors: jg@inspace.io, ad@inspace.io, lm@inspace.io
+- Contributors: jg@inspace.io, ad@inspace.io, lm@inspace.io, af@inspace.io
 - Requires at least: 6.0
 - Tested up to: 7.0
 - Requires PHP: 7.4
