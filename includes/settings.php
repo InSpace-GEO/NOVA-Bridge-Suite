@@ -25,6 +25,7 @@ function nova_bridge_suite_module_definitions(): array {
         'pagebuilder_divi'       => [
             'path'                 => 'modules/divi/divi-bridge.php',
             'standalone_filenames' => [ 'divi-bridge.php', 'nova-divi-bridge.php' ],
+        ],
         'pagebuilder_beaver'     => [
             'path'                 => 'modules/beaver/beaver-bridge.php',
             'standalone_filenames' => [ 'beaver-bridge.php', 'nova-beaver-bridge.php' ],
@@ -330,6 +331,7 @@ function nova_bridge_suite_get_recommended_modules(): array {
             'description' => 'Divi detected. Enable the bridge to update Divi pages.',
             'plugins'     => [ 'divi-builder/divi-builder.php' ],
             'themes'      => [ 'Divi', 'Extra' ],
+        ],
         'pagebuilder_beaver'     => [
             'label'       => 'Enable NOVA Beaver Builder Bridge',
             'description' => 'Beaver Builder detected. Enable the bridge to update Beaver Builder pages.',
