@@ -22,6 +22,9 @@ function nova_bridge_suite_module_definitions(): array {
             'path'                 => 'modules/avada/nova-avada-bridge.php',
             'standalone_filenames' => [ 'nova-avada-bridge.php' ],
         ],
+        'pagebuilder_divi'       => [
+            'path'                 => 'modules/divi/divi-bridge.php',
+            'standalone_filenames' => [ 'divi-bridge.php', 'nova-divi-bridge.php' ],
         'pagebuilder_beaver'     => [
             'path'                 => 'modules/beaver/beaver-bridge.php',
             'standalone_filenames' => [ 'beaver-bridge.php', 'nova-beaver-bridge.php' ],
@@ -322,6 +325,11 @@ function nova_bridge_suite_get_recommended_modules(): array {
             'description' => 'Avada detected. Enable the bridge to update Avada Builder pages.',
             'plugins'     => [ 'fusion-builder/fusion-builder.php', 'avada-builder/avada-builder.php' ],
         ],
+        'pagebuilder_divi'       => [
+            'label'       => 'Enable NOVA Divi Bridge',
+            'description' => 'Divi detected. Enable the bridge to update Divi pages.',
+            'plugins'     => [ 'divi-builder/divi-builder.php' ],
+            'themes'      => [ 'Divi', 'Extra' ],
         'pagebuilder_beaver'     => [
             'label'       => 'Enable NOVA Beaver Builder Bridge',
             'description' => 'Beaver Builder detected. Enable the bridge to update Beaver Builder pages.',
@@ -345,7 +353,15 @@ function nova_bridge_suite_get_recommended_modules(): array {
     ];
 
     foreach ( $plugin_candidates as $key => $candidate ) {
-        if ( ! nova_bridge_suite_has_active_plugin( $candidate['plugins'] ?? [] ) ) {
+        $detected = nova_bridge_suite_has_active_plugin( $candidate['plugins'] ?? [] );
+
+        // Some builders (Divi, Extra) ship as a theme, not a plugin.
+        if ( ! $detected && ! empty( $candidate['themes'] ) && function_exists( 'get_template' ) ) {
+            $template = (string) get_template();
+            $detected = '' !== $template && in_array( $template, (array) $candidate['themes'], true );
+        }
+
+        if ( ! $detected ) {
             continue;
         }
 
@@ -602,6 +618,19 @@ function nova_bridge_suite_register_settings(): void {
             'key'         => 'pagebuilder_avada',
             'label'       => 'Enable NOVA Avada Bridge',
             'description' => 'REST bridge for Avada Builder pages.',
+        ]
+    );
+
+    add_settings_field(
+        'nova_bridge_divi',
+        'Divi',
+        'nova_bridge_suite_render_checkbox_field',
+        'nova-settings',
+        'nova_bridge_pagebuilders',
+        [
+            'key'         => 'pagebuilder_divi',
+            'label'       => 'Enable NOVA Divi Bridge',
+            'description' => 'REST bridge for Divi Builder pages.',
         ]
     );
 

@@ -577,6 +577,8 @@ function nova_bridge_suite_get_targeted_rest_module_keys( string $route ): ?arra
         $module_keys = [ 'pagebuilder_breakdance' ];
     } elseif ( nova_bridge_suite_rest_route_matches( $route, 'nova-avada/v1' ) ) {
         $module_keys = [ 'pagebuilder_avada' ];
+    } elseif ( nova_bridge_suite_rest_route_matches( $route, 'nova-divi/v1' ) ) {
+        $module_keys = [ 'pagebuilder_divi' ];
     } elseif ( nova_bridge_suite_rest_route_matches( $route, 'nova-beaver/v1' ) ) {
         $module_keys = [ 'pagebuilder_beaver' ];
     } elseif ( nova_bridge_suite_rest_route_matches( $route, 'nova-blog/v1' ) ) {
@@ -597,6 +599,7 @@ function nova_bridge_suite_get_targeted_rest_module_keys( string $route ): ?arra
         || nova_bridge_suite_rest_route_matches( $route, 'nova-wpbakery/v1' )
         || nova_bridge_suite_rest_route_matches( $route, 'nova-breakdance/v1' )
         || nova_bridge_suite_rest_route_matches( $route, 'nova-avada/v1' )
+        || nova_bridge_suite_rest_route_matches( $route, 'nova-divi/v1' )
         || nova_bridge_suite_rest_route_matches( $route, 'nova-beaver/v1' )
     ) {
         $module_keys = nova_bridge_suite_add_cpt_dependencies_for_rest_route( $module_keys, $route );
