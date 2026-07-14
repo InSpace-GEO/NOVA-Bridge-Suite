@@ -10,7 +10,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // phpcs:disable WordPress.NamingConventions.PrefixAllGlobals
-get_header();
+\SEORAI\BodycleanCPT\Plugin::render_theme_header();
 
 $show_breadcrumbs = \SEORAI\BodycleanCPT\Plugin::component_enabled( 'breadcrumbs' );
 $show_title       = \SEORAI\BodycleanCPT\Plugin::component_enabled( 'title' );
@@ -105,4 +105,4 @@ if ( $show_breadcrumbs ) {
 </main>
 <?php
 
-get_footer();
+\SEORAI\BodycleanCPT\Plugin::render_theme_footer();

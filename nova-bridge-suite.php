@@ -2,7 +2,7 @@
 /**
  * Plugin Name: NOVA Bridge Suite
  * Description: Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
- * Version: 2.6.0
+ * Version: 2.6.1
  * Author: LUNA B.V.
  * Requires PHP: 7.4
  * License: Proprietary
@@ -13,7 +13,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'NOVA_BRIDGE_SUITE_VERSION', '2.6.0' );
+define( 'NOVA_BRIDGE_SUITE_VERSION', '2.6.1' );
 define( 'NOVA_BRIDGE_SUITE_PLUGIN_FILE', __FILE__ );
 define( 'NOVA_BRIDGE_SUITE_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'NOVA_BRIDGE_SUITE_OPTION', 'nova_bridge_settings' );
@@ -579,6 +579,8 @@ function nova_bridge_suite_get_targeted_rest_module_keys( string $route ): ?arra
         $module_keys = [ 'pagebuilder_avada' ];
     } elseif ( nova_bridge_suite_rest_route_matches( $route, 'nova-divi/v1' ) ) {
         $module_keys = [ 'pagebuilder_divi' ];
+    } elseif ( nova_bridge_suite_rest_route_matches( $route, 'nova-beaver/v1' ) ) {
+        $module_keys = [ 'pagebuilder_beaver' ];
     } elseif ( nova_bridge_suite_rest_route_matches( $route, 'nova-blog/v1' ) ) {
         $module_keys = [ 'custom_post_types' ];
     } elseif ( nova_bridge_suite_rest_route_matches( $route, 'service-pages/v1' ) ) {
@@ -598,6 +600,7 @@ function nova_bridge_suite_get_targeted_rest_module_keys( string $route ): ?arra
         || nova_bridge_suite_rest_route_matches( $route, 'nova-breakdance/v1' )
         || nova_bridge_suite_rest_route_matches( $route, 'nova-avada/v1' )
         || nova_bridge_suite_rest_route_matches( $route, 'nova-divi/v1' )
+        || nova_bridge_suite_rest_route_matches( $route, 'nova-beaver/v1' )
     ) {
         $module_keys = nova_bridge_suite_add_cpt_dependencies_for_rest_route( $module_keys, $route );
     }

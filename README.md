@@ -4,7 +4,7 @@
 - Requires at least: 6.0
 - Tested up to: 7.0
 - Requires PHP: 7.4
-- Stable tag: 2.6.0
+- Stable tag: 2.6.1
 - License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -39,7 +39,7 @@ This plugin is designed for NOVA. You can activate it without NOVA, but NOVA is 
 
 ### Will this replace my page builder?
 
-No. It works alongside builders like Avada, Elementor, WPBakery, Divi, and more. NOVA can update their content safely.
+No. It works alongside builders like Avada, Elementor, WPBakery, Beaver Builder, and more. NOVA can update their content safely.
 
 ### Does it work on WooCommerce sites?
 
@@ -47,9 +47,14 @@ Yes, NOVA can navigate WooCommerce products and categories. If WooCommerce is ac
 
 ## Changelog
 
+### 2.6.1
+
+- Beaver Builder appended rich text can now be placed after or before a top-level row, and renders without inheriting template tab, animation, custom CSS/JS, or dark-section color styles.
+
 ### 2.6.0
 
-- Add Divi Bridge module: REST bridge (`nova-divi/v1`) that creates and updates Divi Builder pages using Divi 4 shortcode layouts (renders on Divi 5 via its backwards-compatibility layer). Supports clone-from-example templates, path-based text updates, section appending with FAQ accordions, SEO meta, and featured images.
+- Add Beaver Builder Bridge module: REST bridge (`nova-beaver/v1`) for creating, updating, cloning, and inspecting Beaver Builder pages. Supports clone-from-template workflows, path-based text updates, SEO metadata, featured images, and hardened appended sections that reuse safe layout/module prototypes from the source page.
+- Improve managed CPT templates on block themes by rendering native block header and footer template parts.
 
 ### 2.5.13
 

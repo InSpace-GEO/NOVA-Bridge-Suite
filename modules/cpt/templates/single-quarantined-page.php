@@ -10,7 +10,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // phpcs:disable WordPress.NamingConventions.PrefixAllGlobals
-get_header();
+\SEORAI\BodycleanCPT\Plugin::render_theme_header();
 ?>
 <main id="quarantined-cpt-primary" class="quarantined-cpt" data-quarantined-keep="true">
 	<div class="quarantined-cpt__inner">
@@ -665,4 +665,4 @@ document.addEventListener('click', function (event) {
 </script>
 <?php
 
-get_footer();
+\SEORAI\BodycleanCPT\Plugin::render_theme_footer();

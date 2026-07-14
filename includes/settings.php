@@ -25,6 +25,9 @@ function nova_bridge_suite_module_definitions(): array {
         'pagebuilder_divi'       => [
             'path'                 => 'modules/divi/divi-bridge.php',
             'standalone_filenames' => [ 'divi-bridge.php', 'nova-divi-bridge.php' ],
+        'pagebuilder_beaver'     => [
+            'path'                 => 'modules/beaver/beaver-bridge.php',
+            'standalone_filenames' => [ 'beaver-bridge.php', 'nova-beaver-bridge.php' ],
         ],
         'gutenberg_bridge'       => [
             'path'                 => 'modules/gutenberg/nova-gutenberg-bridge.php',
@@ -327,6 +330,10 @@ function nova_bridge_suite_get_recommended_modules(): array {
             'description' => 'Divi detected. Enable the bridge to update Divi pages.',
             'plugins'     => [ 'divi-builder/divi-builder.php' ],
             'themes'      => [ 'Divi', 'Extra' ],
+        'pagebuilder_beaver'     => [
+            'label'       => 'Enable NOVA Beaver Builder Bridge',
+            'description' => 'Beaver Builder detected. Enable the bridge to update Beaver Builder pages.',
+            'plugins'     => [ 'bb-plugin/fl-builder.php', 'beaver-builder-lite-version/fl-builder.php' ],
         ],
         'gutenberg_bridge'       => [
             'label'       => 'Enable NOVA Gutenberg Bridge',
@@ -637,6 +644,19 @@ function nova_bridge_suite_register_settings(): void {
             'key'         => 'gutenberg_bridge',
             'label'       => 'Enable NOVA Gutenberg Bridge',
             'description' => 'REST bridge for Gutenberg pages.',
+        ]
+    );
+
+    add_settings_field(
+        'nova_bridge_beaver',
+        'Beaver Builder',
+        'nova_bridge_suite_render_checkbox_field',
+        'nova-settings',
+        'nova_bridge_pagebuilders',
+        [
+            'key'         => 'pagebuilder_beaver',
+            'label'       => 'Enable NOVA Beaver Builder Bridge',
+            'description' => 'REST bridge for Beaver Builder pages.',
         ]
     );
 
