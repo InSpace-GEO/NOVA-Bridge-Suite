@@ -4,7 +4,7 @@
 - Requires at least: 6.0
 - Tested up to: 7.0
 - Requires PHP: 7.4
-- Stable tag: 2.7.0
+- Stable tag: 2.7.1
 - License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.

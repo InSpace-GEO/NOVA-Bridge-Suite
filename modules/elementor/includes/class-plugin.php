@@ -79,6 +79,7 @@ class Plugin {
 			'before_text',
 			'after_text',
 			'tab_title',
+			'item_title',
 			'tab_content',
 			'label',
 			'value',
