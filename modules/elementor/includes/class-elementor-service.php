@@ -116,6 +116,11 @@ class Elementor_Service {
 			return new WP_Error( 'seor_eb_forbidden', __( 'You are not allowed to create content for this post type.', 'nova-bridge-suite' ) );
 		}
 
+		$post_fields = $this->prepare_wordpress_fields( $post_type, $payload );
+		if ( is_wp_error( $post_fields ) ) {
+			return $post_fields;
+		}
+
 		$postarr = array(
 			'post_title'   => $title,
 			'post_status'  => $status,
@@ -130,6 +135,12 @@ class Elementor_Service {
 
 		if ( is_wp_error( $post_id ) ) {
 			return $post_id;
+		}
+
+		$post_fields_result = $this->persist_wordpress_fields( $post_id, $post_fields );
+		if ( is_wp_error( $post_fields_result ) ) {
+			wp_delete_post( $post_id, true );
+			return $post_fields_result;
 		}
 
 		if ( ! empty( $payload['template'] ) ) {
@@ -214,6 +225,16 @@ class Elementor_Service {
 
 		if ( ! current_user_can( 'edit_post', $post_id ) ) {
 			return new WP_Error( 'seor_eb_forbidden', __( 'You are not allowed to edit this page.', 'nova-bridge-suite' ) );
+		}
+
+		$post_fields = $this->prepare_wordpress_fields( $post->post_type, $payload );
+		if ( is_wp_error( $post_fields ) ) {
+			return $post_fields;
+		}
+
+		$post_fields_result = $this->persist_wordpress_fields( $post_id, $post_fields );
+		if ( is_wp_error( $post_fields_result ) ) {
+			return $post_fields_result;
 		}
 
 		$post_updates = array(
@@ -488,6 +509,140 @@ class Elementor_Service {
 
 			update_post_meta( $post_id, $key, $value );
 		}
+	}
+
+	/**
+	 * Validate and normalize native WordPress fields in an Elementor request.
+	 *
+	 * @param string $post_type Target post type.
+	 * @param array  $payload   Request payload.
+	 * @return array|WP_Error
+	 */
+	private function prepare_wordpress_fields( $post_type, array $payload ) {
+		$fields = array();
+		if ( array_key_exists( 'featured_media', $payload ) ) {
+			if ( ! is_numeric( $payload['featured_media'] ) || (int) $payload['featured_media'] < 0 ) {
+				return new WP_Error(
+					'seor_eb_invalid_featured_media',
+					__( 'featured_media must be a valid image attachment ID or 0.', 'nova-bridge-suite' ),
+					array( 'status' => 400 )
+				);
+			}
+
+			$fields['featured_media'] = (int) $payload['featured_media'];
+			if ( $fields['featured_media'] > 0 && ! wp_get_attachment_image( $fields['featured_media'], 'thumbnail' ) ) {
+				return new WP_Error(
+					'seor_eb_invalid_featured_media',
+					__( 'featured_media must reference an image attachment.', 'nova-bridge-suite' ),
+					array( 'status' => 400 )
+				);
+			}
+		}
+
+		if ( array_key_exists( 'categories', $payload ) ) {
+			if ( ! is_array( $payload['categories'] ) || ! is_object_in_taxonomy( $post_type, 'category' ) ) {
+				return new WP_Error(
+					'seor_eb_invalid_categories',
+					__( 'Categories are not supported for this post type.', 'nova-bridge-suite' ),
+					array( 'status' => 400 )
+				);
+			}
+
+			$taxonomy = get_taxonomy( 'category' );
+			if ( ! $taxonomy || ! current_user_can( $taxonomy->cap->assign_terms ) ) {
+				return new WP_Error(
+					'seor_eb_forbidden_categories',
+					__( 'You are not allowed to assign categories.', 'nova-bridge-suite' ),
+					array( 'status' => 403 )
+				);
+			}
+
+			$fields['categories'] = array();
+			foreach ( $payload['categories'] as $category_id ) {
+				$category_id = (int) $category_id;
+				$category    = $category_id > 0 ? get_term( $category_id, 'category' ) : null;
+
+				if ( ! $category || is_wp_error( $category ) ) {
+					return new WP_Error(
+						'seor_eb_invalid_category',
+						__( 'Every category must reference an existing category term.', 'nova-bridge-suite' ),
+						array( 'status' => 400 )
+					);
+				}
+
+				$fields['categories'][] = $category_id;
+			}
+			$fields['categories'] = array_values( array_unique( $fields['categories'] ) );
+		}
+
+		if ( array_key_exists( 'meta_all', $payload ) ) {
+			if ( ! is_array( $payload['meta_all'] ) ) {
+				return new WP_Error(
+					'seor_eb_invalid_meta_all',
+					__( 'meta_all must be an object.', 'nova-bridge-suite' ),
+					array( 'status' => 400 )
+				);
+			}
+
+			if ( ! function_exists( 'cf_tmrb_update_post_meta_all_payload' ) ) {
+				return new WP_Error(
+					'seor_eb_meta_all_unavailable',
+					__( 'The core bridge metadata mapper is unavailable.', 'nova-bridge-suite' ),
+					array( 'status' => 500 )
+				);
+			}
+
+			$fields['meta_all'] = $payload['meta_all'];
+		}
+
+		return $fields;
+	}
+
+	/**
+	 * Persist validated native WordPress fields.
+	 *
+	 * @param int   $post_id Post ID.
+	 * @param array $fields  Validated fields.
+	 * @return true|WP_Error
+	 */
+	private function persist_wordpress_fields( $post_id, array $fields ) {
+		if (
+			array_key_exists( 'featured_media', $fields )
+			&& $fields['featured_media'] !== (int) get_post_thumbnail_id( $post_id )
+		) {
+			$thumbnail_result = $fields['featured_media'] > 0
+				? set_post_thumbnail( $post_id, $fields['featured_media'] )
+				: delete_post_thumbnail( $post_id );
+
+			if ( false === $thumbnail_result && $fields['featured_media'] !== (int) get_post_thumbnail_id( $post_id ) ) {
+				return new WP_Error(
+					'seor_eb_featured_media_failed',
+					__( 'The featured image could not be saved.', 'nova-bridge-suite' ),
+					array( 'status' => 500 )
+				);
+			}
+		}
+
+		if ( array_key_exists( 'categories', $fields ) ) {
+			$category_result = wp_set_post_categories( $post_id, $fields['categories'] );
+			if ( is_wp_error( $category_result ) || false === $category_result ) {
+				return new WP_Error(
+					'seor_eb_categories_failed',
+					is_wp_error( $category_result ) ? $category_result->get_error_message() : __( 'The categories could not be saved.', 'nova-bridge-suite' ),
+					array( 'status' => 500 )
+				);
+			}
+		}
+
+		if ( array_key_exists( 'meta_all', $fields ) ) {
+			$post        = get_post( $post_id );
+			$meta_result = \cf_tmrb_update_post_meta_all_payload( $fields['meta_all'], $post );
+			if ( is_wp_error( $meta_result ) ) {
+				return $meta_result;
+			}
+		}
+
+		return true;
 	}
 
 	/**

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: NOVA Bridge Suite
  * Description: Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
- * Version: 2.7.1
+ * Version: 2.7.2
  * Author: LUNA B.V.
  * Requires PHP: 7.4
  * License: Proprietary
@@ -13,7 +13,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'NOVA_BRIDGE_SUITE_VERSION', '2.7.1' );
+define( 'NOVA_BRIDGE_SUITE_VERSION', '2.7.2' );
 define( 'NOVA_BRIDGE_SUITE_PLUGIN_FILE', __FILE__ );
 define( 'NOVA_BRIDGE_SUITE_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'NOVA_BRIDGE_SUITE_OPTION', 'nova_bridge_settings' );
@@ -565,6 +565,10 @@ function nova_bridge_suite_get_targeted_rest_module_keys( string $route ): ?arra
         $module_keys = [ '__post_resolver', 'custom_post_types', 'service_page_cpt' ];
     } elseif ( nova_bridge_suite_rest_route_matches( $route, 'seor-bridge/v1' ) ) {
         $module_keys = [ 'pagebuilder_elementor' ];
+
+        if ( nova_bridge_suite_core_rest_write_uses_bridge_payload() ) {
+            array_unshift( $module_keys, '__core_bridge' );
+        }
     } elseif ( nova_bridge_suite_rest_route_matches( $route, 'polylang-translations/v1' ) ) {
         $module_keys = [ 'multilingual_polylang' ];
     } elseif ( nova_bridge_suite_rest_route_matches( $route, 'wpml-translations/v1' ) ) {

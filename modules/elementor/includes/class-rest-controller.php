@@ -763,6 +763,19 @@ class Rest_Controller extends WP_REST_Controller {
 				'type'        => 'string',
 				'description' => __( 'Optional excerpt.', 'nova-bridge-suite' ),
 			),
+			'featured_media' => array(
+				'type'        => 'integer',
+				'minimum'     => 0,
+				'description' => __( 'Featured image attachment ID, or 0 to clear it.', 'nova-bridge-suite' ),
+			),
+			'categories'     => array(
+				'type'        => 'array',
+				'description' => __( 'Category term IDs to assign to the post.', 'nova-bridge-suite' ),
+				'items'       => array(
+					'type'    => 'integer',
+					'minimum' => 1,
+				),
+			),
 			'parent'         => array(
 				'type'        => 'integer',
 				'description' => __( 'Parent page ID.', 'nova-bridge-suite' ),
@@ -803,6 +816,10 @@ class Rest_Controller extends WP_REST_Controller {
 			'meta'          => array(
 				'type'        => 'object',
 				'description' => __( 'Post meta key/value pairs to update.', 'nova-bridge-suite' ),
+			),
+			'meta_all'      => array(
+				'type'        => 'object',
+				'description' => __( 'SEO and custom-field values using the core bridge mapper.', 'nova-bridge-suite' ),
 			),
 			'fields'         => array(
 				'type'        => 'array',
