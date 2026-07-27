@@ -272,11 +272,13 @@ class Page_Service {
     }
 
     /**
-     * Append sanitized HTML as a new fusion_text node at the bottom of the layout.
+     * Add sanitized HTML as a new fusion_text node.
      *
      * @param array<string, mixed> $layout
+     *
+     * @return array<string, mixed>|WP_Error
      */
-    public function append_html_block(array $layout, string $html): array {
+    public function append_html_block(array $layout, string $html, string $insert_before_path = '') {
         if ('' === trim($html)) {
             return $layout;
         }
@@ -286,33 +288,42 @@ class Page_Service {
             return $layout;
         }
 
+        $insert_before_path = trim($insert_before_path);
+        if ('' !== $insert_before_path) {
+            if (!preg_match('/^\d+(?:\.\d+)*$/', $insert_before_path)) {
+                return new WP_Error(
+                    'nova_avada_invalid_insert_path',
+                    __('The insertion path must be a dotted numeric layout path.', 'nova-bridge-suite'),
+                    ['status' => 400]
+                );
+            }
+
+            if (!empty($layout['compact']) && is_array($layout['compact'])) {
+                foreach ($layout['compact'] as $index => $node) {
+                    if (is_array($node) && $this->node_contains_path($node, $insert_before_path)) {
+                        array_splice($layout['compact'], $index, 0, [$this->build_text_container($sanitized)]);
+                        unset($layout['raw_shortcodes']);
+                        return $layout;
+                    }
+                }
+            }
+
+            return new WP_Error(
+                'nova_avada_insert_path_not_found',
+                __('The insertion path was not found in the Avada layout.', 'nova-bridge-suite'),
+                ['status' => 409]
+            );
+        }
+
         if (!empty($layout['compact']) && is_array($layout['compact'])) {
             $layout['compact'] = $this->append_to_last_column($layout['compact'], $sanitized);
+            unset($layout['raw_shortcodes']);
             return $layout;
         }
 
         // Fallback: create a minimal container/row/column/text chain.
-        $layout['compact'] = [[
-            'tag'        => 'fusion_builder_container',
-            'attributes' => [],
-            'text'       => null,
-            'children'   => [[
-                'tag'        => 'fusion_builder_row',
-                'attributes' => [],
-                'text'       => null,
-                'children'   => [[
-                    'tag'        => 'fusion_builder_column',
-                    'attributes' => ['type' => '1_1'],
-                    'text'       => null,
-                    'children'   => [[
-                        'tag'        => 'fusion_text',
-                        'attributes' => [],
-                        'text'       => $sanitized,
-                        'children'   => [],
-                    ]],
-                ]],
-            ]],
-        ]];
+        $layout['compact'] = [$this->build_text_container($sanitized)];
+        unset($layout['raw_shortcodes']);
 
         return $layout;
     }
@@ -533,7 +544,16 @@ class Page_Service {
         unset($column_ref);
 
         // If no column found, create a container/row/column/text and append to root.
-        $nodes[] = [
+        $nodes[] = $this->build_text_container($sanitized_html);
+
+        return $nodes;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function build_text_container(string $html): array {
+        return [
             'tag'        => 'fusion_builder_container',
             'attributes' => [],
             'text'       => null,
@@ -548,14 +568,33 @@ class Page_Service {
                     'children'   => [[
                         'tag'        => 'fusion_text',
                         'attributes' => [],
-                        'text'       => $sanitized_html,
+                        'text'       => $html,
                         'children'   => [],
                     ]],
                 ]],
             ]],
         ];
+    }
 
-        return $nodes;
+    /**
+     * @param array<string, mixed> $node
+     */
+    private function node_contains_path(array $node, string $path): bool {
+        if (($node['path'] ?? '') === $path) {
+            return true;
+        }
+
+        if (empty($node['children']) || !is_array($node['children'])) {
+            return false;
+        }
+
+        foreach ($node['children'] as $child) {
+            if (is_array($child) && $this->node_contains_path($child, $path)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

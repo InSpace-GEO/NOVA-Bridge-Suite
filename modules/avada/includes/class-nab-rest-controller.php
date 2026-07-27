@@ -232,8 +232,16 @@ class REST_Controller extends WP_REST_Controller {
         }
 
         if (!empty($data['append_html'])) {
-            $data['layout'] = $this->page_service->append_html_block($data['layout'], $data['append_html']);
-            unset($data['append_html']);
+            $layout = $this->page_service->append_html_block(
+                $data['layout'],
+                $data['append_html'],
+                $data['insert_before_path'] ?? ''
+            );
+            if (is_wp_error($layout)) {
+                return $layout;
+            }
+            $data['layout'] = $layout;
+            unset($data['append_html'], $data['insert_before_path']);
         }
 
         if (!empty($data['append_sections'])) {
@@ -308,8 +316,20 @@ class REST_Controller extends WP_REST_Controller {
         }
 
         if (!empty($data['append_html'])) {
-            $data['layout'] = $this->page_service->append_html_block($data['layout'], $data['append_html']);
-            unset($data['append_html']);
+            if (empty($data['layout'])) {
+                $current_payload = $this->page_service->build_page_payload($post);
+                $data['layout']  = $current_payload['layout'];
+            }
+            $layout = $this->page_service->append_html_block(
+                $data['layout'],
+                $data['append_html'],
+                $data['insert_before_path'] ?? ''
+            );
+            if (is_wp_error($layout)) {
+                return $layout;
+            }
+            $data['layout'] = $layout;
+            unset($data['append_html'], $data['insert_before_path']);
         }
 
         if (!empty($data['append_sections'])) {
@@ -386,6 +406,10 @@ class REST_Controller extends WP_REST_Controller {
 
         if (is_string($request->get_param('append_html')) && '' !== trim((string) $request->get_param('append_html'))) {
             $data['append_html'] = (string) $request->get_param('append_html');
+        }
+
+        if (is_string($request->get_param('insert_before_path')) && '' !== trim((string) $request->get_param('insert_before_path'))) {
+            $data['insert_before_path'] = trim((string) $request->get_param('insert_before_path'));
         }
 
         if (is_string($request->get_param('post_type'))) {
@@ -544,8 +568,14 @@ class REST_Controller extends WP_REST_Controller {
             'required'    => false,
         ];
         $args['append_html'] = [
-            'description' => __('Optional HTML block to append as a new fusion_text at the end of the layout.', 'nova-bridge-suite'),
+            'description' => __('Optional HTML block to add as a new fusion_text node.', 'nova-bridge-suite'),
             'type'        => 'string',
+            'required'    => false,
+        ];
+        $args['insert_before_path'] = [
+            'description' => __('Optional compact-layout path. The HTML block is inserted as a new root section before the root containing this node.', 'nova-bridge-suite'),
+            'type'        => 'string',
+            'pattern'     => '^\d+(?:\.\d+)*$',
             'required'    => false,
         ];
         $args['append_sections'] = [
