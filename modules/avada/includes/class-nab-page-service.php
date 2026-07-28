@@ -378,8 +378,8 @@ class Page_Service {
             if ('' !== trim($title)) {
                 $nodes[] = [
                     'tag'        => 'fusion_title',
-                    'attributes' => [],
-                    'text'       => sprintf('<%1$s>%2$s</%1$s>', $heading_tag, $title),
+                    'attributes' => ['size' => substr($heading_tag, 1)],
+                    'text'       => $title,
                     'children'   => [],
                 ];
             }
@@ -439,6 +439,13 @@ class Page_Service {
         foreach ($nodes as &$node) {
             $path = isset($node['path']) ? (string) $node['path'] : null;
             if ($path && array_key_exists($path, $map)) {
+                if (
+                    'fusion_title' === ($node['tag'] ?? '') &&
+                    empty($node['attributes']['size']) &&
+                    preg_match('/^\s*<h([2-4])\b[^>]*>[\s\S]*<\/h\1>\s*$/i', (string) ($node['text'] ?? ''), $match)
+                ) {
+                    $node['attributes']['size'] = $match[1];
+                }
                 $node['text'] = $map[$path];
                 // Drop any child text fragments to avoid concatenating old + new content.
                 if (isset($node['children']) && is_array($node['children'])) {

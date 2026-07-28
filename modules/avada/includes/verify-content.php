@@ -73,6 +73,25 @@ $empty = $service->append_html_block([], '<p>Never inserted</p>', '0.0.0');
 $checks['anchored empty layout fails safely'] =
     is_wp_error($empty) && 'nova_avada_insert_path_not_found' === $empty->get_error_code();
 
+$legacy_title = $node('fusion_title', '0.0.0.0', '<h2>Old heading</h2>');
+$legacy_update = $service->apply_text_updates(
+    ['compact' => [$legacy_title]],
+    [['path' => '0.0.0.0', 'text' => 'New heading']]
+);
+$legacy_shortcode = (new \NovaAvadaBridge\Layout_Transformer())->from_layout($legacy_update['compact']);
+$checks['legacy title gains its intended H2 size'] =
+    '[fusion_title size="2"]New heading[/fusion_title]' === $legacy_shortcode;
+
+$modern_title = $node('fusion_title', '0.0.0.0', 'Old subheading');
+$modern_title['attributes']['size'] = '3';
+$modern_update = $service->apply_text_updates(
+    ['compact' => [$modern_title]],
+    [['path' => '0.0.0.0', 'text' => 'New subheading']]
+);
+$modern_shortcode = (new \NovaAvadaBridge\Layout_Transformer())->from_layout($modern_update['compact']);
+$checks['explicit title size stays unchanged'] =
+    '[fusion_title size="3"]New subheading[/fusion_title]' === $modern_shortcode;
+
 foreach ($checks as $label => $passed) {
     WP_CLI::line(($passed ? 'PASS' : 'FAIL') . '  ' . $label);
 }
