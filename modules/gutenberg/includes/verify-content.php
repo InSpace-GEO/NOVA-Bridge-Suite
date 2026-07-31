@@ -563,6 +563,252 @@ function nova_gut_verify_ordering_and_spacing(): array {
 		$results['errors'][] = 'cleanup_merged_blocks result: [' . implode( ', ', $cleaned_names ) . '] expected: [' . implode( ', ', $expected_names ) . ']';
 	}
 
+	// -----------------------------------------------------------------------
+	// TEST J: Complete service template contract
+	// -----------------------------------------------------------------------
+	$registry = WP_Block_Type_Registry::get_instance();
+	if ( ! $registry->is_registered( 'nova-test/layout' ) ) {
+		register_block_type( 'nova-test/layout' );
+	}
+
+	$fixture_source =
+		'<!-- wp:group {"className":"page-root"} --><div class="wp-block-group page-root">'
+		. '<!-- wp:cover {"url":"hero.jpg","className":"hero-shell"} -->'
+		. '<div class="wp-block-cover hero-shell"><span aria-hidden="true" class="wp-block-cover__background"></span><img class="wp-block-cover__image-background" alt="" src="hero.jpg"/><div class="wp-block-cover__inner-container">'
+		. '<!-- wp:paragraph {"className":"eyebrow"} --><p class="eyebrow">Fixed hero eyebrow.</p><!-- /wp:paragraph -->'
+		. '<!-- wp:heading {"level":1} --><h1 class="wp-block-heading">Old service title</h1><!-- /wp:heading -->'
+		. '<!-- wp:paragraph {"className":"hero-intro"} --><p class="hero-intro keep-me" style="max-width:42rem">Old hero intro.</p><!-- /wp:paragraph -->'
+		. '<!-- wp:buttons --><div class="wp-block-buttons">'
+		. '<!-- wp:button --><div class="wp-block-button"><a class="wp-block-button__link" href="/primary">Hero primary</a></div><!-- /wp:button -->'
+		. '<!-- wp:button {"className":"is-style-outline"} --><div class="wp-block-button is-style-outline"><a class="wp-block-button__link" href="/secondary">Hero secondary</a></div><!-- /wp:button -->'
+		. '</div><!-- /wp:buttons --></div></div><!-- /wp:cover -->'
+		. '<!-- wp:nova-test/layout --><div class="nova-test-layout">'
+		. '<!-- wp:heading --><h2 class="wp-block-heading">Old body heading</h2><!-- /wp:heading -->'
+		. '<!-- wp:paragraph --><p>Old body paragraph.</p><!-- /wp:paragraph -->'
+		. '</div><!-- /wp:nova-test/layout -->'
+		. '<!-- wp:group {"className":"disclosure-section"} --><div class="wp-block-group disclosure-section">'
+		. '<!-- wp:details --><details class="wp-block-details"><summary>Fixed disclosure</summary><!-- wp:paragraph --><p>Fixed disclosure answer.</p><!-- /wp:paragraph --></details><!-- /wp:details -->'
+		. '<!-- wp:details --><details class="wp-block-details"><summary>Second fixed disclosure</summary><!-- wp:paragraph --><p>Second fixed disclosure answer.</p><!-- /wp:paragraph --></details><!-- /wp:details -->'
+		. '</div><!-- /wp:group -->'
+		. '<!-- wp:heading --><h2 class="wp-block-heading">Old trailing body heading</h2><!-- /wp:heading -->'
+		. '<!-- wp:paragraph --><p>Old trailing body paragraph.</p><!-- /wp:paragraph -->'
+		. '<!-- wp:group {"align":"full","className":"media-row"} --><div class="wp-block-group alignfull media-row">'
+		. '<!-- wp:image {"url":"preserve.jpg"} --><figure class="wp-block-image"><img src="preserve.jpg" alt="Preserve me"/></figure><!-- /wp:image -->'
+		. '</div><!-- /wp:group -->'
+		. '<!-- wp:group {"className":"widget-section"} --><div class="wp-block-group widget-section">'
+		. '<!-- wp:heading --><h2 class="wp-block-heading">Fixed calculator heading</h2><!-- /wp:heading -->'
+		. '<!-- wp:paragraph --><p>Fixed calculator help.</p><!-- /wp:paragraph -->'
+		. '<!-- wp:vendor/calculator {"calculatorId":"fixed"} /-->'
+		. '<!-- wp:buttons --><div class="wp-block-buttons"><!-- wp:button --><div class="wp-block-button"><a class="wp-block-button__link" href="/widget-one">Widget one</a></div><!-- /wp:button --></div><!-- /wp:buttons -->'
+		. '<!-- wp:buttons --><div class="wp-block-buttons"><!-- wp:button --><div class="wp-block-button"><a class="wp-block-button__link" href="/widget-two">Widget two</a></div><!-- /wp:button --></div><!-- /wp:buttons -->'
+		. '</div><!-- /wp:group -->'
+		. '<!-- wp:group {"className":"faq-shell"} --><div class="wp-block-group faq-shell">'
+		. '<!-- wp:heading --><h2 class="wp-block-heading">Frequently asked questions source marker</h2><!-- /wp:heading -->'
+		. '<!-- wp:details --><details class="wp-block-details"><summary>Old question?</summary><!-- wp:paragraph --><p>Old answer.</p><!-- /wp:paragraph --></details><!-- /wp:details -->'
+		. '</div><!-- /wp:group -->'
+		. '<!-- wp:group {"align":"full","className":"form-section"} --><div class="wp-block-group alignfull form-section">'
+		. '<!-- wp:heading --><h2 class="wp-block-heading">Fixed form title</h2><!-- /wp:heading -->'
+		. '<!-- wp:paragraph --><p>Fixed form introduction.</p><!-- /wp:paragraph -->'
+		. '<!-- wp:columns --><div class="wp-block-columns"><!-- wp:column --><div class="wp-block-column">'
+		. '<!-- wp:vendor/form {"formId":"template-form"} /-->'
+		. '<!-- wp:html --><div data-form-shell="fixed">Form fallback</div><!-- /wp:html -->'
+		. '</div><!-- /wp:column --></div><!-- /wp:columns -->'
+		. '</div><!-- /wp:group -->'
+		. '<!-- wp:cover {"url":"footer.jpg","align":"full","className":"footer-hero"} --><div class="wp-block-cover alignfull footer-hero"><img class="wp-block-cover__image-background" alt="" src="footer.jpg"/><div class="wp-block-cover__inner-container">'
+		. '<!-- wp:heading --><h2 class="wp-block-heading">Fixed footer offer</h2><!-- /wp:heading -->'
+		. '<!-- wp:paragraph --><p>Fixed footer paragraph.</p><!-- /wp:paragraph -->'
+		. '<!-- wp:buttons --><div class="wp-block-buttons">'
+		. '<!-- wp:button --><div class="wp-block-button"><a class="wp-block-button__link" href="/footer-primary">Footer primary</a></div><!-- /wp:button -->'
+		. '<!-- wp:button --><div class="wp-block-button"><a class="wp-block-button__link" href="/footer-secondary">Footer secondary</a></div><!-- /wp:button -->'
+		. '</div><!-- /wp:buttons --></div></div><!-- /wp:cover -->'
+		. '</div><!-- /wp:group -->'
+		. '<!-- wp:group {"className":"footer-legal"} --><div class="wp-block-group footer-legal">'
+		. '<!-- wp:paragraph --><p>Fixed footer legal note.</p><!-- /wp:paragraph -->'
+		. '<!-- wp:list --><ul class="wp-block-list"><li>Fixed legal link</li></ul><!-- /wp:list -->'
+		. '<!-- wp:paragraph --><p>Fixed footer registration.</p><!-- /wp:paragraph -->'
+		. '<!-- wp:paragraph --><p>Fixed footer copyright.</p><!-- /wp:paragraph -->'
+		. '</div><!-- /wp:group -->';
+
+	$fixture_append = '<p>Fresh <strong>hero</strong> intro.</p>'
+		. '<h2>New service section</h2><p>New body copy.</p>'
+		. '<h2>Frequently asked questions</h2>'
+		. '<h3>How does it work?</h3><p>First answer.</p>'
+		. '<h3>When can we start?</h3><p>Second answer.</p>';
+
+	$find_block = null;
+	$find_block = function ( array $blocks, string $name, string $needle ) use ( &$find_block ): string {
+		foreach ( $blocks as $block ) {
+			if ( ! empty( $block['innerBlocks'] ) ) {
+				$match = $find_block( $block['innerBlocks'], $name, $needle );
+				if ( '' !== $match ) {
+					return $match;
+				}
+			}
+			$serialized = serialize_blocks( array( $block ) );
+			if ( $name === ( $block['blockName'] ?? null ) && false !== strpos( $serialized, $needle ) ) {
+				return $serialized;
+			}
+		}
+		return '';
+	};
+
+	$fixture_before = parse_blocks( $fixture_source );
+	$hero_buttons_before = $find_block( $fixture_before, 'core/buttons', 'Hero primary' );
+	$disclosure_before   = $find_block( $fixture_before, 'core/group', 'disclosure-section' );
+	$widget_before       = $find_block( $fixture_before, 'core/group', 'vendor/calculator' );
+	$form_before         = $find_block( $fixture_before, 'core/group', 'data-form-shell="fixed"' );
+	$footer_before       = $find_block( $fixture_before, 'core/cover', 'Footer secondary' );
+	$footer_note_before  = $find_block( $fixture_before, 'core/group', 'footer-legal' );
+
+	$fixture_merged = nova_gut_merge_source_with_content( $fixture_source, $fixture_append, 'New service title' );
+	$fixture_final  = nova_gut_convert_faq_to_details( $fixture_merged );
+	$fixture_after  = parse_blocks( $fixture_final );
+
+	$hero_buttons_after = $find_block( $fixture_after, 'core/buttons', 'Hero primary' );
+	$disclosure_after   = $find_block( $fixture_after, 'core/group', 'disclosure-section' );
+	$widget_after       = $find_block( $fixture_after, 'core/group', 'vendor/calculator' );
+	$form_after         = $find_block( $fixture_after, 'core/group', 'data-form-shell="fixed"' );
+	$footer_after       = $find_block( $fixture_after, 'core/cover', 'Footer secondary' );
+	$footer_note_after  = $find_block( $fixture_after, 'core/group', 'footer-legal' );
+
+	$check_hero = false !== strpos( $fixture_merged, 'New service title' )
+		&& false !== strpos( $fixture_merged, '<p class="hero-intro keep-me" style="max-width:42rem">Fresh <strong>hero</strong> intro.</p>' )
+		&& false === strpos( $fixture_merged, 'Old hero intro.' )
+		&& false !== strpos( $fixture_merged, 'Fixed hero eyebrow.' )
+		&& '' !== $hero_buttons_before
+		&& $hero_buttons_before === $hero_buttons_after;
+	$results['checks']['service_hero_contract'] = $check_hero;
+
+	$check_islands = '' !== $disclosure_before
+		&& $disclosure_before === $disclosure_after
+		&& '' !== $widget_before
+		&& $widget_before === $widget_after
+		&& '' !== $form_before
+		&& $form_before === $form_after
+		&& '' !== $footer_before
+		&& $footer_before === $footer_after
+		&& '' !== $footer_note_before
+		&& $footer_note_before === $footer_note_after;
+	$results['checks']['service_form_footer_immutable'] = $check_islands;
+
+	$positions = array(
+		strpos( $fixture_final, 'New service section' ),
+		strpos( $fixture_final, 'Fixed disclosure' ),
+		strpos( $fixture_final, 'preserve.jpg' ),
+		strpos( $fixture_final, 'Fixed calculator heading' ),
+		strpos( $fixture_final, 'Frequently asked questions' ),
+		strpos( $fixture_final, 'data-form-shell="fixed"' ),
+		strpos( $fixture_final, 'Fixed footer offer' ),
+	);
+	$check_structure = ! in_array( false, $positions, true )
+		&& $positions[0] < $positions[1]
+		&& $positions[1] < $positions[2]
+		&& $positions[2] < $positions[3]
+		&& $positions[3] < $positions[4]
+		&& $positions[4] < $positions[5]
+		&& $positions[5] < $positions[6]
+		&& false !== strpos( $fixture_final, 'page-root' )
+		&& false !== strpos( $fixture_final, 'nova-test-layout' )
+		&& false === strpos( $fixture_final, 'Old body heading' )
+		&& false === strpos( $fixture_final, 'Old body paragraph.' )
+		&& false === strpos( $fixture_final, 'Old trailing body heading' )
+		&& false === strpos( $fixture_final, 'Old trailing body paragraph.' )
+		&& false === strpos( $fixture_final, 'Old question?' )
+		&& false === strpos( $fixture_final, 'source marker' )
+		&& 4 === substr_count( $fixture_final, '<!-- wp:details' );
+	$results['checks']['service_section_order_and_faq_elements'] = $check_structure;
+
+	if ( ! $check_hero || ! $check_islands || ! $check_structure ) {
+		$results['pass']     = false;
+		$results['errors'][] = 'Service template contract failed: hero=' . ( $check_hero ? 'pass' : 'fail' )
+			. ', immutable_sections=' . ( $check_islands ? 'pass' : 'fail' )
+			. ', order_and_faq=' . ( $check_structure ? 'pass' : 'fail' )
+			. ', positions=' . wp_json_encode( $positions )
+			. ', details=' . substr_count( $fixture_final, '<!-- wp:details' )
+			. ', old_body=' . ( false !== strpos( $fixture_final, 'Old body' ) ? 'present' : 'gone' )
+			. ', old_trailing=' . ( false !== strpos( $fixture_final, 'Old trailing body' ) ? 'present' : 'gone' )
+			. ', old_faq=' . ( false !== strpos( $fixture_final, 'Old question?' ) ? 'present' : 'gone' ) . '.';
+	}
+
+	$partial_root_source =
+		'<!-- wp:group --><div class="wp-block-group">'
+		. '<!-- wp:heading {"level":1} --><h1 class="wp-block-heading">Partial root title</h1><!-- /wp:heading -->'
+		. '<!-- wp:buttons --><div class="wp-block-buttons"><!-- wp:button --><div class="wp-block-button"><a class="wp-block-button__link">Hero</a></div><!-- /wp:button --></div><!-- /wp:buttons -->'
+		. '<!-- wp:buttons --><div class="wp-block-buttons"><!-- wp:button --><div class="wp-block-button"><a class="wp-block-button__link">Body CTA</a></div><!-- /wp:button --></div><!-- /wp:buttons -->'
+		. '</div><!-- /wp:group -->'
+		. '<!-- wp:cover --><div class="wp-block-cover"><span aria-hidden="true" class="wp-block-cover__background"></span><div class="wp-block-cover__inner-container">'
+		. '<!-- wp:heading --><h2 class="wp-block-heading">Real footer</h2><!-- /wp:heading -->'
+		. '<!-- wp:buttons --><div class="wp-block-buttons"><!-- wp:button --><div class="wp-block-button"><a class="wp-block-button__link">Footer CTA</a></div><!-- /wp:button --></div><!-- /wp:buttons -->'
+		. '</div></div><!-- /wp:cover -->';
+	$check_partial_root = null === nova_gut_find_layout_root( parse_blocks( $partial_root_source ) );
+	$results['checks']['partial_group_not_layout_root'] = $check_partial_root;
+
+	$loose_form_source =
+		'<!-- wp:cover --><div class="wp-block-cover"><span aria-hidden="true" class="wp-block-cover__background"></span><div class="wp-block-cover__inner-container">'
+		. '<!-- wp:heading {"level":1} --><h1 class="wp-block-heading">Loose old title</h1><!-- /wp:heading -->'
+		. '<!-- wp:paragraph --><p>Loose old hero intro.</p><!-- /wp:paragraph -->'
+		. '<!-- wp:buttons --><div class="wp-block-buttons"><!-- wp:button --><div class="wp-block-button"><a class="wp-block-button__link">Loose hero CTA</a></div><!-- /wp:button --></div><!-- /wp:buttons -->'
+		. '</div></div><!-- /wp:cover -->'
+		. '<!-- wp:heading --><h2 class="wp-block-heading">Loose old body</h2><!-- /wp:heading -->'
+		. '<!-- wp:paragraph --><p>Loose old body copy.</p><!-- /wp:paragraph -->'
+		. '<!-- wp:heading --><h2 class="wp-block-heading">Fixed loose form title</h2><!-- /wp:heading -->'
+		. '<!-- wp:paragraph --><p>Fixed loose form introduction.</p><!-- /wp:paragraph -->'
+		. '<!-- wp:vendor/form {"formId":"loose-form"} /-->'
+		. '<!-- wp:cover --><div class="wp-block-cover"><span aria-hidden="true" class="wp-block-cover__background"></span><div class="wp-block-cover__inner-container">'
+		. '<!-- wp:heading --><h2 class="wp-block-heading">Fixed loose footer</h2><!-- /wp:heading -->'
+		. '<!-- wp:paragraph --><p>Fixed loose footer copy.</p><!-- /wp:paragraph -->'
+		. '<!-- wp:buttons --><div class="wp-block-buttons"><!-- wp:button --><div class="wp-block-button"><a class="wp-block-button__link">Loose footer CTA</a></div><!-- /wp:button --></div><!-- /wp:buttons -->'
+		. '</div></div><!-- /wp:cover -->';
+	$loose_form_source = str_replace( '--><!-- wp:', "-->\n<!-- wp:", $loose_form_source );
+	$loose_form_append = '<p>Loose fresh hero intro.</p><h2>Loose fresh body</h2><p>Loose fresh copy.</p>'
+		. '<h2>Frequently asked questions</h2><h3>Loose question?</h3><p>Loose answer.</p>';
+	$loose_form_final = nova_gut_convert_faq_to_details(
+		nova_gut_merge_source_with_content( $loose_form_source, $loose_form_append, 'Loose new title' )
+	);
+	$loose_faq_pos  = strpos( $loose_form_final, 'Frequently asked questions' );
+	$loose_form_pos = strpos( $loose_form_final, 'Fixed loose form title' );
+	$check_loose_form = false !== $loose_faq_pos
+		&& false !== $loose_form_pos
+		&& $loose_faq_pos < $loose_form_pos
+		&& false !== strpos( $loose_form_final, 'Fixed loose form introduction.' )
+		&& false !== strpos( $loose_form_final, 'Fixed loose footer copy.' );
+	$results['checks']['loose_form_section_immutable'] = $check_loose_form;
+
+	$complex_source = '<!-- wp:nova-test/layout --><section class="complex-layout"><div class="slot-a">'
+		. '<!-- wp:paragraph --><p>Complex old A.</p><!-- /wp:paragraph -->'
+		. '</div><div class="slot-b"><!-- wp:paragraph --><p>Complex old B.</p><!-- /wp:paragraph -->'
+		. '</div></section><!-- /wp:nova-test/layout -->';
+	$complex_merged = nova_gut_merge_source_with_content( $complex_source, '<p>Complex fresh survives.</p>' );
+	$complex_faq_source = '<!-- wp:nova-test/layout --><section class="complex-faq"><div class="slot-a">'
+		. '<!-- wp:paragraph --><p>Complex keep A.</p><!-- /wp:paragraph -->'
+		. '</div><div class="slot-faq">'
+		. '<!-- wp:heading --><h2 class="wp-block-heading">Frequently asked questions old</h2><!-- /wp:heading -->'
+		. '</div><div class="slot-question"><!-- wp:heading {"level":3} --><h3 class="wp-block-heading">Complex old question?</h3><!-- /wp:heading -->'
+		. '</div><div class="slot-answer"><!-- wp:paragraph --><p>Complex old answer.</p><!-- /wp:paragraph -->'
+		. '</div><div class="slot-next"><!-- wp:heading --><h2 class="wp-block-heading">Complex retained section</h2><!-- /wp:heading -->'
+		. '</div><div class="slot-c">'
+		. '<!-- wp:paragraph --><p>Complex keep C.</p><!-- /wp:paragraph -->'
+		. '</div></section><!-- /wp:nova-test/layout -->';
+	$complex_faq_before = serialize_blocks( parse_blocks( $complex_faq_source ) );
+	$complex_faq_after  = serialize_blocks( nova_gut_remove_source_faq_blocks( parse_blocks( $complex_faq_source ) ) );
+	$check_complex_wrapper = false !== strpos( $complex_merged, 'Complex fresh survives.' )
+		&& false === strpos( $complex_merged, 'Complex old A.' )
+		&& false === strpos( $complex_merged, 'Complex old B.' )
+		&& false !== strpos( $complex_merged, '<div class="slot-b">' )
+		&& $complex_faq_before !== $complex_faq_after
+		&& false === strpos( $complex_faq_after, 'Complex old question?' )
+		&& false !== strpos( $complex_faq_after, 'Complex keep A.' )
+		&& false !== strpos( $complex_faq_after, 'Complex keep C.' )
+		&& false !== strpos( $complex_faq_after, '<div class="slot-c">' );
+	$results['checks']['complex_wrapper_no_data_loss'] = $check_complex_wrapper;
+
+	if ( ! $check_partial_root || ! $check_loose_form || ! $check_complex_wrapper ) {
+		$results['pass']     = false;
+		$results['errors'][] = 'Structural safety checks failed: partial_root=' . ( $check_partial_root ? 'pass' : 'fail' )
+			. ', loose_form=' . ( $check_loose_form ? 'pass' : 'fail' )
+			. ', complex_wrapper=' . ( $check_complex_wrapper ? 'pass' : 'fail' ) . '.';
+	}
+
 	return $results;
 }
 

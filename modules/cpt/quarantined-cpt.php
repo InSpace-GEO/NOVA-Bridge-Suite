@@ -712,6 +712,8 @@ final class Plugin {
 	 */
 	public static function render_theme_header(): void {
 		if ( self::should_render_block_theme_shell() ) {
+			$parts = self::get_block_theme_parts();
+
 			echo '<!DOCTYPE html>' . "\n";
 			echo '<html ';
 			language_attributes();
@@ -729,7 +731,7 @@ final class Plugin {
 			}
 
 			echo '<div class="wp-site-blocks">' . "\n";
-			self::render_block_theme_part( 'header', 'header' );
+			echo $parts['header'];
 			return;
 		}
 
@@ -741,7 +743,9 @@ final class Plugin {
 	 */
 	public static function render_theme_footer(): void {
 		if ( self::should_render_block_theme_shell() ) {
-			self::render_block_theme_part( 'footer', 'footer' );
+			$parts = self::get_block_theme_parts();
+
+			echo $parts['footer'];
 			echo '</div>' . "\n";
 			wp_footer();
 			echo '</body>' . "\n";
@@ -762,22 +766,31 @@ final class Plugin {
 	}
 
 	/**
-	 * Renders a block theme template part with a semantic wrapper.
+	 * Renders and caches block theme template parts before wp_head().
+	 *
+	 * @return array{header:string,footer:string}
+	 */
+	private static function get_block_theme_parts(): array {
+		static $parts = null;
+
+		if ( null === $parts ) {
+			$parts = [
+				'header' => self::render_block_theme_part( 'header', 'header' ),
+				'footer' => self::render_block_theme_part( 'footer', 'footer' ),
+			];
+		}
+
+		return $parts;
+	}
+
+	/**
+	 * Returns a block theme template part with its semantic wrapper.
 	 *
 	 * @param string $slug     Template part slug.
 	 * @param string $tag_name HTML tag name for the template-part wrapper.
+	 * @return string
 	 */
-	private static function render_block_theme_part( string $slug, string $tag_name ): void {
-		if ( 'header' === $slug && function_exists( 'block_header_area' ) ) {
-			block_header_area();
-			return;
-		}
-
-		if ( 'footer' === $slug && function_exists( 'block_footer_area' ) ) {
-			block_footer_area();
-			return;
-		}
-
+	private static function render_block_theme_part( string $slug, string $tag_name ): string {
 		$attrs = wp_json_encode(
 			[
 				'slug'    => $slug,
@@ -785,9 +798,11 @@ final class Plugin {
 			]
 		);
 
-		if ( is_string( $attrs ) ) {
-			echo do_blocks( '<!-- wp:template-part ' . $attrs . ' /-->' );
+		if ( ! is_string( $attrs ) ) {
+			return '';
 		}
+
+		return do_blocks( '<!-- wp:template-part ' . $attrs . ' /-->' );
 	}
 
 	/**
