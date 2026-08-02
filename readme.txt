@@ -4,7 +4,7 @@ Tags: seo, automation, content, rest-api, page builder
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.7.5
+Stable tag: 2.7.6
 License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -41,6 +41,12 @@ Yes. If WooCommerce is active you can enable the rich text field module for cate
 1. NOVA Settings screen with module toggles.
 
 == Changelog ==
+
+= 2.7.6 =
+* Apply the suite-wide SEO and custom-field metadata payload on Divi create/update requests.
+* Allow one Divi module path to update multiple fields, such as an accordion question and answer.
+* Inspect, clone, and update existing native Divi 5 text fields without reserializing their layout attributes.
+* Reject stale native paths and unsupported Divi 5 structural edits before content can be changed.
 
 = 2.7.5 =
 * Preserve block-theme header/footer styling and Gutenberg service-page structure during automated updates.

@@ -310,6 +310,10 @@ function nova_divi_apply_transformations( $shortcodes, $remove_paths, $text_upda
         return $shortcodes;
     }
 
+    if ( in_array( nova_divi_content_format( $shortcodes ), array( 'divi5-blocks', 'hybrid' ), true ) ) {
+        return $shortcodes;
+    }
+
     // Defensive: if dependencies aren't loaded, don't fatal.
     if (
         ! function_exists( 'nova_divi_parse_shortcodes_to_compact' )
@@ -412,7 +416,7 @@ function nova_divi_apply_text_updates_to_compact( $compact, $updates ) {
             continue;
         }
         $path         = (string) $update['path'];
-        $map[ $path ] = array(
+        $map[ $path ][] = array(
             'text'  => isset( $update['text'] ) ? (string) $update['text'] : '',
             'field' => isset( $update['field'] ) ? (string) $update['field'] : '',
         );
@@ -423,26 +427,28 @@ function nova_divi_apply_text_updates_to_compact( $compact, $updates ) {
             $path = ( '' === $prefix ) ? (string) $idx : $prefix . '.' . $idx;
 
             if ( array_key_exists( $path, $map ) ) {
-                $new_text = $map[ $path ]['text'];
-                $field    = strtolower( trim( $map[ $path ]['field'] ) );
-                $tag      = isset( $node['tag'] ) ? (string) $node['tag'] : '';
+                foreach ( $map[ $path ] as $change ) {
+                    $new_text = $change['text'];
+                    $field    = strtolower( trim( $change['field'] ) );
+                    $tag      = isset( $node['tag'] ) ? (string) $node['tag'] : '';
 
-                if ( ! isset( $node['attributes'] ) || ! is_array( $node['attributes'] ) ) {
-                    $node['attributes'] = array();
-                }
+                    if ( ! isset( $node['attributes'] ) || ! is_array( $node['attributes'] ) ) {
+                        $node['attributes'] = array();
+                    }
 
-                $default_field = nova_divi_default_text_field_for_tag( $tag );
+                    $default_field = nova_divi_default_text_field_for_tag( $tag );
 
-                if ( 'body' === $field || 'content' === $field ) {
-                    $node['text'] = wp_kses_post( (string) $new_text );
-                } elseif ( '' !== $field ) {
-                    $node['attributes'][ sanitize_key( $field ) ] = wp_strip_all_tags( $new_text );
-                } elseif ( null !== $default_field ) {
-                    $node['attributes'][ $default_field ] = wp_strip_all_tags( $new_text );
-                } elseif ( in_array( $tag, array( 'et_pb_image', 'et_pb_fullwidth_image', 'et_pb_divider' ), true ) ) {
-                    // Never inject body content into images/dividers.
-                } else {
-                    $node['text'] = wp_kses_post( (string) $new_text );
+                    if ( 'body' === $field || 'content' === $field ) {
+                        $node['text'] = wp_kses_post( (string) $new_text );
+                    } elseif ( '' !== $field ) {
+                        $node['attributes'][ sanitize_key( $field ) ] = wp_strip_all_tags( $new_text );
+                    } elseif ( null !== $default_field ) {
+                        $node['attributes'][ $default_field ] = wp_strip_all_tags( $new_text );
+                    } elseif ( in_array( $tag, array( 'et_pb_image', 'et_pb_fullwidth_image', 'et_pb_divider' ), true ) ) {
+                        // Never inject body content into images/dividers.
+                    } else {
+                        $node['text'] = wp_kses_post( (string) $new_text );
+                    }
                 }
             }
 
@@ -501,6 +507,10 @@ function nova_divi_replace_template_slots_with_sections( $shortcodes, $sections,
     $sections   = is_array( $sections ) ? array_values( $sections ) : array();
 
     if ( '' === $shortcodes || empty( $sections ) ) {
+        return array( $shortcodes, $sections );
+    }
+
+    if ( in_array( nova_divi_content_format( $shortcodes ), array( 'divi5-blocks', 'hybrid' ), true ) ) {
         return array( $shortcodes, $sections );
     }
 

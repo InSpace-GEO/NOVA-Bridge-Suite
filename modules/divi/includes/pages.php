@@ -80,6 +80,17 @@ function nova_divi_resolve_request_post_type( $params ) {
  * @return array|WP_Error       Possibly-adjusted params, or an error.
  */
 function nova_divi_validate_write_request( $params, $post = null ) {
+    if ( array_key_exists( 'meta_all', $params ) && ! is_array( $params['meta_all'] ) ) {
+        return new WP_Error(
+            'rest_invalid_param',
+            'meta_all must be an object.',
+            array( 'status' => 400 )
+        );
+    }
+    if ( array_key_exists( 'meta_all', $params ) && ! function_exists( 'cf_tmrb_update_post_meta_all_payload' ) ) {
+        return new WP_Error( 'missing_dependency', 'Core meta_all handler not loaded.', array( 'status' => 500 ) );
+    }
+
     if ( $post instanceof WP_Post ) {
         $post_type = $post->post_type;
     } else {
@@ -159,7 +170,7 @@ function nova_divi_finalize_builder_meta( $post_id, $shortcodes, $params = array
     $post_id    = (int) $post_id;
     $shortcodes = (string) $shortcodes;
 
-    $has_layout = ( false !== strpos( $shortcodes, '[et_pb_' ) );
+    $has_layout = ( false !== strpos( $shortcodes, '[et_pb_' ) || false !== strpos( $shortcodes, '<!-- wp:divi/' ) );
 
     if ( $has_layout || ! empty( $params['publish_builder'] ) ) {
         update_post_meta( $post_id, '_et_pb_use_builder', 'on' );
@@ -213,11 +224,16 @@ function nova_divi_clear_divi_caches() {
  * Info block returned with write responses so callers can see how the site
  * will treat the content.
  */
-function nova_divi_response_info() {
+function nova_divi_response_info( $content = '' ) {
+    $format = nova_divi_content_format( $content );
+    if ( 'divi4-shortcodes' === $format && nova_divi_is_divi5() ) {
+        $format .= ' (rendered via Divi 5 backwards compatibility)';
+    }
+
     return array(
         'builder_version' => nova_divi_builder_version(),
         'divi5_active'    => nova_divi_is_divi5(),
-        'format'          => nova_divi_is_divi5() ? 'divi4-shortcodes (rendered via Divi 5 backwards compatibility)' : 'divi4-shortcodes',
+        'format'          => $format,
     );
 }
 
@@ -560,48 +576,96 @@ function nova_divi_get_page( $request ) {
     $text_map_flag    = nova_divi_to_bool( $request->get_param( 'text_map' ), false );
 
     $raw_shortcodes = (string) $post->post_content;
+    $content_format = nova_divi_content_format( $raw_shortcodes );
+
+    if ( in_array( $layout_mode, array( 'outline', 'full' ), true ) && 'hybrid' === $content_format ) {
+        return nova_divi_unsupported_content_format_error( $content_format );
+    }
 
     $layout = array(
-        'outline'     => array(),
-        'has_builder' => nova_divi_has_divi_layout( $post ),
+        'outline'        => array(),
+        'has_builder'    => nova_divi_has_divi_layout( $post ),
+        'content_format' => $content_format,
     );
 
     $compact       = array();
     $text_map_data = array();
 
     if ( in_array( $layout_mode, array( 'outline', 'full' ), true ) ) {
-        if ( ! function_exists( 'nova_divi_parse_shortcodes_to_compact' ) ) {
-            return new WP_Error(
-                'missing_dependency',
-                'Layout parser not loaded (nova_divi_parse_shortcodes_to_compact). Ensure layout.php is included.',
-                array( 'status' => 500 )
+        if ( 'divi5-blocks' === $content_format ) {
+            $native_blocks = nova_divi5_scan_document( $raw_shortcodes );
+            if ( is_wp_error( $native_blocks ) ) {
+                return $native_blocks;
+            }
+
+            $native_outline = nova_divi5_build_outline( $raw_shortcodes, get_the_title( $post ) );
+            if ( is_wp_error( $native_outline ) ) {
+                return $native_outline;
+            }
+
+            $layout['outline']       = $native_outline;
+            $layout['path_scheme']   = 'native-block-v1';
+            $layout['document_hash'] = nova_divi5_document_hash( $raw_shortcodes );
+            $layout['capabilities']  = array(
+                'text_updates'      => true,
+                'append_sections'   => false,
+                'append_html'       => false,
+                'remove_paths'      => false,
+                'layout_replacement' => false,
             );
-        }
 
-        $compact = nova_divi_parse_shortcodes_to_compact( $raw_shortcodes );
-
-        if ( 'outline' === $layout_mode ) {
-            if ( ! function_exists( 'nova_divi_build_outline_from_compact' ) ) {
-                return new WP_Error(
-                    'missing_dependency',
-                    'Outline builder not loaded (nova_divi_build_outline_from_compact). Ensure layout.php is included.',
-                    array( 'status' => 500 )
+            if ( 'full' === $layout_mode ) {
+                $layout['native_blocks'] = array_map(
+                    function ( $block ) {
+                        return array(
+                            'path'       => $block['path'],
+                            'tag'        => $block['name'],
+                            'context'    => $block['context'],
+                            'attributes' => $block['attributes'],
+                            'protected'  => $block['protected'],
+                        );
+                    },
+                    $native_blocks
                 );
             }
-            $layout['outline'] = nova_divi_build_outline_from_compact( $compact, ( 'tree' === $outline_style ) );
+
+            if ( $text_map_flag ) {
+                $text_map_data = nova_divi5_build_text_map( $native_outline );
+            }
         } else {
-            $layout['compact'] = $compact;
-        }
-
-        if ( $text_map_flag ) {
-            if ( ! function_exists( 'nova_divi_build_text_map_from_compact' ) ) {
+            if ( ! function_exists( 'nova_divi_parse_shortcodes_to_compact' ) ) {
                 return new WP_Error(
                     'missing_dependency',
-                    'Text-map builder not loaded (nova_divi_build_text_map_from_compact). Ensure layout.php is included.',
+                    'Layout parser not loaded (nova_divi_parse_shortcodes_to_compact). Ensure layout.php is included.',
                     array( 'status' => 500 )
                 );
             }
-            $text_map_data = nova_divi_build_text_map_from_compact( $compact );
+
+            $compact = nova_divi_parse_shortcodes_to_compact( $raw_shortcodes );
+
+            if ( 'outline' === $layout_mode ) {
+                if ( ! function_exists( 'nova_divi_build_outline_from_compact' ) ) {
+                    return new WP_Error(
+                        'missing_dependency',
+                        'Outline builder not loaded (nova_divi_build_outline_from_compact). Ensure layout.php is included.',
+                        array( 'status' => 500 )
+                    );
+                }
+                $layout['outline'] = nova_divi_build_outline_from_compact( $compact, ( 'tree' === $outline_style ) );
+            } else {
+                $layout['compact'] = $compact;
+            }
+
+            if ( $text_map_flag ) {
+                if ( ! function_exists( 'nova_divi_build_text_map_from_compact' ) ) {
+                    return new WP_Error(
+                        'missing_dependency',
+                        'Text-map builder not loaded (nova_divi_build_text_map_from_compact). Ensure layout.php is included.',
+                        array( 'status' => 500 )
+                    );
+                }
+                $text_map_data = nova_divi_build_text_map_from_compact( $compact );
+            }
         }
     }
 
@@ -614,7 +678,7 @@ function nova_divi_get_page( $request ) {
         'permalink'    => get_permalink( $post ),
         'excerpt'      => $post->post_excerpt,
         'layout'       => $layout,
-        'divi'         => nova_divi_response_info(),
+        'divi'         => nova_divi_response_info( $raw_shortcodes ),
     );
 
     if ( $include_meta ) {
@@ -733,6 +797,12 @@ function nova_divi_create_page( $request ) {
         if ( ! $source_post && ! empty( $params['source_page'] ) ) {
             $source_post = nova_divi_resolve_page( $params['source_page'] );
         }
+        if ( ! $source_post ) {
+            return new WP_Error( 'not_found', 'Source page not found.', array( 'status' => 404 ) );
+        }
+        if ( ! current_user_can( 'edit_post', $source_post->ID ) ) {
+            return new WP_Error( 'nova_divi_forbidden', 'You are not allowed to clone this source page.', array( 'status' => 403 ) );
+        }
     }
 
     $base_shortcodes = '';
@@ -745,8 +815,45 @@ function nova_divi_create_page( $request ) {
         $using_template  = true;
     }
 
+    $base_format  = nova_divi_content_format( $base_shortcodes );
+    $using_native = $using_template && 'divi5-blocks' === $base_format;
+
+    if ( 'hybrid' === $base_format && nova_divi_request_mutates_layout( $params ) ) {
+        return nova_divi_unsupported_content_format_error( $base_format );
+    }
+
+    if ( 'divi5-blocks' === $base_format ) {
+        $native_validation = nova_divi_validate_native_write_request( $params );
+        if ( is_wp_error( $native_validation ) ) {
+            return $native_validation;
+        }
+        if ( ! $using_template ) {
+            return new WP_Error(
+                'nova_divi5_source_required',
+                'Create native Divi 5 pages by cloning an inspected source_page_id.',
+                array( 'status' => 422 )
+            );
+        }
+        if ( ! empty( $text_updates ) ) {
+            $hash_validation = nova_divi5_validate_document_hash(
+                isset( $params['source_document_hash'] ) ? $params['source_document_hash'] : null,
+                $base_shortcodes,
+                'source_document_hash'
+            );
+            if ( is_wp_error( $hash_validation ) ) {
+                return $hash_validation;
+            }
+
+            $base_shortcodes = nova_divi5_apply_text_updates( $base_shortcodes, $text_updates );
+            if ( is_wp_error( $base_shortcodes ) ) {
+                return $base_shortcodes;
+            }
+            $text_updates = array();
+        }
+    }
+
     // If template: allow path-based cleanup first (optional).
-    if ( $using_template && ( ! empty( $remove_paths ) || ! empty( $text_updates ) ) ) {
+    if ( $using_template && ! $using_native && ( ! empty( $remove_paths ) || ! empty( $text_updates ) ) ) {
         if ( ! function_exists( 'nova_divi_apply_transformations' ) ) {
             return new WP_Error(
                 'missing_dependency',
@@ -813,44 +920,54 @@ function nova_divi_create_page( $request ) {
     }
 
     // Meta from request.
-    $meta_updates = nova_divi_prepare_meta_updates( $params );
-    if ( ! empty( $meta_updates ) ) {
-        foreach ( $meta_updates as $key => $value ) {
-            update_post_meta( $post_id, $key, $value );
-        }
+    $meta_result = nova_divi_apply_request_meta( $post_id, $params );
+    if ( is_wp_error( $meta_result ) ) {
+        wp_delete_post( $post_id, true );
+        return $meta_result;
     }
 
-    // Append remaining sections + append_html.
+    // Append remaining sections + append_html for shortcode layouts.
     $shortcodes = (string) get_post_field( 'post_content', $post_id );
 
-    if ( ! function_exists( 'nova_divi_apply_transformations' ) ) {
-        return new WP_Error(
-            'missing_dependency',
-            'Transformations not loaded (nova_divi_apply_transformations). Ensure transformations.php is included.',
-            array( 'status' => 500 )
+    if ( $using_native ) {
+        if ( $shortcodes !== $base_shortcodes ) {
+            wp_delete_post( $post_id, true );
+            return new WP_Error(
+                'nova_divi5_storage_mismatch',
+                'WordPress did not store the native Divi 5 document byte-for-byte; the new page was removed.',
+                array( 'status' => 500 )
+            );
+        }
+    } else {
+        if ( ! function_exists( 'nova_divi_apply_transformations' ) ) {
+            return new WP_Error(
+                'missing_dependency',
+                'Transformations not loaded (nova_divi_apply_transformations). Ensure transformations.php is included.',
+                array( 'status' => 500 )
+            );
+        }
+
+        $shortcodes = nova_divi_apply_transformations(
+            $shortcodes,
+            $remove_paths,
+            $text_updates,
+            $append_html,
+            $append_sections
+        );
+
+        wp_update_post(
+            array(
+                'ID'           => $post_id,
+                'post_content' => wp_slash( $shortcodes ),
+            )
         );
     }
-
-    $shortcodes = nova_divi_apply_transformations(
-        $shortcodes,
-        $remove_paths,
-        $text_updates,
-        $append_html,
-        $append_sections
-    );
-
-    wp_update_post(
-        array(
-            'ID'           => $post_id,
-            'post_content' => wp_slash( $shortcodes ),
-        )
-    );
 
     // Divi builder meta + cache clear.
     nova_divi_finalize_builder_meta( $post_id, $shortcodes, $params );
 
     // Featured image (non-fatal).
-    $response_body = array( 'id' => $post_id, 'divi' => nova_divi_response_info() );
+    $response_body = array( 'id' => $post_id, 'divi' => nova_divi_response_info( $shortcodes ) );
 
     $featured_payload = nova_divi_extract_featured_image_payload( $params );
     if ( null !== $featured_payload ) {
@@ -886,6 +1003,38 @@ function nova_divi_update_page( $request ) {
         return $params;
     }
 
+    $original_content = (string) $post->post_content;
+    $content_format   = nova_divi_content_format( $original_content );
+    $native_content   = $original_content;
+    $native_write     = false;
+
+    if ( 'hybrid' === $content_format && nova_divi_request_mutates_layout( $params ) ) {
+        return nova_divi_unsupported_content_format_error( $content_format );
+    }
+
+    if ( 'divi5-blocks' === $content_format ) {
+        $native_validation = nova_divi_validate_native_write_request( $params );
+        if ( is_wp_error( $native_validation ) ) {
+            return $native_validation;
+        }
+        if ( ! empty( $params['text_updates'] ) ) {
+            $hash_validation = nova_divi5_validate_document_hash(
+                isset( $params['document_hash'] ) ? $params['document_hash'] : null,
+                $original_content,
+                'document_hash'
+            );
+            if ( is_wp_error( $hash_validation ) ) {
+                return $hash_validation;
+            }
+
+            $native_content = nova_divi5_apply_text_updates( $original_content, $params['text_updates'] );
+            if ( is_wp_error( $native_content ) ) {
+                return $native_content;
+            }
+            $native_write = true;
+        }
+    }
+
     $post_id = $post->ID;
     $postarr = array( 'ID' => $post_id );
 
@@ -919,73 +1068,99 @@ function nova_divi_update_page( $request ) {
         }
     }
 
-    if ( count( $postarr ) > 1 ) {
-        wp_update_post( wp_slash( $postarr ) );
+    if ( $native_write ) {
+        $postarr['post_content'] = $native_content;
     }
 
-    // Meta.
-    $meta_updates = nova_divi_prepare_meta_updates( $params );
-    if ( ! empty( $meta_updates ) ) {
-        foreach ( $meta_updates as $key => $value ) {
-            update_post_meta( $post_id, $key, $value );
+    if ( count( $postarr ) > 1 ) {
+        $post_result = wp_update_post( wp_slash( $postarr ), true );
+        if ( is_wp_error( $post_result ) ) {
+            return $post_result;
         }
     }
 
     $shortcodes = (string) get_post_field( 'post_content', $post_id );
 
-    if ( isset( $params['layout'] ) && is_array( $params['layout'] ) ) {
-        if ( array_key_exists( 'raw_shortcodes', $params['layout'] ) ) {
-            $shortcodes = (string) $params['layout']['raw_shortcodes'];
-        } elseif ( array_key_exists( 'compact', $params['layout'] ) ) {
-            if ( ! function_exists( 'nova_divi_compact_to_shortcodes' ) ) {
-                return new WP_Error(
-                    'missing_dependency',
-                    'Shortcode serializer not loaded (nova_divi_compact_to_shortcodes). Ensure layout.php is included.',
-                    array( 'status' => 500 )
-                );
+    if ( 'divi5-blocks' === $content_format ) {
+        if ( $shortcodes !== $native_content ) {
+            $rollback = array( 'ID' => $post_id );
+            foreach ( array( 'post_title', 'post_name', 'post_status', 'post_excerpt', 'post_parent', 'post_content' ) as $field ) {
+                if ( array_key_exists( $field, $postarr ) ) {
+                    $rollback[ $field ] = $post->$field;
+                }
             }
-            $shortcodes = nova_divi_compact_to_shortcodes( $params['layout']['compact'] );
+            $rollback_result = count( $rollback ) > 1 ? wp_update_post( wp_slash( $rollback ), true ) : $post_id;
+            return new WP_Error(
+                'nova_divi5_storage_mismatch',
+                'WordPress did not store the native Divi 5 document byte-for-byte.',
+                array( 'status' => 500, 'rollback_failed' => is_wp_error( $rollback_result ) )
+            );
+        }
+    } else {
+        if ( isset( $params['layout'] ) && is_array( $params['layout'] ) ) {
+            if ( array_key_exists( 'raw_shortcodes', $params['layout'] ) ) {
+                $shortcodes = (string) $params['layout']['raw_shortcodes'];
+            } elseif ( array_key_exists( 'compact', $params['layout'] ) ) {
+                if ( ! function_exists( 'nova_divi_compact_to_shortcodes' ) ) {
+                    return new WP_Error(
+                        'missing_dependency',
+                        'Shortcode serializer not loaded (nova_divi_compact_to_shortcodes). Ensure layout.php is included.',
+                        array( 'status' => 500 )
+                    );
+                }
+                $shortcodes = nova_divi_compact_to_shortcodes( $params['layout']['compact'] );
+            }
+        }
+
+        $remove_paths    = ! empty( $params['remove_paths'] ) ? (array) $params['remove_paths'] : array();
+        $text_updates    = ! empty( $params['text_updates'] ) ? (array) $params['text_updates'] : array();
+        $append_html     = ! empty( $params['append_html'] ) ? (string) $params['append_html'] : '';
+        $append_sections = ! empty( $params['append_sections'] ) ? (array) $params['append_sections'] : array();
+
+        // Auto-split single huge HTML section.
+        if ( ! empty( $append_sections ) && function_exists( 'nova_divi_expand_single_html_section_to_multiple' ) ) {
+            $append_sections = nova_divi_expand_single_html_section_to_multiple( $append_sections, get_the_title( $post ) );
+        }
+
+        if ( ! function_exists( 'nova_divi_apply_transformations' ) ) {
+            return new WP_Error(
+                'missing_dependency',
+                'Transformations not loaded (nova_divi_apply_transformations). Ensure transformations.php is included.',
+                array( 'status' => 500 )
+            );
+        }
+
+        $shortcodes = nova_divi_apply_transformations(
+            $shortcodes,
+            $remove_paths,
+            $text_updates,
+            $append_html,
+            $append_sections
+        );
+
+        $content_result = wp_update_post(
+            array(
+                'ID'           => $post_id,
+                'post_content' => wp_slash( $shortcodes ),
+            ),
+            true
+        );
+        if ( is_wp_error( $content_result ) ) {
+            return $content_result;
         }
     }
 
-    $remove_paths    = ! empty( $params['remove_paths'] ) ? (array) $params['remove_paths'] : array();
-    $text_updates    = ! empty( $params['text_updates'] ) ? (array) $params['text_updates'] : array();
-    $append_html     = ! empty( $params['append_html'] ) ? (string) $params['append_html'] : '';
-    $append_sections = ! empty( $params['append_sections'] ) ? (array) $params['append_sections'] : array();
-
-    // Auto-split single huge HTML section.
-    if ( ! empty( $append_sections ) && function_exists( 'nova_divi_expand_single_html_section_to_multiple' ) ) {
-        $append_sections = nova_divi_expand_single_html_section_to_multiple( $append_sections, get_the_title( $post ) );
+    // Apply metadata only after the document write has succeeded.
+    $meta_result = nova_divi_apply_request_meta( $post_id, $params );
+    if ( is_wp_error( $meta_result ) ) {
+        return $meta_result;
     }
-
-    if ( ! function_exists( 'nova_divi_apply_transformations' ) ) {
-        return new WP_Error(
-            'missing_dependency',
-            'Transformations not loaded (nova_divi_apply_transformations). Ensure transformations.php is included.',
-            array( 'status' => 500 )
-        );
-    }
-
-    $shortcodes = nova_divi_apply_transformations(
-        $shortcodes,
-        $remove_paths,
-        $text_updates,
-        $append_html,
-        $append_sections
-    );
-
-    wp_update_post(
-        array(
-            'ID'           => $post_id,
-            'post_content' => wp_slash( $shortcodes ),
-        )
-    );
 
     // Divi builder meta + cache clear.
     nova_divi_finalize_builder_meta( $post_id, $shortcodes, $params );
 
     // Featured image (non-fatal).
-    $response_body = array( 'id' => $post_id, 'divi' => nova_divi_response_info() );
+    $response_body = array( 'id' => $post_id, 'divi' => nova_divi_response_info( $shortcodes ) );
 
     $featured_payload = nova_divi_extract_featured_image_payload( $params );
     if ( null !== $featured_payload ) {

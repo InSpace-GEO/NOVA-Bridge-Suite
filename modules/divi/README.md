@@ -4,6 +4,8 @@ REST bridge for the **Divi Builder**. Creates and updates posts/pages whose layo
 
 **Divi 5:** content written by this module renders on Divi 5 sites through Divi's backwards-compatibility layer and can be converted per page with the official Divi 5 Migrator. Responses include a `divi` info block (`builder_version`, `divi5_active`).
 
+Native Divi 5 block documents can be inspected, cloned, and updated in place. The bridge exposes only recognized existing text fields and replaces their JSON string values without reserializing the surrounding block attributes. Native structural removal, append, and wholesale layout replacement remain unavailable and return HTTP 422.
+
 - Namespace: `nova-divi/v1`
 - Auth: standard WordPress REST authentication (application passwords). Permissions: `edit_post` on the resolved target, else `edit_posts` / `edit_pages` by post type.
 
@@ -19,9 +21,9 @@ Single page + layout. Query params:
 
 - `layout_mode` — `outline` (default) or `full` (compact node tree)
 - `include_document` — include raw shortcodes
-- `text_map` — include `[{path, text}]`
+- `text_map` — include field-qualified entries such as `[{path, field, text, responsive, requires_sync_responsive}]`
 
-The `layout.outline` is a flat list of text-bearing modules: `{path, tag, label, context, text}`. Those `path` values are the only valid targets for `text_updates` / `remove_paths`.
+The `layout.outline` is a flat list of text-bearing modules. Native Divi 5 responses also include `content_format`, `path_scheme`, `document_hash`, and per-operation capabilities. A native path is valid only with the document hash returned by the same GET.
 
 ### `POST /wp-json/nova-divi/v1/pages` — create
 
@@ -37,13 +39,16 @@ JSON body (all keys optional unless noted):
 | `post_type` | `page` (default) or `post` / CPT |
 | `author`, `parent` / `parent_id`, `excerpt` | Standard post fields |
 | `source_page_id` / `source_page` | Clone this post's Divi layout + meta (incl. featured image) as the template |
-| `text_updates` | `[{path, text, field?}]` — replace module text at outline paths. Writes to **the same field the outline showed**: body for `et_pb_text`, `title` for accordion items / toggles / blurbs / CTAs / headings, `button_text` for buttons, `heading` for slides, `name` for team members. Override with `field`: `"body"`/`"content"` targets the inner body (e.g. an accordion item's answer), any other name targets that attribute |
+| `source_document_hash` | Required when a native Divi 5 clone includes `text_updates` |
+| `document_hash` | Required when updating text in an existing native Divi 5 page |
+| `text_updates` | `[{path, text, field?}]` — replace module text at outline paths. Writes to **the same field the outline showed**: body for `et_pb_text`, `title` for accordion items / toggles / blurbs / CTAs / headings, `button_text` for buttons, `heading` for slides, `name` for team members. Override with `field`: `"body"`/`"content"` targets the inner body (e.g. an accordion item's answer), any other name targets that attribute. Multiple updates may use the same path to update different fields, such as an accordion item's `title` and `body` |
 | `remove_paths` | `["0.1", ...]` — delete modules at outline paths. Safe to combine with `text_updates` in one request: both use the paths from the same GET (text updates apply first) |
 | `append_sections` | `[{title, body, title_tag, type?}]` — each becomes a section > row > column with the heading as `<h2>` HTML inside an `et_pb_text`. `type: "faq"` renders an `et_pb_accordion` from `<h3>Q</h3><p>A</p>` pairs in `body`. In clone mode (and on updates), a single section whose body holds multiple `<h2>` blocks is auto-split into one section per `<h2>` (FAQ headings auto-detected); for from-scratch creates pass `split_sections: true` to opt in |
 | `append_html` | One extra text module in its own section |
 | `layout.raw_shortcodes` / `layout.compact` | Replace the layout wholesale (power use) |
 | `keep_source_content` | Clone mode: `true` appends sections instead of replacing the template's text slots |
-| `meta`, `meta_title`, `meta_description` | Post meta; SEO title/description are mapped to Yoast / AIOSEO / Rank Math keys |
+| `meta_all` | Suite-wide post-meta payload, including provider-aware SEO keys, dotted paths, nested values, and ACF |
+| `meta`, `meta_title`, `meta_description` | Legacy Divi post meta; SEO title/description are mapped to Yoast / AIOSEO / Rank Math keys. When combined with `meta_all`, these legacy/top-level values are applied last |
 | `featured_image` `{attachment_id\|url, alt, caption}` or `featured_image_url` | Featured image (URL is sideloaded into the media library; non-fatal on failure) |
 | `page_layout` | `et_full_width_page` / `et_right_sidebar` / `et_left_sidebar` / `et_no_sidebar` |
 | `show_title`, `old_content`, `publish_builder` | Divi extras: hide/show default title, plain-HTML builder-off fallback, force the builder flag |
@@ -51,6 +56,8 @@ JSON body (all keys optional unless noted):
 Clone mode (`source_page_id` + `append_sections`) writes the sections **into the template's content slots** in document order. A content slot is an `et_pb_text` that is empty, heading-led (`h2`–`h4`), or paragraph-scale (≥ 240 visible chars) — short heading-less texts (hero subtitles, CTA copy) are template chrome and are left untouched; edit those via `text_updates`. The first slot skips a heading equal to the page title. Unfilled content slots are removed and containers they leave empty are pruned, so no stale example text or empty section bands survive. Sections that don't fit are appended — FAQ sections are always appended as accordions.
 
 Capability model: the effective post type (including the `type` alias and values nested in a JSON `content` payload) is re-validated server-side — creating requires that type's `edit_posts` capability, `publish`/`future`/`private` status requires its `publish_posts`, and assigning another `author` requires `edit_others_posts` (silently dropped otherwise).
+
+For native Divi 5, supported fields are existing text/blurb/heading/accordion-item/toggle text plus existing blurb URL/anchor values. Dynamic content, locked/global blocks, embedded forms, unknown modules, paired leaf modules, stale hashes, and unrecognized responsive variants fail closed. Use `sync_responsive: true` when the outline marks a field as requiring responsive synchronization.
 
 ## Divi format notes (for maintainers)
 

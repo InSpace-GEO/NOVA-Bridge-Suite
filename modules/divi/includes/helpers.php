@@ -87,7 +87,143 @@ function nova_divi_has_divi_layout( $post ) {
     if ( 'on' === $flag ) {
         return true;
     }
-    return ( false !== strpos( (string) $post->post_content, '[et_pb_' ) );
+    $content = (string) $post->post_content;
+    return ( false !== strpos( $content, '[et_pb_' ) || false !== strpos( $content, '<!-- wp:divi/' ) );
+}
+
+/**
+ * Identify the stored Divi document format before selecting a parser.
+ */
+function nova_divi_content_format( $content ) {
+    $content        = (string) $content;
+    $has_shortcodes = false !== strpos( $content, '[et_pb_' );
+    $has_blocks     = false !== strpos( $content, '<!-- wp:divi/' );
+
+    if ( $has_shortcodes && $has_blocks ) {
+        return 'hybrid';
+    }
+    if ( $has_blocks ) {
+        return 'divi5-blocks';
+    }
+    if ( $has_shortcodes ) {
+        return 'divi4-shortcodes';
+    }
+    return 'plain';
+}
+
+/**
+ * Whether a request asks the shortcode transformation layer to edit layout.
+ */
+function nova_divi_request_mutates_layout( $params ) {
+    foreach ( array( 'text_updates', 'remove_paths', 'append_sections' ) as $key ) {
+        if ( ! empty( $params[ $key ] ) ) {
+            return true;
+        }
+    }
+
+    if ( array_key_exists( 'append_html', $params ) ) {
+        if ( ! is_scalar( $params['append_html'] ) && null !== $params['append_html'] ) {
+            return true;
+        }
+        if ( '' !== trim( (string) $params['append_html'] ) ) {
+            return true;
+        }
+    }
+
+    return isset( $params['layout'] )
+        && is_array( $params['layout'] )
+        && ( array_key_exists( 'raw_shortcodes', $params['layout'] ) || array_key_exists( 'compact', $params['layout'] ) );
+}
+
+/**
+ * Native Divi 5 text fields can be updated in place. Structural mutations
+ * still require a dedicated writer and must fail before any post is changed.
+ */
+function nova_divi_validate_native_write_request( $params ) {
+    foreach ( array( 'remove_paths', 'append_sections', 'text_updates' ) as $key ) {
+        if ( array_key_exists( $key, $params ) && ! is_array( $params[ $key ] ) ) {
+            return new WP_Error( 'rest_invalid_param', $key . ' must be an array.', array( 'status' => 400 ) );
+        }
+    }
+    if ( array_key_exists( 'layout', $params ) && ! is_array( $params['layout'] ) ) {
+        return new WP_Error( 'rest_invalid_param', 'layout must be an object.', array( 'status' => 400 ) );
+    }
+    if ( array_key_exists( 'append_html', $params ) && ! is_scalar( $params['append_html'] ) && null !== $params['append_html'] ) {
+        return new WP_Error( 'rest_invalid_param', 'append_html must be a string.', array( 'status' => 400 ) );
+    }
+
+    $unsupported = array();
+
+    foreach ( array( 'remove_paths', 'append_sections' ) as $key ) {
+        if ( ! empty( $params[ $key ] ) ) {
+            $unsupported[] = $key;
+        }
+    }
+
+    if ( isset( $params['append_html'] ) && '' !== trim( (string) $params['append_html'] ) ) {
+        $unsupported[] = 'append_html';
+    }
+
+    if (
+        isset( $params['layout'] )
+        && is_array( $params['layout'] )
+        && ( array_key_exists( 'raw_shortcodes', $params['layout'] ) || array_key_exists( 'compact', $params['layout'] ) )
+    ) {
+        $unsupported[] = 'layout';
+    }
+
+    if ( empty( $unsupported ) ) {
+        return true;
+    }
+
+    return new WP_Error(
+        'nova_divi5_unsupported_operation',
+        'Native Divi 5 layouts support cloning and text_updates, but not structural removal, append, or wholesale layout replacement.',
+        array(
+            'status'             => 422,
+            'content_format'     => 'divi5-blocks',
+            'unsupported_fields' => array_values( array_unique( $unsupported ) ),
+        )
+    );
+}
+
+function nova_divi5_document_hash( $content ) {
+    return 'sha256:' . hash( 'sha256', (string) $content );
+}
+
+function nova_divi5_validate_document_hash( $provided, $content, $parameter ) {
+    if ( ! is_string( $provided ) || '' === trim( $provided ) ) {
+        return new WP_Error(
+            'nova_divi5_precondition_required',
+            $parameter . ' is required for native Divi 5 text updates.',
+            array( 'status' => 428, 'required' => $parameter )
+        );
+    }
+
+    $actual = nova_divi5_document_hash( $content );
+    if ( ! hash_equals( $actual, trim( $provided ) ) ) {
+        return new WP_Error(
+            'nova_divi5_document_changed',
+            'The native Divi 5 document changed after it was inspected. Fetch a fresh outline before writing.',
+            array( 'status' => 409 )
+        );
+    }
+
+    return true;
+}
+
+/**
+ * Mixed Divi 4/5 documents have no unambiguous transformation model.
+ */
+function nova_divi_unsupported_content_format_error( $format ) {
+    return new WP_Error(
+        'nova_divi_unsupported_content_format',
+        'Mixed Divi 4 shortcode and native Divi 5 block layouts cannot be transformed safely.',
+        array(
+            'status'         => 422,
+            'content_format' => (string) $format,
+        )
+    );
 }
 
 /**
@@ -194,6 +330,33 @@ function nova_divi_prepare_meta_updates( $params ) {
     }
 
     return $meta;
+}
+
+/**
+ * Apply the suite-wide meta_all contract, then the legacy Divi meta inputs.
+ * Legacy/top-level values intentionally win when both forms are supplied.
+ */
+function nova_divi_apply_request_meta( $post_id, $params ) {
+    if ( array_key_exists( 'meta_all', $params ) ) {
+        if ( ! function_exists( 'cf_tmrb_update_post_meta_all_payload' ) ) {
+            return new WP_Error(
+                'missing_dependency',
+                'Core meta_all handler not loaded.',
+                array( 'status' => 500 )
+            );
+        }
+
+        $result = cf_tmrb_update_post_meta_all_payload( $params['meta_all'], get_post( $post_id ) );
+        if ( is_wp_error( $result ) ) {
+            return $result;
+        }
+    }
+
+    foreach ( nova_divi_prepare_meta_updates( $params ) as $key => $value ) {
+        update_post_meta( $post_id, $key, $value );
+    }
+
+    return true;
 }
 
 /**
