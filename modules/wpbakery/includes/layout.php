@@ -295,6 +295,40 @@ if ( ! function_exists( 'nova_wpb_build_text_map_from_compact' ) ) {
 }
 
 /**
+ * Serialize a compact node's attributes into a shortcode attribute string.
+ *
+ * Shared by the serializer and by callers that need to emit a row/column shell
+ * without building a full compact node first.
+ */
+if ( ! function_exists( 'nova_wpb_attrs_to_string' ) ) {
+	function nova_wpb_attrs_to_string( $attributes ) {
+		if ( ! is_array( $attributes ) ) {
+			return '';
+		}
+
+		$out = '';
+		foreach ( $attributes as $key => $value ) {
+			$key = (string) $key;
+
+			// Normalize non-scalar attribute values.
+			if ( is_array( $value ) || is_object( $value ) ) {
+				$value = wp_json_encode( $value );
+			} elseif ( is_bool( $value ) ) {
+				$value = $value ? 'true' : 'false';
+			} elseif ( null === $value ) {
+				$value = '';
+			} else {
+				$value = (string) $value;
+			}
+
+			$out .= ' ' . $key . '="' . esc_attr( $value ) . '"';
+		}
+
+		return $out;
+	}
+}
+
+/**
  * Compact → shortcode string.
  */
 if ( ! function_exists( 'nova_wpb_compact_to_shortcodes' ) ) {
@@ -308,23 +342,7 @@ if ( ! function_exists( 'nova_wpb_compact_to_shortcodes' ) ) {
 				$children   = isset( $node['children'] ) && is_array( $node['children'] ) ? $node['children'] : array();
 				$text       = isset( $node['text'] ) ? (string) $node['text'] : '';
 
-				$atts_str = '';
-				foreach ( $attributes as $key => $value ) {
-					$key = (string) $key;
-
-					// Normalize non-scalar attribute values.
-					if ( is_array( $value ) || is_object( $value ) ) {
-						$value = wp_json_encode( $value );
-					} elseif ( is_bool( $value ) ) {
-						$value = $value ? 'true' : 'false';
-					} elseif ( null === $value ) {
-						$value = '';
-					} else {
-						$value = (string) $value;
-					}
-
-					$atts_str .= ' ' . $key . '="' . esc_attr( $value ) . '"';
-				}
+				$atts_str = nova_wpb_attrs_to_string( $attributes );
 
 				$inner = '';
 				if ( ! empty( $children ) ) {

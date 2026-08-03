@@ -4,7 +4,7 @@ Tags: seo, automation, content, rest-api, page builder
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.7.7
+Stable tag: 2.7.8
 License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -41,6 +41,12 @@ Yes. If WooCommerce is active you can enable the rich text field module for cate
 1. NOVA Settings screen with module toggles.
 
 == Changelog ==
+
+= 2.7.8 =
+* Keep generated WPBakery sections together: each title and body now land in one template block instead of being spread across unrelated containers.
+* Stop overwriting hero, call-to-action, image and button rows when filling a content-filled WPBakery template.
+* Give leftover WPBakery sections the styling of the template section they follow, instead of appending unstyled rows.
+* Apply requested text updates before removing elements, so both can be used in one WPBakery request.
 
 = 2.7.7 =
 * Let NOVA update existing Divi Supreme button labels and URLs in native Divi 5 layouts.

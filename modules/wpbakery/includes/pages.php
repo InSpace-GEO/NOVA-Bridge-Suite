@@ -635,6 +635,8 @@ function nova_wpb_create_page( $request ) {
 	}
 
 	// Replace template slots instead of appending duplicates.
+	$slot_report  = null;
+	$section_shell = null;
 	if ( $using_template && ! $keep_source_content && ! empty( $append_sections ) && is_array( $append_sections ) ) {
 		if ( ! function_exists( 'nova_wpb_replace_template_slots_with_sections' ) ) {
 			return new WP_Error(
@@ -648,8 +650,14 @@ function nova_wpb_create_page( $request ) {
 			$base_shortcodes,
 			$append_sections,
 			$postarr['post_title'],
-			true
+			true,
+			$slot_report
 		);
+
+		// Overflow sections reuse the styling of a slot that was actually filled.
+		if ( is_array( $slot_report ) && ! empty( $slot_report['shell'] ) ) {
+			$section_shell = $slot_report['shell'];
+		}
 	}
 
 	$postarr['post_content'] = $base_shortcodes;
@@ -706,7 +714,8 @@ function nova_wpb_create_page( $request ) {
 		$remove_paths,
 		$text_updates,
 		$append_html,
-		$append_sections
+		$append_sections,
+		$section_shell
 	);
 
 	// Defensive: prevent invalid container usage from being saved.
@@ -726,7 +735,20 @@ function nova_wpb_create_page( $request ) {
 		update_post_meta( $post_id, '_wpb_vc_js_status', 'true' );
 	}
 
-	return new WP_REST_Response( array( 'id' => $post_id ), 201 );
+	$response = array( 'id' => $post_id );
+
+	/*
+	 * Report how the template slots were used so the caller can detect a bad
+	 * generation (e.g. every section appended because nothing matched) instead of
+	 * having to eyeball the rendered page.
+	 */
+	if ( is_array( $slot_report ) ) {
+		$diagnostics = $slot_report;
+		unset( $diagnostics['shell'] );
+		$response['nova'] = $diagnostics;
+	}
+
+	return new WP_REST_Response( $response, 201 );
 }
 
 /**
