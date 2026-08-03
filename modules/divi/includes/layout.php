@@ -786,6 +786,17 @@ if ( ! function_exists( 'nova_divi5_field_definitions' ) ) {
                     ),
                 );
 
+            case 'dsm/button':
+                return array(
+                    'default' => 'button_one_text',
+                    'fields'  => array(
+                        'button_one_text' => array( 'path' => array_merge( array( 'button_one_text' ), $inner_content ), 'kind' => 'text' ),
+                        'button_one_url'  => array( 'path' => array_merge( array( 'button_one_url' ), $inner_content ), 'kind' => 'url' ),
+                        'button_two_text' => array( 'path' => array_merge( array( 'button_two_text' ), $inner_content ), 'kind' => 'text' ),
+                        'button_two_url'  => array( 'path' => array_merge( array( 'button_two_url' ), $inner_content ), 'kind' => 'url' ),
+                    ),
+                );
+
             case 'divi/accordion-item':
             case 'divi/toggle':
                 return array(

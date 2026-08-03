@@ -57,7 +57,7 @@ Clone mode (`source_page_id` + `append_sections`) writes the sections **into the
 
 Capability model: the effective post type (including the `type` alias and values nested in a JSON `content` payload) is re-validated server-side — creating requires that type's `edit_posts` capability, `publish`/`future`/`private` status requires its `publish_posts`, and assigning another `author` requires `edit_others_posts` (silently dropped otherwise).
 
-For native Divi 5, supported fields are existing text/blurb/heading/accordion-item/toggle text plus existing blurb URL/anchor values. Dynamic content, locked/global blocks, embedded forms, unknown modules, paired leaf modules, stale hashes, and unrecognized responsive variants fail closed. Use `sync_responsive: true` when the outline marks a field as requiring responsive synchronization.
+For native Divi 5, supported fields are existing text/blurb/heading/accordion-item/toggle text, Divi Supreme button labels/URLs, and existing blurb URL/anchor values. Dynamic content, locked/global blocks, embedded forms, unknown modules, paired leaf modules, stale hashes, and unrecognized responsive variants fail closed. Use `sync_responsive: true` when the outline marks a field as requiring responsive synchronization.
 
 ## Divi format notes (for maintainers)
 

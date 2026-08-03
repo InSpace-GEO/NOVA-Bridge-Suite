@@ -128,7 +128,7 @@ try {
 <!-- wp:divi/text {"content":{"innerContent":{"desktop":{"value":"<h2>Old section</h2><p>Old copy.</p>"}}},"builderVersion":"5.7.3"} /-->
 <!-- wp:divi/text {"content":{"innerContent":{"desktop":{"value":"Desktop old"},"tablet":{"value":"Tablet old"},"phone":{"value":""}}},"builderVersion":"5.7.3"} /-->
 <!-- wp:divi/blurb {"title":{"innerContent":{"desktop":{"value":{"text":"Blurb old"}}}},"content":{"innerContent":{"desktop":{"value":"<p>Blurb body old.</p>"}}},"module":{"advanced":{"link":{"desktop":{"value":{"url":"#old-link"}}}},"decoration":{"attributes":{"desktop":{"value":{"attributes":[{"name":"id","value":"old-anchor","targetElement":""},{"name":"data-keep","value":"opaque"}]}}}}},"builderVersion":"5.7.3"} /-->
-<!-- wp:dsm/button {"opaque":{"nested":"Keep exactly \u002d\u002d \u003c \u0026 \u003e"}} /-->
+<!-- wp:dsm/button {"button_one_text":{"innerContent":{"desktop":{"value":"Alles over LMS"}}},"button_one_url":{"innerContent":{"desktop":{"value":"#informatie-lms"}}},"button_two_text":{"innerContent":{"desktop":{"value":"Gratis adviesgesprek"}}},"button_two_url":{"innerContent":{"desktop":{"value":"https://example.com/contact"}}},"opaque":{"nested":"Keep exactly \u002d\u002d \u003c \u0026 \u003e"}} /-->
 <!-- wp:divi/heading {"title":{"innerContent":{"desktop":{"value":"<h2>Heading old</h2>"}}},"builderVersion":"5.7.3"} /-->
 <!-- wp:divi/accordion {"locked":{"desktop":{"value":"off"}}} -->
 <!-- wp:divi/accordion-item {"title":{"innerContent":{"desktop":{"value":"Question old?"}}},"content":{"innerContent":{"desktop":{"value":"<p>Answer old.</p>"}}},"builderVersion":"5.7.3"} /-->
@@ -172,6 +172,7 @@ DIVI5;
     nova_divi_test_assert( false === $outline_by_path['0.0']['editable'], 'Dynamic post title was exposed as editable.' );
     nova_divi_test_assert( true === $outline_by_path['0.2']['fields']['body']['requires_sync_responsive'], 'Responsive override was not reported.' );
     nova_divi_test_assert( isset( $outline_by_path['0.3']['fields']['title'], $outline_by_path['0.3']['fields']['body'] ), 'Blurb title/body were not exposed on one path.' );
+    nova_divi_test_assert( isset( $outline_by_path['0.4']['fields']['button_one_text'], $outline_by_path['0.4']['fields']['button_one_url'], $outline_by_path['0.4']['fields']['button_two_text'], $outline_by_path['0.4']['fields']['button_two_url'] ), 'DSM button labels and URLs were not exposed.' );
     nova_divi_test_assert( 'faq_item' === $outline_by_path['0.6.0']['role'], 'Existing native FAQ item was not identified.' );
     foreach ( $native_get_data['text_map'] as $text_map_item ) {
         if ( '0.2' === $text_map_item['path'] && 'body' === $text_map_item['field'] ) {
@@ -187,6 +188,10 @@ DIVI5;
         array( 'path' => '0.3', 'field' => 'body', 'text' => '<p>Blurb body new.</p>' ),
         array( 'path' => '0.3', 'field' => 'link_url', 'text' => '#new-link' ),
         array( 'path' => '0.3', 'field' => 'anchor_id', 'text' => 'New Anchor' ),
+        array( 'path' => '0.4', 'field' => 'button_one_text', 'text' => 'Migration details' ),
+        array( 'path' => '0.4', 'field' => 'button_one_url', 'text' => '#migration-details' ),
+        array( 'path' => '0.4', 'field' => 'button_two_text', 'text' => 'Plan migration call' ),
+        array( 'path' => '0.4', 'field' => 'button_two_url', 'text' => 'https://example.com/migration' ),
         array( 'path' => '0.5', 'field' => 'title', 'text' => '<h2>Heading new</h2>' ),
         array( 'path' => '0.6.0', 'field' => 'title', 'text' => 'Question new?' ),
         array( 'path' => '0.6.0', 'field' => 'body', 'text' => '<p>Answer new.</p>' ),
@@ -194,7 +199,11 @@ DIVI5;
     $expected_native = nova_divi5_apply_text_updates( $native_content, $native_updates );
     nova_divi_test_assert( ! is_wp_error( $expected_native ), 'Native scalar patcher rejected supported fields.' );
     nova_divi_test_assert( false !== strpos( $expected_native, '<!-- wp:divi/text {"content":{"innerContent":{"desktop":{"value":"\u003ch2\u003eNew section\u003c/h2\u003e\u003cp\u003eNew copy.\u003c/p\u003e"}}},"builderVersion":"5.7.3"} /-->' ), 'Native text scalar was not encoded in the expected delimiter.' );
-    nova_divi_test_assert( false !== strpos( $expected_native, '<!-- wp:dsm/button {"opaque":{"nested":"Keep exactly \u002d\u002d \u003c \u0026 \u003e"}} /-->' ), 'Opaque DSM bytes changed.' );
+    nova_divi_test_assert( false !== strpos( $expected_native, '"button_one_text":{"innerContent":{"desktop":{"value":"Migration details"}}}' ), 'DSM primary button label was not updated.' );
+    nova_divi_test_assert( false !== strpos( $expected_native, '"button_one_url":{"innerContent":{"desktop":{"value":"#migration-details"}}}' ), 'DSM primary button URL was not updated.' );
+    nova_divi_test_assert( false !== strpos( $expected_native, '"button_two_text":{"innerContent":{"desktop":{"value":"Plan migration call"}}}' ), 'DSM secondary button label was not updated.' );
+    nova_divi_test_assert( false !== strpos( $expected_native, '"button_two_url":{"innerContent":{"desktop":{"value":"https://example.com/migration"}}}' ), 'DSM secondary button URL was not updated.' );
+    nova_divi_test_assert( false !== strpos( $expected_native, '"opaque":{"nested":"Keep exactly \u002d\u002d \u003c \u0026 \u003e"}} /-->' ), 'Opaque DSM bytes changed.' );
 
     $native_create = nova_divi_create_page(
         nova_divi_test_request(
