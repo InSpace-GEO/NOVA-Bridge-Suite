@@ -15,6 +15,13 @@ function nova_wpb_permission_check( $request ) {
         }
     }
 
+    if ( $request instanceof WP_REST_Request && 'GET' === $request->get_method() && absint( $request->get_param( 'id' ) ) ) {
+        $post = get_post( absint( $request->get_param( 'id' ) ) );
+        if ( $post instanceof WP_Post ) {
+            return current_user_can( 'edit_post', $post->ID );
+        }
+    }
+
     $post_type = '';
     if ( $request instanceof WP_REST_Request ) {
         $post_type = $request->get_param( 'post_type' );
@@ -54,6 +61,18 @@ add_action(
                             'type'              => 'integer',
                             'default'           => 1,
                             'sanitize_callback' => 'absint',
+                        ),
+                        'id'        => array(
+                            'type'              => 'integer',
+                            'sanitize_callback' => 'absint',
+                        ),
+                        'context'   => array(
+                            'type'    => 'string',
+                            'default' => 'view',
+                        ),
+                        'include_fields' => array(
+                            'type'    => 'boolean',
+                            'default' => false,
                         ),
                         'status'    => array(
                             'type'    => 'string',

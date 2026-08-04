@@ -24,6 +24,7 @@ function nova_wpb_normalize_compact_tree( $compact ) {
 				// Convert spacer-with-content into a real text container.
 				$node['tag']          = 'vc_column_text';
 				$node['self_closing'] = false;
+				$node['syntax']       = 'paired';
 
 				// Spacer attrs like height are meaningless for text blocks; drop them.
 				if ( isset( $node['attributes'] ) && is_array( $node['attributes'] ) ) {
@@ -159,6 +160,25 @@ function nova_wpb_expand_single_html_section_to_multiple( $sections, $page_title
 }
 
 /**
+ * Index every current compact-tree path.
+ */
+function nova_wpb_collect_compact_paths( $compact ) {
+	$paths = array();
+	$walk  = function ( $nodes, $prefix = '' ) use ( &$walk, &$paths ) {
+		foreach ( (array) $nodes as $idx => $node ) {
+			$path           = '' === $prefix ? (string) $idx : $prefix . '.' . $idx;
+			$paths[ $path ] = true;
+			if ( ! empty( $node['children'] ) && is_array( $node['children'] ) ) {
+				$walk( $node['children'], $path );
+			}
+		}
+	};
+
+	$walk( $compact );
+	return $paths;
+}
+
+/**
  * Apply transformations: remove_paths / text_updates / append_*.
  */
 function nova_wpb_apply_transformations( $shortcodes, $remove_paths, $text_updates, $append_html, $append_sections ) {
@@ -181,17 +201,35 @@ function nova_wpb_apply_transformations( $shortcodes, $remove_paths, $text_updat
 		return $shortcodes;
 	}
 
-	$compact = nova_wpb_parse_shortcodes_to_compact( $shortcodes );
+	if ( function_exists( 'nova_wpb_validate_roundtrip_coverage' ) ) {
+		$coverage = nova_wpb_validate_roundtrip_coverage( $shortcodes );
+		if ( is_wp_error( $coverage ) ) {
+			return $coverage;
+		}
+	}
 
+	$compact = nova_wpb_parse_shortcodes_to_compact( $shortcodes );
+	$paths   = nova_wpb_collect_compact_paths( $compact );
+	foreach ( (array) $remove_paths as $remove_path ) {
+		$remove_path = (string) $remove_path;
+		if ( '' === $remove_path || ! isset( $paths[ $remove_path ] ) ) {
+			return new WP_Error(
+				'nova_wpb_invalid_path',
+				__( 'A requested WPBakery element path does not exist.', 'nova-bridge' ),
+				array( 'status' => 400, 'path' => $remove_path )
+			);
+		}
+	}
+
+	if ( ! empty( $text_updates ) ) {
+		$compact = nova_wpb_apply_text_updates_to_compact( $compact, $text_updates );
+		if ( is_wp_error( $compact ) ) {
+			return $compact;
+		}
+	}
 	if ( ! empty( $remove_paths ) ) {
 		$compact = nova_wpb_remove_paths_from_compact( $compact, $remove_paths );
 	}
-	if ( ! empty( $text_updates ) ) {
-		$compact = nova_wpb_apply_text_updates_to_compact( $compact, $text_updates );
-	}
-
-	// ✅ Normalize (fix spacer-with-content issues that break layout downstream).
-	$compact = nova_wpb_normalize_compact_tree( $compact );
 
 	$shortcodes = nova_wpb_compact_to_shortcodes( $compact );
 
@@ -258,78 +296,213 @@ function nova_wpb_apply_transformations( $shortcodes, $remove_paths, $text_updat
 function nova_wpb_remove_paths_from_compact( $compact, $paths ) {
 	$paths = array_map( 'strval', (array) $paths );
 
-	$walk = function ( $nodes, $prefix = '' ) use ( &$walk, $paths ) {
-		$result = array();
+	$walk = function ( $nodes, $prefix = '', &$orphaned_raw = '' ) use ( &$walk, $paths ) {
+		$result      = array();
+		$pending_raw = '';
 
 		foreach ( $nodes as $idx => $node ) {
 			$path = ( '' === $prefix ) ? (string) $idx : $prefix . '.' . $idx;
 
 			if ( in_array( $path, $paths, true ) ) {
+				$pending_raw .= isset( $node['raw_before'] ) ? (string) $node['raw_before'] : '';
+				$pending_raw .= isset( $node['raw_after'] ) ? (string) $node['raw_after'] : '';
 				continue;
 			}
 
 			if ( ! empty( $node['children'] ) && is_array( $node['children'] ) ) {
-				$node['children'] = $walk( $node['children'], $path );
+				$child_raw        = '';
+				$node['children'] = $walk( $node['children'], $path, $child_raw );
+				if ( empty( $node['children'] ) && '' !== $child_raw ) {
+					$node['text'] = ( isset( $node['text'] ) ? (string) $node['text'] : '' ) . $child_raw;
+				}
+			}
+
+			if ( '' !== $pending_raw ) {
+				$node['raw_before'] = $pending_raw . ( isset( $node['raw_before'] ) ? (string) $node['raw_before'] : '' );
+				$pending_raw        = '';
 			}
 
 			$result[] = $node;
 		}
 
+		if ( '' !== $pending_raw ) {
+			if ( ! empty( $result ) ) {
+				$last_index = count( $result ) - 1;
+				$result[ $last_index ]['raw_after'] = ( isset( $result[ $last_index ]['raw_after'] ) ? (string) $result[ $last_index ]['raw_after'] : '' ) . $pending_raw;
+			} else {
+				$orphaned_raw .= $pending_raw;
+			}
+		}
+
 		return $result;
 	};
 
-	return $walk( $compact );
+	$orphaned_raw = '';
+	return $walk( $compact, '', $orphaned_raw );
 }
 
 /**
- * Apply text_updates to compact tree via path.
+ * Sanitize one field update. Returns null through $valid for rejected URLs.
+ */
+function nova_wpb_sanitize_editable_field_value( $field, $value, &$valid ) {
+	$field  = sanitize_key( (string) $field );
+	$value  = (string) $value;
+	$format = function_exists( 'nova_wpb_field_format' ) ? nova_wpb_field_format( $field ) : 'text';
+	$valid  = true;
+
+	if ( 'html' === $format ) {
+		return wp_kses_post( $value );
+	}
+
+	if ( 'url' === $format || 'image' === $format ) {
+		$value = trim( $value );
+		if ( '' === $value ) {
+			return '';
+		}
+
+		if ( 'image' === $format && preg_match( '/^\d+(?:,\d+)*$/', $value ) ) {
+			return $value;
+		}
+
+		if ( preg_match( '/[\x00-\x1F\x7F]/', $value ) ) {
+			$valid = false;
+			return null;
+		}
+
+		$protocol_safe = wp_kses_bad_protocol( $value, array( 'http', 'https', 'mailto', 'tel' ) );
+		if ( $protocol_safe !== $value ) {
+			$valid = false;
+			return null;
+		}
+
+		// Relative URLs and fragments must not be turned into absolute URLs.
+		if ( ! preg_match( '/^[a-z][a-z0-9+.-]*:/i', $value ) ) {
+			return $value;
+		}
+
+		$value = esc_url_raw( $value, array( 'http', 'https', 'mailto', 'tel' ) );
+		if ( '' === $value ) {
+			$valid = false;
+			return null;
+		}
+
+		return $value;
+	}
+
+	return wp_strip_all_tags( $value );
+}
+
+/**
+ * Apply field-qualified text_updates to a compact tree via path.
  *
- * - vc_custom_heading: update attributes["text"]
- * - theme heading: update attributes["text"]
- * - theme button: update attributes["btntext"]
- * - everything else: update inner text (EXCEPT vc_empty_space)
+ * Legacy {path,text} updates continue to target each tag's primary text field.
  */
 function nova_wpb_apply_text_updates_to_compact( $compact, $updates ) {
 	$map = array();
 
-	foreach ( $updates as $update ) {
-		if ( empty( $update['path'] ) ) {
-			continue;
+	foreach ( (array) $updates as $update ) {
+		if ( ! is_array( $update ) || ! isset( $update['path'] ) || '' === (string) $update['path'] ) {
+			return new WP_Error(
+				'nova_wpb_invalid_text_update',
+				__( 'Every WPBakery text update requires a path.', 'nova-bridge' ),
+				array( 'status' => 400 )
+			);
 		}
-		$path         = (string) $update['path'];
-		$map[ $path ] = isset( $update['text'] ) ? (string) $update['text'] : '';
+
+		$path = (string) $update['path'];
+		if ( ! isset( $map[ $path ] ) ) {
+			$map[ $path ] = array();
+		}
+		$map[ $path ][] = array(
+			'field'         => isset( $update['field'] ) ? (string) $update['field'] : '',
+			'field_present' => isset( $update['field'] ),
+			'text'          => isset( $update['text'] ) ? (string) $update['text'] : '',
+		);
 	}
 
-	$walk = function ( $nodes, $prefix = '' ) use ( &$walk, $map ) {
+	$error = null;
+	$seen  = array();
+	$walk  = function ( $nodes, $prefix = '' ) use ( &$walk, $map, &$error, &$seen ) {
 		foreach ( $nodes as $idx => &$node ) {
+			if ( is_wp_error( $error ) ) {
+				break;
+			}
 			$path = ( '' === $prefix ) ? (string) $idx : $prefix . '.' . $idx;
 
-			if ( array_key_exists( $path, $map ) ) {
-				$new_text = $map[ $path ];
-				$tag      = isset( $node['tag'] ) ? (string) $node['tag'] : '';
+			if ( isset( $map[ $path ] ) ) {
+				$seen[ $path ] = true;
+				$tag       = isset( $node['tag'] ) ? (string) $node['tag'] : '';
+				$available = function_exists( 'nova_wpb_fields_for_node' ) ? nova_wpb_fields_for_node( $node ) : array();
 
-				if ( 'vc_custom_heading' === $tag ) {
+				foreach ( $map[ $path ] as $update ) {
+					$field = sanitize_key( $update['field'] );
+					if ( $update['field_present'] && strtolower( trim( $update['field'] ) ) !== $field ) {
+						$error = new WP_Error(
+							'nova_wpb_unsupported_field',
+							__( 'A requested WPBakery field is not editable.', 'nova-bridge' ),
+							array( 'status' => 400, 'path' => $path, 'field' => $update['field'] )
+						);
+						break;
+					}
+					if ( '' === $field && function_exists( 'nova_wpb_default_text_field_for_tag' ) ) {
+						$field = nova_wpb_default_text_field_for_tag( $tag, $node );
+					}
+					if ( 'content' === $field ) {
+						$field = 'body';
+					}
+
+					if ( null === $field || '' === $field || ! isset( $available[ $field ] ) || empty( $available[ $field ]['editable'] ) ) {
+						$error = new WP_Error(
+							'nova_wpb_unsupported_field',
+							__( 'A requested WPBakery field is not editable.', 'nova-bridge' ),
+							array( 'status' => 400, 'path' => $path, 'field' => (string) $field )
+						);
+						break;
+					}
+
+					$valid = false;
+					$value = nova_wpb_sanitize_editable_field_value( $field, $update['text'], $valid );
+					if ( ! $valid ) {
+						$error = new WP_Error(
+							'nova_wpb_invalid_field_value',
+							__( 'A requested WPBakery field value is unsafe.', 'nova-bridge' ),
+							array( 'status' => 400, 'path' => $path, 'field' => $field )
+						);
+						break;
+					}
+
+					if ( 'body' === $field ) {
+						$has_children = ! empty( $node['children'] ) && is_array( $node['children'] );
+						if ( ! $has_children && 'vc_empty_space' !== $tag ) {
+							$node['text'] = $value;
+						}
+						continue;
+					}
+
 					if ( ! isset( $node['attributes'] ) || ! is_array( $node['attributes'] ) ) {
 						$node['attributes'] = array();
 					}
-					$node['attributes']['text'] = wp_strip_all_tags( $new_text );
-					$node['text']               = '';
-				} elseif ( 'heading' === $tag ) {
-					if ( ! isset( $node['attributes'] ) || ! is_array( $node['attributes'] ) ) {
-						$node['attributes'] = array();
+					if (
+						'link_url' === $field
+						&& ! array_key_exists( 'link_url', $node['attributes'] )
+						&& array_key_exists( 'link', $node['attributes'] )
+					) {
+						nova_wpb_packed_link_url( $node['attributes']['link'], $has_packed_url );
+						if ( $has_packed_url ) {
+							$encoded_url = rawurlencode( $value );
+							$node['attributes']['link'] = preg_replace_callback(
+								'/(^|\|)url:[^|]*/',
+								function ( $match ) use ( $encoded_url ) {
+									return $match[1] . 'url:' . $encoded_url;
+								},
+								(string) $node['attributes']['link'],
+								1
+							);
+							continue;
+						}
 					}
-					$node['attributes']['text'] = wp_strip_all_tags( $new_text );
-				} elseif ( 'button' === $tag ) {
-					if ( ! isset( $node['attributes'] ) || ! is_array( $node['attributes'] ) ) {
-						$node['attributes'] = array();
-					}
-					$node['attributes']['btntext'] = wp_strip_all_tags( $new_text );
-					$node['text']                  = '';
-				} else {
-					// Never inject content into spacer shortcodes.
-					if ( 'vc_empty_space' !== $tag ) {
-						$node['text'] = wp_kses_post( (string) $new_text );
-					}
+
+					$node['attributes'][ $field ] = $value;
 				}
 			}
 
@@ -341,7 +514,21 @@ function nova_wpb_apply_text_updates_to_compact( $compact, $updates ) {
 		return $nodes;
 	};
 
-	return $walk( $compact );
+	$compact = $walk( $compact );
+	if ( is_wp_error( $error ) ) {
+		return $error;
+	}
+	foreach ( array_keys( $map ) as $path ) {
+		if ( ! isset( $seen[ $path ] ) ) {
+			return new WP_Error(
+				'nova_wpb_invalid_path',
+				__( 'A requested WPBakery element path does not exist.', 'nova-bridge' ),
+				array( 'status' => 400, 'path' => $path )
+			);
+		}
+	}
+
+	return $compact;
 }
 
 /**
@@ -362,11 +549,13 @@ function nova_wpb_clear_visible_text_in_node( &$node ) {
 
 	$keys = array(
 		'text',
+		'text_content',
 		'title',
 		'desc',
 		'description',
 		'btntext',
 		'button_text',
+		'link_text',
 		'label',
 		'heading',
 		'subheading',
@@ -615,6 +804,12 @@ function nova_wpb_replace_template_slots_with_sections( $shortcodes, $sections, 
 	unset( $s );
 
 	if ( ! function_exists( 'nova_wpb_parse_shortcodes_to_compact' ) || ! function_exists( 'nova_wpb_compact_to_shortcodes' ) ) {
+		return array( $shortcodes, $sections );
+	}
+	if (
+		function_exists( 'nova_wpb_validate_roundtrip_coverage' )
+		&& is_wp_error( nova_wpb_validate_roundtrip_coverage( $shortcodes ) )
+	) {
 		return array( $shortcodes, $sections );
 	}
 

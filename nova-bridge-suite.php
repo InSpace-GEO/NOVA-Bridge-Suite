@@ -2,7 +2,7 @@
 /**
  * Plugin Name: NOVA Bridge Suite
  * Description: Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
- * Version: 2.7.8
+ * Version: 2.7.9
  * Author: LUNA B.V.
  * Requires PHP: 7.4
  * License: Proprietary
@@ -13,7 +13,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'NOVA_BRIDGE_SUITE_VERSION', '2.7.8' );
+define( 'NOVA_BRIDGE_SUITE_VERSION', '2.7.9' );
 define( 'NOVA_BRIDGE_SUITE_PLUGIN_FILE', __FILE__ );
 define( 'NOVA_BRIDGE_SUITE_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'NOVA_BRIDGE_SUITE_OPTION', 'nova_bridge_settings' );
@@ -146,6 +146,10 @@ function nova_bridge_suite_core_rest_write_uses_bridge_payload(): bool {
     return false !== strpos( $raw_body, '"meta_all"' )
         || false !== strpos( $raw_body, '"meta_all_flat"' )
         || false !== strpos( $raw_body, '"acf"' );
+}
+
+function nova_bridge_suite_request_uses_wpbakery_payload(): bool {
+    return false !== strpos( nova_bridge_suite_get_raw_request_body(), '"wpbakery"' );
 }
 
 function nova_bridge_suite_get_raw_request_body(): string {
@@ -551,6 +555,23 @@ function nova_bridge_suite_get_targeted_rest_module_keys( string $route ): ?arra
     }
 
     $core_rest_cpt_module_keys = nova_bridge_suite_get_cpt_module_keys_for_core_rest_route( $route );
+
+    if ( preg_match( '#^wp/v2/[^/]+/(\d+)$#', $route, $matches ) ) {
+        $post = get_post( absint( $matches[1] ) );
+        if (
+            $post instanceof WP_Post
+            && (
+                '' !== (string) get_post_meta( $post->ID, '_wpb_vc_js_status', true )
+                || false !== strpos( (string) $post->post_content, '[vc_' )
+            )
+        ) {
+            return array_values( array_unique( array_merge(
+                [ '__core_bridge', 'pagebuilder_wpbakery' ],
+                $core_rest_cpt_module_keys
+            ) ) );
+        }
+    }
+
     if ( ! empty( $core_rest_cpt_module_keys ) ) {
         return $core_rest_cpt_module_keys;
     }
@@ -576,7 +597,7 @@ function nova_bridge_suite_get_targeted_rest_module_keys( string $route ): ?arra
     } elseif ( nova_bridge_suite_rest_route_matches( $route, 'nova-gutenberg/v1' ) ) {
         $module_keys = [ 'gutenberg_bridge' ];
     } elseif ( nova_bridge_suite_rest_route_matches( $route, 'nova-wpbakery/v1' ) ) {
-        $module_keys = [ 'pagebuilder_wpbakery' ];
+        $module_keys = [ '__core_bridge', 'pagebuilder_wpbakery' ];
     } elseif ( nova_bridge_suite_rest_route_matches( $route, 'nova-breakdance/v1' ) ) {
         $module_keys = [ 'pagebuilder_breakdance' ];
     } elseif ( nova_bridge_suite_rest_route_matches( $route, 'nova-avada/v1' ) ) {
@@ -757,7 +778,11 @@ if ( nova_bridge_suite_is_core_rest_content_write_request() ) {
     }
 
     if ( nova_bridge_suite_core_rest_write_uses_bridge_payload() ) {
-        nova_bridge_suite_load_core_bridge_runtime();
+        $bridge_modules = [ '__core_bridge' ];
+        if ( nova_bridge_suite_request_uses_wpbakery_payload() ) {
+            $bridge_modules[] = 'pagebuilder_wpbakery';
+        }
+        nova_bridge_suite_load_selected_modules( $bridge_modules );
     }
 
     return;

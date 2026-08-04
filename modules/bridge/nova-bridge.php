@@ -2493,12 +2493,63 @@ add_action('init', function () {
   }
 });
 
+if (!function_exists('cf_tmrb_get_post_meta_all_payload')) {
+  function cf_tmrb_get_post_meta_all_payload($post_id, $include_private = false) {
+    $post_id = (int) $post_id;
+    $include_private = $include_private && current_user_can('edit_post', $post_id);
+    $out = [];
+
+    foreach (get_post_meta($post_id) as $key => $vals) {
+      // Reserved virtual builder namespace; never expose or persist it as ordinary post meta.
+      if ($key === 'wpbakery') continue;
+      if (!$include_private && strpos($key, '_') === 0) continue;
+      $out[$key] = count($vals) === 1 ? maybe_unserialize($vals[0]) : array_map('maybe_unserialize', $vals);
+    }
+
+    if (function_exists('get_fields')) {
+      $acf_vals = get_fields($post_id);
+      if (is_array($acf_vals)) {
+        foreach ($acf_vals as $name => $value) {
+          if ($name === 'wpbakery') continue;
+          if (!$include_private && strpos($name, '_') === 0) continue;
+          if (!array_key_exists($name, $out)) $out[$name] = $value;
+        }
+      }
+    }
+
+    $out = cf_tmrb_enrich_post_meta_with_seo_aliases($out, $include_private);
+
+    $post = $include_private ? get_post($post_id) : null;
+    if (
+      $post instanceof WP_Post
+      && function_exists('nova_wpb_has_wpbakery_layout')
+      && function_exists('nova_wpb_build_meta_all_payload')
+      && nova_wpb_has_wpbakery_layout($post)
+    ) {
+      $out['wpbakery'] = nova_wpb_build_meta_all_payload($post);
+    }
+
+    return $out;
+  }
+}
+
 if (!function_exists('cf_tmrb_update_post_meta_all_payload')) {
   function cf_tmrb_update_post_meta_all_payload($value, $post_obj) {
     if (!($post_obj instanceof WP_Post)) return new WP_Error('rest_invalid','Invalid post object.',['status'=>400]);
     $post_id = (int) $post_obj->ID;
     if (!current_user_can('edit_post', $post_id)) return new WP_Error('rest_forbidden','Insufficient permissions.',['status'=>403]);
     if (!is_array($value)) return new WP_Error('rest_invalid_param','meta_all must be an object.',['status'=>400]);
+
+    if (array_key_exists('wpbakery', $value)) {
+      $wpbakery = $value['wpbakery'];
+      unset($value['wpbakery']);
+
+      if (!function_exists('nova_wpb_apply_meta_all_payload')) {
+        return new WP_Error('missing_dependency', 'WPBakery bridge not loaded.', ['status'=>500]);
+      }
+      $wpbakery_result = nova_wpb_apply_meta_all_payload($wpbakery, $post_obj);
+      if (is_wp_error($wpbakery_result)) return $wpbakery_result;
+    }
 
     $grouped_acf_input = cf_tmrb_extract_grouped_acf_payload($value);
     $explicit_meta_keys = [];
@@ -2808,28 +2859,7 @@ add_action('rest_api_init', function () {
 
       $post_id = (int) $post_arr['id'];
       $include_private = $include_private_post($post_id);
-
-      // 1) core post meta
-      $out = [];
-      foreach (get_post_meta($post_id) as $key => $vals) {
-        if (!$include_private && strpos($key, '_') === 0) continue;
-        $val = count($vals) === 1 ? maybe_unserialize($vals[0]) : array_map('maybe_unserialize', $vals);
-        $out[$key] = $val;
-      }
-
-      // 2) merge ACF values
-      if (function_exists('get_fields')) {
-        $acf_vals = get_fields($post_id);
-        if (is_array($acf_vals)) {
-          foreach ($acf_vals as $name => $value) {
-            if (!$include_private && strpos($name, '_') === 0) continue;
-            if (!array_key_exists($name, $out)) $out[$name] = $value;
-          }
-        }
-      }
-
-      $out = cf_tmrb_enrich_post_meta_with_seo_aliases($out, $include_private);
-      return $out;
+      return cf_tmrb_get_post_meta_all_payload($post_id, $include_private);
     },
 
     'update_callback' => 'cf_tmrb_update_post_meta_all_payload',
@@ -2854,6 +2884,7 @@ add_action('rest_api_init', function () {
 
       $flat = [];
       foreach (get_post_meta($post_id) as $key => $vals) {
+        if ($key === 'wpbakery') continue;
         if (!$include_private && strpos($key, '_') === 0) continue;
         $val = count($vals) === 1 ? maybe_unserialize($vals[0]) : array_map('maybe_unserialize', $vals);
         if (is_array($val)) $flat += cf_tmrb_flatten([$key => $val]);
