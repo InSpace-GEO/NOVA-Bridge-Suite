@@ -121,9 +121,10 @@ class Elementor_Service {
 			return $post_fields;
 		}
 
-		$postarr = array(
+		$initial_status = 'publish' === $status ? 'draft' : $status;
+		$postarr         = array(
 			'post_title'   => $title,
-			'post_status'  => $status,
+			'post_status'  => $initial_status,
 			'post_type'    => $post_type,
 			'post_author'  => isset( $payload['author'] ) ? (int) $payload['author'] : get_current_user_id(),
 			'post_name'    => isset( $payload['slug'] ) ? sanitize_title( $payload['slug'] ) : '',
@@ -137,76 +138,98 @@ class Elementor_Service {
 			return $post_id;
 		}
 
-		$post_fields_result = $this->persist_wordpress_fields( $post_id, $post_fields );
-		if ( is_wp_error( $post_fields_result ) ) {
-			wp_delete_post( $post_id, true );
-			return $post_fields_result;
-		}
+		$completed = false;
 
-		if ( ! empty( $payload['template'] ) ) {
-			update_post_meta( $post_id, '_wp_page_template', sanitize_text_field( $payload['template'] ) );
-		}
-
-		$page_settings = $this->resolve_page_settings_payload( $payload );
-		if ( is_wp_error( $page_settings ) ) {
-			return $page_settings;
-		}
-
-		$full_document = $this->maybe_prepare_direct_document_replacement( $payload );
-		if ( is_wp_error( $full_document ) ) {
-			return $full_document;
-		}
-
-		if ( false !== $full_document ) {
-			$persist = $this->persist_elementor_document(
-				$post_id,
-				$full_document['document'],
-				array(
-					'raw_json'      => $full_document['raw_json'],
-					'page_settings' => $page_settings,
-				)
-			);
-		} else {
-			$document_data = $this->resolve_document_data( $payload );
-
-			if ( is_wp_error( $document_data ) ) {
-				return $document_data;
+		try {
+			$post_fields_result = $this->persist_wordpress_fields( $post_id, $post_fields );
+			if ( is_wp_error( $post_fields_result ) ) {
+				return $post_fields_result;
 			}
 
-			$fields_payload = isset( $payload['fields'] ) && is_array( $payload['fields'] ) ? $payload['fields'] : array();
-			$elementor_data = $this->apply_field_mutations( $document_data, $fields_payload );
-
-			if ( is_wp_error( $elementor_data ) ) {
-				return $elementor_data;
+			if ( ! empty( $payload['template'] ) ) {
+				update_post_meta( $post_id, '_wp_page_template', sanitize_text_field( $payload['template'] ) );
 			}
 
-			$append_html   = isset( $payload['append_html'] ) ? (string) $payload['append_html'] : '';
-			$append_faqs   = isset( $payload['append_faqs'] ) && is_array( $payload['append_faqs'] ) ? $payload['append_faqs'] : array();
-			$elementor_data = $this->append_html_block( $elementor_data, $append_html, $append_faqs );
+			$page_settings = $this->resolve_page_settings_payload( $payload );
+			if ( is_wp_error( $page_settings ) ) {
+				return $page_settings;
+			}
 
-			$persist = $this->persist_elementor_document(
-				$post_id,
-				$elementor_data,
-				array(
-					'page_settings' => $page_settings,
-				)
-			);
+			$full_document = $this->maybe_prepare_direct_document_replacement( $payload );
+			if ( is_wp_error( $full_document ) ) {
+				return $full_document;
+			}
+
+			if ( false !== $full_document ) {
+				$persist = $this->persist_elementor_document(
+					$post_id,
+					$full_document['document'],
+					array(
+						'raw_json'      => $full_document['raw_json'],
+						'page_settings' => $page_settings,
+					)
+				);
+			} else {
+				$document_data = $this->resolve_document_data( $payload );
+
+				if ( is_wp_error( $document_data ) ) {
+					return $document_data;
+				}
+
+				$fields_payload = isset( $payload['fields'] ) && is_array( $payload['fields'] ) ? $payload['fields'] : array();
+				$elementor_data = $this->apply_field_mutations( $document_data, $fields_payload );
+
+				if ( is_wp_error( $elementor_data ) ) {
+					return $elementor_data;
+				}
+
+				$append_html   = isset( $payload['append_html'] ) ? (string) $payload['append_html'] : '';
+				$append_faqs   = isset( $payload['append_faqs'] ) && is_array( $payload['append_faqs'] ) ? $payload['append_faqs'] : array();
+				$elementor_data = $this->append_html_block( $elementor_data, $append_html, $append_faqs );
+
+				$persist = $this->persist_elementor_document(
+					$post_id,
+					$elementor_data,
+					array(
+						'page_settings' => $page_settings,
+					)
+				);
+			}
+
+			if ( is_wp_error( $persist ) ) {
+				return $persist;
+			}
+
+			if ( ! empty( $payload['meta'] ) && is_array( $payload['meta'] ) ) {
+				$this->persist_meta( $post_id, $payload['meta'] );
+			}
+
+			if ( $initial_status !== $status ) {
+				$status_result = wp_update_post(
+					array(
+						'ID'          => $post_id,
+						'post_status' => $status,
+					),
+					true
+				);
+
+				if ( is_wp_error( $status_result ) ) {
+					return $status_result;
+				}
+			}
+
+			$finalize = $this->finalize_elementor_document( $post_id, $payload );
+			if ( is_wp_error( $finalize ) ) {
+				return $finalize;
+			}
+
+			$completed = true;
+			return (int) $post_id;
+		} finally {
+			if ( ! $completed ) {
+				wp_delete_post( $post_id, true );
+			}
 		}
-
-		if ( is_wp_error( $persist ) ) {
-			return $persist;
-		}
-
-		if ( ! empty( $payload['meta'] ) && is_array( $payload['meta'] ) ) {
-			$this->persist_meta( $post_id, $payload['meta'] );
-		}
-
-		$finalize = $this->finalize_elementor_document( $post_id, $payload );
-		if ( is_wp_error( $finalize ) ) {
-			return $finalize;
-		}
-
-		return (int) $post_id;
 	}
 
 	/**
@@ -458,6 +481,8 @@ class Elementor_Service {
 	 * @return true|WP_Error
 	 */
 	private function persist_elementor_document( $post_id, array $document, array $options = array() ) {
+		global $wpdb;
+
 		$raw_json = isset( $options['raw_json'] ) ? $options['raw_json'] : null;
 
 		if ( ! is_string( $raw_json ) || '' === trim( $raw_json ) ) {
@@ -471,7 +496,42 @@ class Elementor_Service {
 			}
 		}
 
-		update_post_meta( $post_id, '_elementor_data', wp_slash( $raw_json ) );
+		$write_result = update_post_meta( $post_id, '_elementor_data', wp_slash( $raw_json ) );
+		$db_error     = isset( $wpdb->last_error ) ? (string) $wpdb->last_error : '';
+
+		clean_post_cache( $post_id );
+		$stored_after_write = $this->get_document_data_from_meta( $post_id );
+		$failure_reason     = '';
+
+		if ( null === $stored_after_write ) {
+			$failure_reason = 'missing_meta';
+		} elseif ( is_wp_error( $stored_after_write ) ) {
+			$failure_reason = 'unreadable_meta';
+		} elseif ( ! $this->documents_match( $document, $stored_after_write ) ) {
+			$failure_reason = 'write_mismatch';
+		}
+
+		if ( '' !== $failure_reason ) {
+			$safe_reason = '' !== $db_error ? 'database_error' : $failure_reason;
+			error_log(
+				sprintf(
+					'NOVA Elementor document write failed for post %1$d (%2$s): %3$s',
+					(int) $post_id,
+					$failure_reason,
+					'' !== $db_error ? $db_error : 'metadata write did not persist (result: ' . var_export( $write_result, true ) . ')'
+				)
+			);
+
+			return new WP_Error(
+				'seor_eb_elementor_meta_write_failed',
+				__( 'WordPress did not persist the Elementor document.', 'nova-bridge-suite' ),
+				array(
+					'status'  => 500,
+					'post_id' => (int) $post_id,
+					'reason'  => $safe_reason,
+				)
+			);
+		}
 
 		$page_settings = isset( $options['page_settings'] ) && is_array( $options['page_settings'] )
 			? $options['page_settings']
