@@ -485,7 +485,11 @@ class Elementor_Service {
 
 		$raw_json = isset( $options['raw_json'] ) ? $options['raw_json'] : null;
 
-		if ( ! is_string( $raw_json ) || '' === trim( $raw_json ) ) {
+		if (
+			! is_string( $raw_json )
+			|| '' === trim( $raw_json )
+			|| preg_match( '/[\xF0-\xF4][\x80-\xBF]{3}/', $raw_json )
+		) {
 			$raw_json = $this->encode_json_string(
 				$document,
 				'seor_eb_encode_failed',
@@ -997,7 +1001,7 @@ class Elementor_Service {
 	 * @return string|WP_Error
 	 */
 	private function encode_json_string( $value, $error_code, $error_message ) {
-		$json = wp_json_encode( $value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+		$json = wp_json_encode( $value, JSON_UNESCAPED_SLASHES );
 
 		if ( false === $json ) {
 			return new WP_Error(

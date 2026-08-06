@@ -49,7 +49,8 @@ try {
 	nova_elementor_test_assert( class_exists( '\\SEOR_Elementor_Bridge\\Elementor_Service' ), 'Enable Elementor and the Elementor bridge before running this check.' );
 
 	$service         = new \SEOR_Elementor_Bridge\Elementor_Service();
-	$large_body      = str_repeat( '<p>Elementor regression body 0123456789.</p>', 5000 );
+	$emoji           = json_decode( '"\\ud83d\\udcb0"' );
+	$large_body      = str_repeat( '<p>Elementor regression body 0123456789.</p>', 5000 ) . '<p>' . $emoji . '</p>';
 	$source_document = array(
 		array(
 			'id'         => 'a1b2c3d4',
@@ -113,6 +114,9 @@ try {
 	nova_elementor_test_assert( is_array( $saved_document ), 'The saved Elementor document could not be reloaded.' );
 	nova_elementor_test_assert( 'Updated heading' === $saved_document[0]['settings']['title'], 'The requested Elementor field mutation was not persisted.' );
 	nova_elementor_test_assert( $large_body === $saved_document[1]['settings']['editor'], 'The large Elementor body was not preserved exactly.' );
+	$saved_json = get_post_meta( $success_id, '_elementor_data', true );
+	nova_elementor_test_assert( false !== strpos( $saved_json, '\\ud83d\\udcb0' ), 'Supplementary Unicode was not persisted as a database-safe JSON escape.' );
+	nova_elementor_test_assert( false === strpos( $saved_json, $emoji ), 'Raw four-byte Unicode was written to Elementor metadata.' );
 
 	add_filter( 'update_post_metadata', $block_elementor_meta, PHP_INT_MAX, 3 );
 	$filter_active = true;
@@ -153,6 +157,16 @@ try {
 
 	$unchanged_document = $service->get_elementor_document_data( $success_id );
 	nova_elementor_test_assert( 'Updated heading' === $unchanged_document[0]['settings']['title'], 'The rejected update changed the existing Elementor page.' );
+
+	$raw_unicode_json = wp_json_encode( $source_document, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+	nova_elementor_test_assert( false !== strpos( $raw_unicode_json, $emoji ), 'The direct replacement fixture does not contain raw four-byte Unicode.' );
+	$direct_update = $service->update_page( $success_id, array( 'elementor_data' => $raw_unicode_json ) );
+	nova_elementor_test_assert( ! is_wp_error( $direct_update ), 'A direct Elementor document replacement with supplementary Unicode failed.' );
+	$direct_saved_json = get_post_meta( $success_id, '_elementor_data', true );
+	nova_elementor_test_assert( false !== strpos( $direct_saved_json, '\\ud83d\\udcb0' ), 'Direct replacement did not persist supplementary Unicode as a database-safe JSON escape.' );
+	nova_elementor_test_assert( false === strpos( $direct_saved_json, $emoji ), 'Direct replacement wrote raw four-byte Unicode to Elementor metadata.' );
+	$direct_saved_document = $service->get_elementor_document_data( $success_id );
+	nova_elementor_test_assert( $large_body === $direct_saved_document[1]['settings']['editor'], 'Direct replacement changed the decoded Elementor content.' );
 
 	WP_CLI::success( 'Elementor persistence regression checks passed.' );
 } finally {
