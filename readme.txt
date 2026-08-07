@@ -4,7 +4,7 @@ Tags: seo, automation, content, rest-api, page builder
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.7.10
+Stable tag: 2.7.11
 License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -41,6 +41,10 @@ Yes. If WooCommerce is active you can enable the rich text field module for cate
 1. NOVA Settings screen with module toggles.
 
 == Changelog ==
+
+= 2.7.11 =
+* Use WordPress translations for Blog archive pagination labels.
+* Add an author archive posts-per-page setting with a three-card default.
 
 = 2.7.10 =
 * Store supplementary Unicode in Elementor JSON as database-safe escapes for compatibility with utf8mb3 sites.

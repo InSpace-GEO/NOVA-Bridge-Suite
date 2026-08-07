@@ -73,6 +73,11 @@ final class Plugin {
 	private const OPTION_AUTHOR_ARCHIVE = 'quarantined_cpt_bodyclean_author_archive';
 
 	/**
+	 * Option key storing the number of cards shown per author archive page.
+	 */
+	private const OPTION_AUTHOR_POSTS_PER_PAGE = 'quarantined_cpt_bodyclean_author_posts_per_page';
+
+	/**
 	 * Option key storing custom CPT slug.
 	 */
 	private const OPTION_CPT_SLUG = 'quarantined_cpt_bodyclean_cpt_slug';
@@ -291,6 +296,11 @@ final class Plugin {
 	 * Default archive posts-per-page when not overridden per CPT.
 	 */
 	private const DEFAULT_ARCHIVE_POSTS_PER_PAGE = 15;
+
+	/**
+	 * Default author archive posts-per-page value.
+	 */
+	private const DEFAULT_AUTHOR_POSTS_PER_PAGE = 3;
 
 	/**
 	 * Option key storing the structured data type for CPT items.
@@ -1285,6 +1295,12 @@ final class Plugin {
 		$title   = sanitize_text_field( (string) $title );
 
 		return '' === $title ? $default : $title;
+	}
+
+	private function get_author_posts_per_page(): int {
+		$value = absint( get_option( self::OPTION_AUTHOR_POSTS_PER_PAGE, self::DEFAULT_AUTHOR_POSTS_PER_PAGE ) );
+
+		return max( 1, min( 200, $value ) );
 	}
 
 	private function get_breadcrumb_separator_choice(): string {
@@ -6673,12 +6689,22 @@ final class Plugin {
 	}
 
 	/**
-	 * Applies per-CPT archive posts-per-page overrides to the main archive query.
+	 * Applies posts-per-page settings to main archive queries.
 	 *
 	 * @param \WP_Query $query Current query instance.
 	 */
 	public function apply_archive_posts_per_page( \WP_Query $query ): void {
-		if ( is_admin() || ! $query->is_main_query() || ! $query->is_post_type_archive() ) {
+		if ( is_admin() || ! $query->is_main_query() ) {
+			return;
+		}
+
+		if ( self::author_archive_enabled() && ( $query->is_author() || '' !== (string) $query->get( 'quarantined_cpt_author', '' ) ) ) {
+			$query->set( 'posts_per_page', $this->get_author_posts_per_page() );
+
+			return;
+		}
+
+		if ( ! $query->is_post_type_archive() ) {
 			return;
 		}
 
@@ -7461,8 +7487,8 @@ final class Plugin {
 				'current'   => $current_page,
 				'total'     => $total_pages,
 				'mid_size'  => isset( $args['mid_size'] ) ? max( 0, absint( $args['mid_size'] ) ) : 2,
-				'prev_text' => isset( $args['prev_text'] ) ? wp_kses_post( (string) $args['prev_text'] ) : esc_html__( 'Vorige', 'nova-bridge-suite' ),
-				'next_text' => isset( $args['next_text'] ) ? wp_kses_post( (string) $args['next_text'] ) : esc_html__( 'Volgende', 'nova-bridge-suite' ),
+				'prev_text' => isset( $args['prev_text'] ) ? wp_kses_post( (string) $args['prev_text'] ) : esc_html_x( 'Previous', 'previous set of posts' ),
+				'next_text' => isset( $args['next_text'] ) ? wp_kses_post( (string) $args['next_text'] ) : esc_html_x( 'Next', 'next set of posts' ),
 				'type'      => 'array',
 			]
 		);
@@ -7511,7 +7537,7 @@ final class Plugin {
 
 		return sprintf(
 			'<nav class="navigation pagination quarantined-cpt__pagination" aria-label="%1$s"><div class="nav-links">%2$s</div></nav>',
-			esc_attr__( 'Archive pagination', 'nova-bridge-suite' ),
+			esc_attr__( 'Posts pagination' ),
 			implode( "\n", $rendered_links )
 		);
 	}
@@ -7878,6 +7904,18 @@ final class Plugin {
 					return (bool) $value;
 				},
 				'default'           => false,
+			]
+		);
+
+		register_setting(
+			'quarantined_cpt_bodyclean',
+			self::OPTION_AUTHOR_POSTS_PER_PAGE,
+			[
+				'type'              => 'integer',
+				'sanitize_callback' => static function ( $value ) {
+					return max( 1, min( 200, absint( $value ) ) );
+				},
+				'default'           => self::DEFAULT_AUTHOR_POSTS_PER_PAGE,
 			]
 		);
 
@@ -8539,6 +8577,7 @@ final class Plugin {
 		$cta_defaults_by_cpt    = $this->get_blog_cta_overrides_by_cpt();
 		$archive_settings_by_cpt = $this->get_archive_settings_overrides_by_cpt();
 		$author_pages                = $this->author_archive_enabled();
+		$author_posts_per_page       = $this->get_author_posts_per_page();
 		$enable_cpts         = $this->cpt_registration_enabled();
 		$cpt_definitions     = $this->get_cpt_definitions( false );
 		$cpt_post_counts      = [];
@@ -8689,6 +8728,13 @@ final class Plugin {
 							<td>
 								<input type="text" class="regular-text" id="quarantined-cpt-bodyclean-author-archive-title" name="<?php echo esc_attr( $this->get_settings_option_name( self::OPTION_AUTHOR_ARCHIVE_TITLE ) ); ?>" value="<?php echo esc_attr( $author_archive_name ); ?>" />
 								<p class="description"><?php esc_html_e( 'Sets the heading and breadcrumb label for the author archive page.', 'nova-bridge-suite' ); ?></p>
+							</td>
+						</tr>
+						<tr>
+							<th scope="row"><label for="quarantined-cpt-bodyclean-author-posts-per-page"><?php esc_html_e( 'Posts per author page', 'nova-bridge-suite' ); ?></label></th>
+							<td>
+								<input type="number" class="small-text" id="quarantined-cpt-bodyclean-author-posts-per-page" name="<?php echo esc_attr( self::OPTION_AUTHOR_POSTS_PER_PAGE ); ?>" value="<?php echo esc_attr( (string) $author_posts_per_page ); ?>" min="1" max="200" />
+								<p class="description"><?php esc_html_e( 'Number of post cards shown on each author archive page. Default: 3.', 'nova-bridge-suite' ); ?></p>
 							</td>
 						</tr>
 					</table>

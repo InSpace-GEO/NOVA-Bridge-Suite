@@ -271,9 +271,7 @@ if ( $show_breadcrumbs ) {
 			<?php
 			the_posts_pagination(
 				[
-					'mid_size'  => 2,
-					'prev_text' => esc_html__( 'Vorige', 'nova-bridge-suite' ),
-					'next_text' => esc_html__( 'Volgende', 'nova-bridge-suite' ),
+					'mid_size' => 2,
 				]
 			);
 			?>
