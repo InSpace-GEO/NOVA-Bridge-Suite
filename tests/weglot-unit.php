@@ -560,6 +560,38 @@ wgtai_check('meta untouched for another post', $render->filter_post_metadata(nul
 wgtai_check('untranslated meta key falls through', $render->filter_post_metadata(null, 42, 'other_key', true), null);
 wgtai_check('empty meta key falls through', $render->filter_post_metadata(null, 42, '', true), null);
 wgtai_check('yoast title filter swaps', $render->filter_yoast_title('NL title'), 'Titre FR');
+
+// A payload must not be able to rewrite the bridge's own storage keys mid-request.
+$storage->save(
+    42,
+    [
+        'language' => 'fr',
+        'title'    => 'Chauffage au sol',
+        'content'  => '<p>Bonjour</p>',
+        'meta'     => [
+            '_yoast_wpseo_title'            => 'Titre FR',
+            '_yoast_wpseo_metadesc'         => 'Description FR',
+            '_nova_weglot_i18n_languages'   => ['xx'],
+            '_nova_weglot_i18n_fr'          => ['title' => 'poisoned'],
+        ],
+    ]
+);
+$GLOBALS['wgtai_test_filters'] = [];
+$render_reserved = new WGTAI_Render_Service($languages, $storage);
+$render_reserved->resolve_payload();
+
+wgtai_check(
+    'reserved index key is not overridable',
+    $render_reserved->filter_post_metadata(null, 42, '_nova_weglot_i18n_languages', true),
+    null
+);
+wgtai_check(
+    'reserved payload key is not overridable',
+    $render_reserved->filter_post_metadata(null, 42, '_nova_weglot_i18n_fr', true),
+    null
+);
+wgtai_check('stored languages unaffected by a poisoned payload', $storage->get_stored_languages(42), ['fr']);
+wgtai_check('payload still readable after poisoning attempt', $storage->get(42, 'fr')['title'], 'Chauffage au sol');
 wgtai_check('yoast metadesc filter swaps', $render->filter_yoast_metadesc('NL desc'), 'Description FR');
 
 $blocks = $render->filter_exclude_blocks(['.amount']);

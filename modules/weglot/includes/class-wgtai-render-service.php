@@ -218,6 +218,13 @@ class WGTAI_Render_Service
             return $value;
         }
 
+        // Never let a payload override the bridge's own storage keys: it would
+        // otherwise be able to rewrite what get()/get_stored_languages() report for
+        // the rest of the request.
+        if ($this->is_reserved_meta_key($meta_key)) {
+            return $value;
+        }
+
         if (! $this->applies_to((int) $object_id)) {
             return $value;
         }
@@ -306,6 +313,12 @@ class WGTAI_Render_Service
         }
 
         return $this->payload['meta'][$meta_key];
+    }
+
+    private function is_reserved_meta_key(string $meta_key): bool
+    {
+        return WGTAI_Storage_Service::META_INDEX === $meta_key
+            || 0 === strpos($meta_key, WGTAI_Storage_Service::META_PREFIX);
     }
 
     private function has_translated_title(): bool
