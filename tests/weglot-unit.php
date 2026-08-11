@@ -82,8 +82,18 @@ function add_filter($hook, $callback, $priority = 10, $args = 1): void
     $GLOBALS['wgtai_test_filters'][$hook][] = $callback;
 }
 
+$GLOBALS['wgtai_test_filter_returns'] = [];
+
 function apply_filters($hook, $value)
 {
+    // Lets a check stand in for a site that hooks one of the module's documented
+    // extension points, which the pass-through stub could not express.
+    if (array_key_exists($hook, $GLOBALS['wgtai_test_filter_returns'])) {
+        $override = $GLOBALS['wgtai_test_filter_returns'][$hook];
+
+        return $override instanceof Closure ? $override($value) : $override;
+    }
+
     return $value;
 }
 
@@ -110,7 +120,19 @@ function get_post_meta($post_id, $key, $single = false)
 
 function update_post_meta($post_id, $key, $value)
 {
-    $GLOBALS['wgtai_test_meta'][(int) $post_id][$key] = $value;
+    // update_metadata() runs wp_unslash() over the value before writing, so a
+    // caller must hand it slashed data. Reproducing that is the whole point: the
+    // stub used to store $value verbatim, which is what let a missing wp_slash()
+    // corrupt every structured document on a real site while the checks below
+    // ("stored _elementor_data is still valid JSON") passed.
+    // Simulates a write that does not land (a failing DB, a sanitize_meta filter
+    // that rejects the value). The old payload stays in place, which is exactly
+    // the case a null-only readback check reported as stored:true.
+    if (! empty($GLOBALS['wgtai_test_meta_update_fails'])) {
+        return false;
+    }
+
+    $GLOBALS['wgtai_test_meta'][(int) $post_id][$key] = wp_unslash($value);
 
     // WordPress returns false when the stored value is already identical, not only
     // on failure. The flag reproduces that so the storage service cannot regress
@@ -176,9 +198,35 @@ function esc_attr($value)
     return htmlspecialchars((string) $value, ENT_QUOTES);
 }
 
+// map_deep + the strings-only helpers, matching WP: both recurse into arrays and
+// leave non-strings alone. The old wp_unslash() stub only handled a bare string,
+// so an array payload passed through it untouched.
+function wgtai_test_map_deep($value, callable $callback)
+{
+    if (is_array($value)) {
+        foreach ($value as $key => $item) {
+            $value[$key] = wgtai_test_map_deep($item, $callback);
+        }
+
+        return $value;
+    }
+
+    return is_string($value) ? $callback($value) : $value;
+}
+
+function wp_slash($value)
+{
+    return wgtai_test_map_deep($value, 'addslashes');
+}
+
+function stripslashes_deep($value)
+{
+    return wgtai_test_map_deep($value, 'stripslashes');
+}
+
 function wp_unslash($value)
 {
-    return is_string($value) ? stripslashes($value) : $value;
+    return stripslashes_deep($value);
 }
 
 function current_user_can($capability, $object_id = null): bool
@@ -222,6 +270,33 @@ function get_queried_object_id()
 function get_the_ID()
 {
     return (int) $GLOBALS['wgtai_test_context']['current_id'];
+}
+
+/**
+ * What get_post_meta() actually hands a template, given what our filter returned.
+ *
+ * Mirrors get_metadata_raw():
+ *
+ *     if ( null !== $check ) {
+ *         if ( $single && is_array( $check ) ) { return $check[0]; }
+ *         return $check;
+ *     }
+ *
+ * Asserting the filter's raw return value hid the $single bug -- the effective
+ * value is what a theme sees, so that is what these checks compare.
+ */
+function wgtai_test_meta_via_wp($filtered, bool $single)
+{
+    if (null === $filtered) {
+        // Filter declined; WP falls through to the real meta table.
+        return null;
+    }
+
+    if ($single && is_array($filtered)) {
+        return $filtered[0];
+    }
+
+    return $filtered;
 }
 
 // ---------------------------------------------------------------------------
@@ -351,7 +426,11 @@ function weglot_get_current_language()
 
 function weglot_get_original_language()
 {
-    return $GLOBALS['wgtai_test_weglot_language_service']->original;
+    // Nullable: a check sets the service to null to simulate a call that lands
+    // before Weglot's plugins_loaded container is built.
+    $service = $GLOBALS['wgtai_test_weglot_language_service'];
+
+    return is_object($service) ? $service->original : null;
 }
 
 function weglot_create_url_object($url)
@@ -578,8 +657,16 @@ $parts = $render->filter_document_title_parts(['title' => 'Vloerverwarming', 'si
 wgtai_check('document title swapped', $parts['title'], 'Chauffage au sol');
 wgtai_check('document title keeps other parts', $parts['site'], 'Example');
 
-wgtai_check('meta single returns the value', $render->filter_post_metadata(null, 42, 'blog_intro', true), 'Intro FR');
-wgtai_check('meta non-single returns an array', $render->filter_post_metadata(null, 42, 'blog_intro', false), ['Intro FR']);
+wgtai_check(
+    'meta single returns the value',
+    wgtai_test_meta_via_wp($render->filter_post_metadata(null, 42, 'blog_intro', true), true),
+    'Intro FR'
+);
+wgtai_check(
+    'meta non-single returns an array',
+    wgtai_test_meta_via_wp($render->filter_post_metadata(null, 42, 'blog_intro', false), false),
+    ['Intro FR']
+);
 wgtai_check('meta untouched for another post', $render->filter_post_metadata(null, 77, 'blog_intro', true), null);
 wgtai_check('untranslated meta key falls through', $render->filter_post_metadata(null, 42, 'other_key', true), null);
 wgtai_check('empty meta key falls through', $render->filter_post_metadata(null, 42, '', true), null);
@@ -593,10 +680,10 @@ $storage->save(
         'title'    => 'Chauffage au sol',
         'content'  => '<p>Bonjour</p>',
         'meta'     => [
-            '_yoast_wpseo_title'            => 'Titre FR',
-            '_yoast_wpseo_metadesc'         => 'Description FR',
-            '_nova_weglot_i18n_languages'   => ['xx'],
-            '_nova_weglot_i18n_fr'          => ['title' => 'poisoned'],
+            '_yoast_wpseo_title'                => 'Titre FR',
+            '_yoast_wpseo_metadesc'             => 'Description FR',
+            WGTAI_Storage_Service::META_INDEX   => ['xx'],
+            '_nova_weglot_i18n_fr'              => ['title' => 'poisoned'],
         ],
     ]
 );
@@ -606,7 +693,7 @@ $render_reserved->resolve_payload();
 
 wgtai_check(
     'reserved index key is not overridable',
-    $render_reserved->filter_post_metadata(null, 42, '_nova_weglot_i18n_languages', true),
+    $render_reserved->filter_post_metadata(null, 42, WGTAI_Storage_Service::META_INDEX, true),
     null
 );
 wgtai_check(
@@ -823,6 +910,363 @@ $render_none = new WGTAI_Render_Service($languages, $storage);
 $render_none->resolve_payload();
 wgtai_check('no filters for a post without a payload', wgtai_test_filter_registered('the_content'), false);
 wgtai_check('content untouched without a payload', $render_none->filter_content('<p>Hallo</p>'), '<p>Hallo</p>');
+
+// --- update contract: omitted keeps, null clears, value replaces -------------
+//
+// build_payload() used to start from an empty array, so a follow-up POST that
+// carried only the field it was fixing erased the locale's content, excerpt and
+// whole meta map while still answering 200 stored:true.
+
+wgtai_test_seed_post(50, 'merge-post', 'Merge post');
+$GLOBALS['wgtai_test_context']['current_lang'] = 'fr';
+
+$storage->save(50, [
+    'language' => 'fr',
+    'title'    => 'Titre FR',
+    'content'  => '<p>Contenu FR</p>',
+    'excerpt'  => 'Extrait FR',
+    'meta'     => ['blog_intro' => 'Intro FR', 'blog_outro' => 'Outro FR'],
+]);
+$first_created = $storage->get(50, 'fr')['created_at'];
+
+// A typo fix that carries only the title.
+$storage->save(50, ['language' => 'fr', 'title' => 'Nouveau titre']);
+$merged = $storage->get(50, 'fr');
+
+wgtai_check('a partial update replaces the supplied field', $merged['title'], 'Nouveau titre');
+wgtai_check('a partial update keeps the content', $merged['content'], '<p>Contenu FR</p>');
+wgtai_check('a partial update keeps the excerpt', $merged['excerpt'], 'Extrait FR');
+wgtai_check('a partial update keeps the meta map', $merged['meta']['blog_intro'], 'Intro FR');
+wgtai_check('a partial update keeps created_at', $merged['created_at'], $first_created);
+
+// Meta merges per key, like update_post_meta.
+$storage->save(50, ['language' => 'fr', 'meta' => ['blog_intro' => 'Intro v2']]);
+$merged = $storage->get(50, 'fr');
+
+wgtai_check('a meta key is replaced', $merged['meta']['blog_intro'], 'Intro v2');
+wgtai_check('sibling meta keys survive', $merged['meta']['blog_outro'], 'Outro FR');
+
+// An explicit null is the way to clear, which nothing could do before.
+$storage->save(50, ['language' => 'fr', 'excerpt' => null, 'meta' => ['blog_outro' => null]]);
+$merged = $storage->get(50, 'fr');
+
+wgtai_check('null clears a top-level field', isset($merged['excerpt']), false);
+wgtai_check('null clears a meta key', isset($merged['meta']['blog_outro']), false);
+wgtai_check('clearing one field leaves the rest', $merged['title'], 'Nouveau titre');
+wgtai_check('clearing one meta key leaves the rest', $merged['meta']['blog_intro'], 'Intro v2');
+
+// An empty meta object means "this request carries no meta keys", not "delete
+// everything" -- there is no whole-map wipe in the contract.
+$storage->save(50, ['language' => 'fr', 'meta' => []]);
+wgtai_check('an empty meta object clears nothing', $storage->get(50, 'fr')['meta']['blog_intro'], 'Intro v2');
+
+// --- the write is confirmed against what was requested -----------------------
+
+$GLOBALS['wgtai_test_meta_update_fails'] = true;
+$failed_write = $storage->save(50, ['language' => 'fr', 'title' => 'Jamais stocké']);
+$GLOBALS['wgtai_test_meta_update_fails'] = false;
+
+wgtai_check_true('a write that does not land is reported as an error', is_wp_error($failed_write));
+wgtai_check(
+    '...with the store-failed code',
+    is_wp_error($failed_write) ? $failed_write->get_error_code() : null,
+    'wgtai_store_failed'
+);
+wgtai_check('...and the previous payload is untouched', $storage->get(50, 'fr')['title'], 'Nouveau titre');
+
+// --- the index key cannot be reached through a locale code -------------------
+//
+// DELETE .../translations/languages: 'languages' resolves to no destination, so
+// the controller falls back to normalize(). While the index lived under
+// META_PREFIX that landed on the index itself and wiped it, orphaning every
+// stored payload while the endpoint answered 200 deleted:true.
+
+wgtai_check_true(
+    'the index key sits outside the payload prefix',
+    0 !== strpos(WGTAI_Storage_Service::META_INDEX, WGTAI_Storage_Service::META_PREFIX)
+);
+wgtai_check(
+    'meta_key("languages") cannot collide with the index',
+    $storage->meta_key('languages') === WGTAI_Storage_Service::META_INDEX,
+    false
+);
+wgtai_check('"languages" resolves to no destination language', $languages->resolve_destination_code('languages'), '');
+
+$storage->delete(50, $languages->normalize('languages'));
+wgtai_check('deleting "languages" leaves the stored-language index intact', $storage->get_stored_languages(50), ['fr']);
+wgtai_check('deleting "languages" leaves the payload intact', $storage->get(50, 'fr')['title'], 'Nouveau titre');
+
+// --- array-valued meta survives the round trip -------------------------------
+
+$storage->save(50, ['language' => 'fr', 'meta' => ['gallery' => ['a' => 'x', 'b' => 'y']]]);
+
+$GLOBALS['wgtai_test_filters']               = [];
+$GLOBALS['wgtai_test_context']['queried_id'] = 50;
+$GLOBALS['wgtai_test_context']['current_id'] = 50;
+
+$render_50 = new WGTAI_Render_Service($languages, $storage);
+$render_50->resolve_payload();
+
+wgtai_check(
+    'an array meta value survives a single read',
+    wgtai_test_meta_via_wp($render_50->filter_post_metadata(null, 50, 'gallery', true), true),
+    ['a' => 'x', 'b' => 'y']
+);
+wgtai_check(
+    'an array meta value survives a multi read',
+    wgtai_test_meta_via_wp($render_50->filter_post_metadata(null, 50, 'gallery', false), false),
+    [['a' => 'x', 'b' => 'y']]
+);
+wgtai_check(
+    'a string meta value still reads back as itself',
+    wgtai_test_meta_via_wp($render_50->filter_post_metadata(null, 50, 'blog_intro', true), true),
+    'Intro v2'
+);
+
+// --- a structured document posted as an array is normalized to JSON ----------
+
+$storage->save(50, [
+    'language' => 'fr',
+    'meta'     => [
+        '_elementor_data' => [[
+            'id'       => 'sec9',
+            'settings' => [],
+            'elements' => [['id' => 'hd9', 'settings' => ['title' => 'Titre depuis un tableau']]],
+        ]],
+    ],
+]);
+$as_stored = $storage->get(50, 'fr')['meta']['_elementor_data'];
+
+wgtai_check_true('an array-valued structured key is stored as a string', is_string($as_stored));
+wgtai_check(
+    'an array-valued structured key still decodes',
+    is_string($as_stored) ? (json_decode($as_stored, true)[0]['elements'][0]['settings']['title'] ?? null) : null,
+    'Titre depuis un tableau'
+);
+
+// --- builder exclusions: leaf widgets only, text diffed ----------------------
+
+function wgtai_test_builder_doc(array $section_settings, array $widgets): string
+{
+    $children = [];
+
+    foreach ($widgets as $id => $settings) {
+        $children[] = ['id' => $id, 'elType' => 'widget', 'settings' => $settings];
+    }
+
+    return json_encode([[
+        'id'       => 'sec1',
+        'elType'   => 'section',
+        'settings' => $section_settings,
+        'elements' => [[
+            'id'       => 'col1',
+            'elType'   => 'column',
+            'settings' => [],
+            'elements' => $children,
+        ]],
+    ]]);
+}
+
+wgtai_test_seed_post(60, 'builder-post', 'Builder post');
+
+// The post's real document. tx1 differs from the stored copy only by an entity
+// the kses + json round trip normalizes, and by a non-string setting; sec1
+// differs by a real string setting, but it is a container.
+$GLOBALS['wgtai_test_meta'][60]['_elementor_data'] = wgtai_test_builder_doc(
+    ['background' => '#ffffff'],
+    [
+        'hd1' => ['title' => 'Titel NL'],
+        'tx1' => ['editor' => '<p>Caf&eacute; local</p>', 'size' => 15],
+    ]
+);
+
+$storage->save(60, [
+    'language' => 'fr',
+    'meta'     => [
+        '_elementor_data' => wgtai_test_builder_doc(
+            ['background' => '#000000'],
+            [
+                'hd1' => ['title' => 'Titre FR'],
+                'tx1' => ['editor' => '<p>Café local</p>', 'size' => 20],
+            ]
+        ),
+    ],
+]);
+
+$GLOBALS['wgtai_test_filters']               = [];
+$GLOBALS['wgtai_test_context']['queried_id'] = 60;
+$GLOBALS['wgtai_test_context']['current_id'] = 60;
+
+$render_60 = new WGTAI_Render_Service($languages, $storage);
+$render_60->resolve_payload();
+$blocks_60 = $render_60->filter_exclude_blocks([]);
+
+wgtai_check_true('a retranslated widget is excluded', in_array('.elementor-element-hd1', $blocks_60, true));
+wgtai_check(
+    'a widget differing only by an entity round trip is NOT excluded',
+    in_array('.elementor-element-tx1', $blocks_60, true),
+    false
+);
+wgtai_check(
+    'a changed section is NOT excluded, which would freeze its whole subtree',
+    in_array('.elementor-element-sec1', $blocks_60, true),
+    false
+);
+wgtai_check(
+    'a column is NOT excluded either',
+    in_array('.elementor-element-col1', $blocks_60, true),
+    false
+);
+
+// --- exclusions follow the structured-key list, not a hardcoded builder ------
+//
+// Extending nova_weglot_structured_meta_keys used to buy sanitisation with no
+// notranslate protection: the payload landed and Weglot re-translated it.
+
+$GLOBALS['wgtai_test_filter_returns']['nova_weglot_structured_meta_keys']      = ['_elementor_data', '_custom_builder'];
+$GLOBALS['wgtai_test_filter_returns']['nova_weglot_builder_selector_templates'] = [
+    '_elementor_data' => '.elementor-element-%s',
+    '_custom_builder' => '.cb-element-%s',
+];
+
+wgtai_test_seed_post(61, 'custom-builder-post', 'Custom builder post');
+$GLOBALS['wgtai_test_meta'][61]['_custom_builder'] = wgtai_test_builder_doc([], ['w1' => ['title' => 'Titel NL']]);
+
+$storage->save(61, [
+    'language' => 'fr',
+    'meta'     => ['_custom_builder' => wgtai_test_builder_doc([], ['w1' => ['title' => 'Titre FR']])],
+]);
+
+$GLOBALS['wgtai_test_filters']               = [];
+$GLOBALS['wgtai_test_context']['queried_id'] = 61;
+$GLOBALS['wgtai_test_context']['current_id'] = 61;
+
+$render_61 = new WGTAI_Render_Service($languages, $storage);
+$render_61->resolve_payload();
+$blocks_61 = $render_61->filter_exclude_blocks([]);
+
+wgtai_check_true('a registered non-Elementor builder gets exclusions too', in_array('.cb-element-w1', $blocks_61, true));
+
+$GLOBALS['wgtai_test_filter_returns'] = [];
+
+// --- the selectors filter is cast, not trusted -------------------------------
+
+$GLOBALS['wgtai_test_filter_returns']['nova_weglot_notranslate_selectors'] = '.entry-content';
+
+$warnings = 0;
+set_error_handler(static function () use (&$warnings) {
+    ++$warnings;
+
+    return true;
+});
+$blocks_cast = $render_61->filter_exclude_blocks([]);
+restore_error_handler();
+
+wgtai_check('a string from the selectors filter emits no warning', $warnings, 0);
+wgtai_check_true('a string from the selectors filter is still applied', in_array('.entry-content', $blocks_cast, true));
+
+$GLOBALS['wgtai_test_filter_returns'] = [];
+
+// --- head/body title gating --------------------------------------------------
+//
+// The gate used to read payload['title'] while the code that actually rewrites
+// <title> on a Yoast site reads meta['_yoast_wpseo_title']. Both mismatches
+// shipped: an un-excluded Yoast title Weglot re-translated, and an excluded
+// source-language title marked do-not-touch.
+
+wgtai_test_seed_post(70, 'title-post', 'Titel NL');
+$storage->save(70, ['language' => 'fr', 'title' => 'Titre FR']);
+
+$GLOBALS['wgtai_test_filters']               = [];
+$GLOBALS['wgtai_test_context']['queried_id'] = 70;
+$GLOBALS['wgtai_test_context']['current_id'] = 70;
+
+$render_70 = new WGTAI_Render_Service($languages, $storage);
+$render_70->resolve_payload();
+$blocks_70 = $render_70->filter_exclude_blocks([]);
+
+wgtai_check_true('without an SEO plugin our document_title_parts title is excluded', in_array('title', $blocks_70, true));
+wgtai_check_true('the theme-rendered body title is excluded too', in_array('.entry-title', $blocks_70, true));
+wgtai_check_true('block themes are covered', in_array('.wp-block-post-title', $blocks_70, true));
+wgtai_check(
+    'og:title is NOT excluded when nothing emits ours',
+    in_array('meta[property="og:title"]', $blocks_70, true),
+    false
+);
+
+// A payload carrying only the Yoast title: wpseo_title IS registered, so the
+// head is ours and must be excluded even with no top-level title.
+wgtai_test_seed_post(71, 'yoast-only-post', 'Titel NL');
+$storage->save(71, ['language' => 'fr', 'meta' => ['_yoast_wpseo_title' => 'Titre SEO FR']]);
+
+$GLOBALS['wgtai_test_filters']               = [];
+$GLOBALS['wgtai_test_context']['queried_id'] = 71;
+$GLOBALS['wgtai_test_context']['current_id'] = 71;
+
+$render_71 = new WGTAI_Render_Service($languages, $storage);
+$render_71->resolve_payload();
+$blocks_71 = $render_71->filter_exclude_blocks([]);
+
+wgtai_check_true('wpseo_title is registered for a yoast-only payload', wgtai_test_filter_registered('wpseo_title'));
+wgtai_check_true('a yoast-only payload excludes the document title', in_array('title', $blocks_71, true));
+wgtai_check_true('a yoast-only payload excludes og:title', in_array('meta[property="og:title"]', $blocks_71, true));
+wgtai_check(
+    'a yoast-only payload does NOT exclude the body title it never translated',
+    in_array('.entry-title', $blocks_71, true),
+    false
+);
+
+// Yoast active from here on -- WPSEO_VERSION cannot be undefined again, so this
+// case runs last.
+define('WPSEO_VERSION', '25.0');
+
+$GLOBALS['wgtai_test_filters'] = [];
+$GLOBALS['wgtai_test_context']['queried_id'] = 70;
+$GLOBALS['wgtai_test_context']['current_id'] = 70;
+
+$render_70_yoast = new WGTAI_Render_Service($languages, $storage);
+$render_70_yoast->resolve_payload();
+$blocks_70_yoast = $render_70_yoast->filter_exclude_blocks([]);
+
+wgtai_check(
+    'with Yoast active and no _yoast_wpseo_title the head is NOT excluded',
+    in_array('title', $blocks_70_yoast, true),
+    false
+);
+wgtai_check_true(
+    'the body title is still excluded, because the_title is still ours',
+    in_array('.entry-title', $blocks_70_yoast, true)
+);
+
+// --- a failed language lookup is not memoized --------------------------------
+
+$saved_weglot_service                          = $GLOBALS['wgtai_test_weglot_language_service'];
+$GLOBALS['wgtai_test_weglot_language_service'] = null;
+
+$cold = new WGTAI_Language_Service();
+
+wgtai_check('destination codes are empty before Weglot is up', $cold->get_destination_codes(), []);
+wgtai_check('the original code is empty before Weglot is up', $cold->get_original_code(), '');
+
+$GLOBALS['wgtai_test_weglot_language_service'] = $saved_weglot_service;
+
+wgtai_check('destination codes recover once Weglot is up', $cold->get_destination_codes(), ['fr', 'de']);
+wgtai_check('the original code recovers once Weglot is up', $cold->get_original_code(), 'nl');
+wgtai_check('a destination resolves again after the cold start', $cold->resolve_destination_code('fr-BE'), 'fr');
+
+// --- locale is not a duplicate of the URL segment ----------------------------
+
+$inventory = $languages->get_languages();
+$fr_entry  = null;
+
+foreach ($inventory['languages'] as $entry) {
+    if ('fr' === $entry['code']) {
+        $fr_entry = $entry;
+    }
+}
+
+wgtai_check('the Weglot URL segment is reported as external_code', $fr_entry['external_code'], 'fr-be');
+wgtai_check('locale is empty rather than a duplicate of external_code', $fr_entry['locale'], '');
 
 // --- report ----------------------------------------------------------------
 

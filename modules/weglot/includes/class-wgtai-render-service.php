@@ -26,8 +26,8 @@ class WGTAI_Render_Service
     private string $language = '';
     private bool $filters_registered = false;
 
-    /** @var array<int,string> Elementor element IDs whose settings this payload changed. */
-    private array $builder_notranslate_ids = [];
+    /** @var array<int,string> CSS selectors for builder elements whose text this payload changed. */
+    private array $builder_notranslate_selectors = [];
 
     public function __construct(WGTAI_Language_Service $language_service, WGTAI_Storage_Service $storage_service)
     {
@@ -242,7 +242,16 @@ class WGTAI_Render_Service
             return $value;
         }
 
-        return $single ? $translated : [$translated];
+        // Always wrap, for BOTH values of $single. get_metadata_raw() does
+        //
+        //     if ( $single && is_array( $check ) ) { return $check[0]; }
+        //
+        // so a single-value read unwraps one level itself, and a multi-value read
+        // wants the list. Returning a bare $translated under $single was only
+        // correct for scalars: an array meta value (which storage supports, and
+        // sanitize_deep recurses into) came back as $check[0] -- the first element
+        // for a list, and an "Undefined array key 0" warning plus null for a map.
+        return [$translated];
     }
 
     /**
@@ -259,19 +268,34 @@ class WGTAI_Render_Service
             return $blocks;
         }
 
-        $selectors = ['.nova-weglot-i18n'];
+        $selectors = array_merge(['.nova-weglot-i18n'], $this->builder_notranslate_selectors);
 
-        foreach ($this->builder_notranslate_ids as $element_id) {
-            // Elementor's own per-element wrapper class. A class selector avoids
-            // depending on attribute-selector support in Weglot's parser;
-            // [data-id="<id>"] is the equivalent if that ever needs changing.
-            $selectors[] = '.elementor-element-' . $element_id;
-        }
-
-        if ($this->has_translated_title()) {
+        // Gate each head field on the key that actually renders it, not on a
+        // different one that merely tends to travel with it. Both mismatches were
+        // harmful: a payload carrying only _yoast_wpseo_title emitted the Yoast
+        // <title> but never excluded it (Weglot re-translated our own French), and
+        // a payload carrying only a top-level title excluded <title> on a Yoast
+        // site where Yoast builds it from $post->post_title and never runs
+        // the_title (so an untranslated title shipped, marked do-not-touch).
+        if ($this->has_yoast_title()) {
+            // register_yoast_filters() installed wpseo_title + the OG/Twitter
+            // variants, so all three head fields are ours.
             $selectors[] = 'title';
             $selectors[] = 'meta[property="og:title"]';
             $selectors[] = 'meta[name="twitter:title"]';
+        } elseif ($this->has_translated_title() && ! $this->seo_plugin_owns_document_title()) {
+            // No SEO plugin: <title> comes from document_title_parts, which we
+            // filter. The OG/Twitter tags are not ours -- nothing emits them here.
+            $selectors[] = 'title';
+        }
+
+        if ($this->has_translated_title()) {
+            // the_title feeds the theme's rendered <h1> and breadcrumb, which no
+            // head selector covers. Without this Weglot re-translates the
+            // target-language title in the body: quota spent to garble our copy.
+            foreach ($this->body_title_selectors() as $selector) {
+                $selectors[] = $selector;
+            }
         }
 
         if (null !== $this->get_meta_value('_yoast_wpseo_metadesc')) {
@@ -288,7 +312,11 @@ class WGTAI_Render_Service
          * @param string            $language
          * @param int               $post_id
          */
-        $selectors = apply_filters('nova_weglot_notranslate_selectors', $selectors, $this->language, $this->post_id);
+        // Cast like the sibling call sites: this is a documented extension point,
+        // and a filter that returns a bare string would otherwise make foreach
+        // warn on every translated page view AND drop every built-in selector,
+        // handing Weglot the whole document to re-translate.
+        $selectors = (array) apply_filters('nova_weglot_notranslate_selectors', $selectors, $this->language, $this->post_id);
 
         foreach ($selectors as $selector) {
             if (is_string($selector) && '' !== $selector && ! in_array($selector, $blocks, true)) {
@@ -342,26 +370,83 @@ class WGTAI_Render_Service
      *
      * Excluding the whole builder wrapper would be wrong: elements the payload
      * did NOT translate should still be handled by Weglot. So diff the stored
-     * document against the post's real one and exclude only the elements whose
-     * settings actually differ.
+     * document against the post's real one and exclude only the leaf elements
+     * whose text actually differs.
      */
     private function prepare_builder_exclusions(int $post_id): void
     {
-        $this->builder_notranslate_ids = [];
+        $this->builder_notranslate_selectors = [];
 
-        $stored = $this->payload['meta']['_elementor_data'] ?? null;
+        $templates = $this->builder_selector_templates();
+        $selectors = [];
+
+        // Driven by the same key list as sanitisation. Extending
+        // nova_weglot_structured_meta_keys used to buy sanitisation with no
+        // protection, which is worse than either alone: the payload lands, and
+        // Weglot re-translates it.
+        foreach ($this->storage_service->structured_meta_keys() as $meta_key) {
+            if (! is_string($meta_key) || ! isset($templates[$meta_key]) || ! is_string($templates[$meta_key])) {
+                // Sanitised but no known element wrapper for this builder, so
+                // there is nothing to hand Weglot. Register one through
+                // nova_weglot_builder_selector_templates.
+                continue;
+            }
+
+            foreach ($this->changed_element_ids($post_id, $meta_key) as $element_id) {
+                $selectors[] = sprintf($templates[$meta_key], $element_id);
+            }
+        }
+
+        $this->builder_notranslate_selectors = array_values(array_unique($selectors));
+    }
+
+    /**
+     * Structured meta key => CSS selector template for the wrapper the builder
+     * renders around one element, with the element ID substituted for %s.
+     *
+     * A class selector avoids depending on attribute-selector support in Weglot's
+     * parser; for Elementor, [data-id="<id>"] is the equivalent.
+     *
+     * Only Elementor ships here, because it is the only builder whose payload
+     * reaches the page through post meta rather than post_content -- content that
+     * arrives as post_content (Divi, WPBakery, Avada shortcodes, Gutenberg) is
+     * already covered by the .nova-weglot-i18n wrapper filter_content emits.
+     * Builders that keep their own meta tree can register a template here; the
+     * walker expects Elementor's {id, settings, elements} shape.
+     *
+     * @return array<string,string>
+     */
+    private function builder_selector_templates(): array
+    {
+        /**
+         * @param array<string,string> $templates
+         */
+        return (array) apply_filters(
+            'nova_weglot_builder_selector_templates',
+            ['_elementor_data' => '.elementor-element-%s']
+        );
+    }
+
+    /**
+     * IDs of the leaf elements whose text this payload rewrote, for one builder key.
+     *
+     * @return array<int,string>
+     */
+    private function changed_element_ids(int $post_id, string $meta_key): array
+    {
+        $stored = $this->payload['meta'][$meta_key] ?? null;
 
         if (! is_string($stored) || '' === trim($stored)) {
-            return;
+            return [];
         }
 
         $stored_tree = $this->decode_builder_document($stored);
 
         if (null === $stored_tree) {
-            return;
+            return [];
         }
 
-        $original_tree = $this->decode_builder_document(get_post_meta($post_id, '_elementor_data', true));
+        $original_tree = $this->decode_builder_document(get_post_meta($post_id, $meta_key, true));
         $original      = [];
 
         if (null !== $original_tree) {
@@ -375,7 +460,7 @@ class WGTAI_Render_Service
         $changed = [];
         $this->collect_changed_builder_ids($stored_tree, $original, $changed);
 
-        $this->builder_notranslate_ids = array_values(array_unique($changed));
+        return $changed;
     }
 
     /**
@@ -392,8 +477,9 @@ class WGTAI_Render_Service
         $decoded = json_decode($raw, true);
 
         if (! is_array($decoded)) {
-            // WordPress stores _elementor_data slashed; Elementor unslashes
-            // before decoding, so fall back the same way.
+            // get_post_meta() returns UNslashed data, so this is not the normal
+            // path -- it is a tolerance for a document that some other writer
+            // stored with its escaping still doubled.
             $decoded = json_decode(wp_unslash($raw), true);
         }
 
@@ -435,7 +521,16 @@ class WGTAI_Render_Service
                 continue;
             }
 
-            if (isset($element['id']) && is_scalar($element['id'])) {
+            $children = isset($element['elements']) && is_array($element['elements']) ? $element['elements'] : [];
+
+            // Leaf elements only. Weglot honours an exclusion for the element AND
+            // its entire subtree, so excluding a container would freeze every
+            // nested widget this payload never touched -- they would be served in
+            // the source language with no machine translation at all. One changed
+            // setting on a section would silently drop the whole section out of
+            // translation. Widgets are where the text lives; containers carry
+            // layout.
+            if ([] === $children && isset($element['id']) && is_scalar($element['id'])) {
                 $id = (string) $element['id'];
 
                 // The ID lands in a CSS selector, so only accept ones that
@@ -445,23 +540,100 @@ class WGTAI_Render_Service
                         ? $element['settings']
                         : [];
 
-                    // Loose comparison: array == array is a recursive,
-                    // order-insensitive key/value match, which is what "did this
-                    // element's settings change" means here.
-                    if (! array_key_exists($id, $original) || $original[$id] != $settings) {
+                    if (! array_key_exists($id, $original) || $this->settings_text_differs($original[$id], $settings)) {
                         $changed[] = $id;
                     }
                 }
             }
 
-            if (isset($element['elements']) && is_array($element['elements'])) {
-                $this->collect_changed_builder_ids($element['elements'], $original, $changed);
+            if ([] !== $children) {
+                $this->collect_changed_builder_ids($children, $original, $changed);
             }
         }
     }
 
+    /**
+     * True when this payload rewrote any of an element's text.
+     *
+     * Compares only the string leaves, and only after normalising both sides. A
+     * whole-settings comparison was over-broad in a way that mattered: the stored
+     * document has been through wp_kses_post leaf by leaf (which rebuilds tag
+     * attributes, drops disallowed ones and normalises entities) and the original
+     * read from the DB has not, so a widget nobody translated compared unequal on
+     * the round-trip artifact alone and got excluded from translation.
+     *
+     * @param mixed               $original
+     * @param array<string,mixed> $settings
+     */
+    private function settings_text_differs($original, array $settings): bool
+    {
+        $original_text = is_array($original) ? $this->collect_text_leaves($original) : [];
+        $stored_text   = $this->collect_text_leaves($settings);
+
+        ksort($original_text);
+        ksort($stored_text);
+
+        // Fast path: identical raw text needs no normalisation, which keeps
+        // wp_kses_post off the hot path for every untouched widget on the page.
+        if ($original_text === $stored_text) {
+            return false;
+        }
+
+        return array_map([$this, 'normalize_text_leaf'], $original_text)
+            !== array_map([$this, 'normalize_text_leaf'], $stored_text);
+    }
+
+    /**
+     * Non-empty string leaves of a settings tree, keyed by their path.
+     *
+     * Keyed by path so a moved value counts as a change, and restricted to
+     * strings so a non-string setting (a size, a count, a toggle) cannot mark an
+     * element as translated. Settings that are strings but not prose -- a colour,
+     * a CSS unit -- are still compared, which is harmless: a translation payload
+     * is the original with its text swapped, so they match anyway.
+     *
+     * @param array<mixed> $settings
+     *
+     * @return array<string,string>
+     */
+    private function collect_text_leaves(array $settings, string $prefix = ''): array
+    {
+        $leaves = [];
+
+        foreach ($settings as $key => $value) {
+            $path = '' === $prefix ? (string) $key : $prefix . '.' . $key;
+
+            if (is_string($value)) {
+                if ('' !== trim($value)) {
+                    $leaves[$path] = $value;
+                }
+                continue;
+            }
+
+            if (is_array($value)) {
+                $leaves += $this->collect_text_leaves($value, $path);
+            }
+        }
+
+        return $leaves;
+    }
+
+    private function normalize_text_leaf(string $value): string
+    {
+        // wp_kses_post is what rewrote the stored side, so running it over both
+        // makes the comparison like-for-like whichever side has been through it.
+        $value = wp_kses_post($value);
+        $value = html_entity_decode($value, ENT_QUOTES, 'UTF-8');
+        $value = preg_replace('/\s+/u', ' ', $value);
+
+        return is_string($value) ? trim($value) : '';
+    }
+
     private function is_reserved_meta_key(string $meta_key): bool
     {
+        // Two independent key spaces: the index deliberately sits outside
+        // META_PREFIX so a locale payload can never collide with it. Both clauses
+        // are load-bearing.
         return WGTAI_Storage_Service::META_INDEX === $meta_key
             || 0 === strpos($meta_key, WGTAI_Storage_Service::META_PREFIX);
     }
@@ -471,6 +643,55 @@ class WGTAI_Render_Service
         $title = $this->payload['title'] ?? '';
 
         return is_string($title) && '' !== trim($title);
+    }
+
+    private function has_yoast_title(): bool
+    {
+        $title = $this->get_meta_value('_yoast_wpseo_title');
+
+        return is_string($title) && '' !== trim($title);
+    }
+
+    /**
+     * True when an SEO plugin builds <title> itself.
+     *
+     * These plugins short-circuit the document title (Yoast and AIOSEO filter
+     * wpseo_title / aioseo_title, Rank Math hooks pre_get_document_title), so
+     * document_title_parts -- the filter this service uses -- never decides the
+     * head. They also build it from $post->post_title without running the_title,
+     * so the source-language title is what ships.
+     */
+    private function seo_plugin_owns_document_title(): bool
+    {
+        return defined('WPSEO_VERSION')
+            || class_exists('WPSEO_Frontend')
+            || defined('RANK_MATH_VERSION')
+            || defined('AIOSEO_VERSION');
+    }
+
+    /**
+     * Selectors for the theme's rendered post title.
+     *
+     * the_title feeds an <h1> this bridge does not own, so there is no wrapper to
+     * key off. These cover WordPress core, block themes and the common classic
+     * conventions; a theme that names it something else needs one line through
+     * this filter, or the title is machine-translated in the body.
+     *
+     * @return array<int,string>
+     */
+    private function body_title_selectors(): array
+    {
+        /**
+         * @param array<int,string> $selectors
+         * @param string            $language
+         * @param int               $post_id
+         */
+        return (array) apply_filters(
+            'nova_weglot_title_selectors',
+            ['.entry-title', '.wp-block-post-title', '.post-title'],
+            $this->language,
+            $this->post_id
+        );
     }
 
     private function applies_to($post_id): bool

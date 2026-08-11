@@ -15,8 +15,15 @@ if (! defined('ABSPATH')) {
  */
 class WGTAI_Language_Service
 {
-    private ?array $destination_codes = null;
-    private ?string $original_code    = null;
+    // Only ever populated with a real answer. Memoizing a failed lookup used to
+    // poison the whole request: one call before Weglot's plugins_loaded container
+    // exists (another plugin hooking plugins_loaded at priority < 20, or a Weglot
+    // service that throws once) left is_original_language() false for everything
+    // and every POST failing wgtai_unknown_language with "available": [] -- and a
+    // retry a second later worked, so it read as intermittent rather than sticky.
+    private ?array $destination_entries = null;
+    private ?array $destination_codes   = null;
+    private ?string $original_code      = null;
 
     public static function is_weglot_active(): bool
     {
@@ -56,27 +63,32 @@ class WGTAI_Language_Service
             return $this->original_code;
         }
 
-        $this->original_code = '';
-
+        $code             = '';
         $language_service = $this->get_weglot_language_service();
 
         if ($language_service && method_exists($language_service, 'get_original_language')) {
             $entry = $language_service->get_original_language();
 
             if (is_object($entry) && method_exists($entry, 'getInternalCode')) {
-                $this->original_code = $this->normalize((string) $entry->getInternalCode());
+                $code = $this->normalize((string) $entry->getInternalCode());
             }
         }
 
-        if ($this->original_code === '' && function_exists('weglot_get_original_language')) {
+        if ($code === '' && function_exists('weglot_get_original_language')) {
             $fallback = weglot_get_original_language();
 
             if (is_string($fallback)) {
-                $this->original_code = $this->normalize($fallback);
+                $code = $this->normalize($fallback);
             }
         }
 
-        return $this->original_code;
+        // Cache the answer, never the failure: leaving it unset lets the next
+        // call retry once Weglot is actually up.
+        if ($code !== '') {
+            $this->original_code = $code;
+        }
+
+        return $code;
     }
 
     /**
@@ -90,17 +102,21 @@ class WGTAI_Language_Service
             return $this->destination_codes;
         }
 
-        $this->destination_codes = [];
+        $codes = [];
 
         foreach ($this->get_destination_entries() as $entry) {
             $code = $this->code_from_entry($entry);
 
-            if ($code !== '' && ! in_array($code, $this->destination_codes, true)) {
-                $this->destination_codes[] = $code;
+            if ($code !== '' && ! in_array($code, $codes, true)) {
+                $codes[] = $code;
             }
         }
 
-        return $this->destination_codes;
+        if ([] !== $codes) {
+            $this->destination_codes = $codes;
+        }
+
+        return $codes;
     }
 
     /**
@@ -273,7 +289,13 @@ class WGTAI_Language_Service
                 'is_current'    => $code === $current,
                 'english_name'  => $english,
                 'native_name'   => $native,
-                'locale'        => $external,
+                // Empty on purpose. The Polylang and WPML bridges return a real WP
+                // locale here ("fr_FR"); Weglot has no locale to report, and this
+                // used to duplicate external_code -- a dashboard-customisable URL
+                // segment ("fr-be"). A consumer mapping locale -> hreflang or -> a
+                // WP language pack silently mis-resolved it. The URL segment is
+                // still available, correctly named, as external_code.
+                'locale'        => '',
                 'flag_url'      => '',
                 'home_url'      => $home_url !== '' ? $home_url : $home,
             ];
@@ -319,6 +341,10 @@ class WGTAI_Language_Service
      */
     private function get_destination_entries(): array
     {
+        if (null !== $this->destination_entries) {
+            return $this->destination_entries;
+        }
+
         $language_service = $this->get_weglot_language_service();
 
         if (! $language_service || ! method_exists($language_service, 'get_destination_languages')) {
@@ -327,7 +353,18 @@ class WGTAI_Language_Service
 
         $entries = $language_service->get_destination_languages();
 
-        return is_array($entries) ? $entries : [];
+        if (! is_array($entries) || [] === $entries) {
+            return [];
+        }
+
+        // Memoized like the two lookups above it, which it backs: resolving an
+        // external or BCP-47 code walks these entries, so a POST carrying ten
+        // translations was making ten weglot_get_service() +
+        // get_destination_languages() round trips, and every translated page view
+        // one more.
+        $this->destination_entries = $entries;
+
+        return $entries;
     }
 
     /**

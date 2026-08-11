@@ -17,7 +17,13 @@ if (! defined('ABSPATH')) {
 class WGTAI_Storage_Service
 {
     public const META_PREFIX = '_nova_weglot_i18n_';
-    public const META_INDEX  = '_nova_weglot_i18n_languages';
+
+    // Deliberately OUTSIDE META_PREFIX. While the index lived under the prefix,
+    // meta_key('languages') resolved to exactly this key, so a DELETE on
+    // .../translations/languages wiped the whole stored-language index and left
+    // every payload orphaned. The two key spaces are now disjoint, pinned by
+    // "the index key sits outside the payload prefix" in tests/weglot-unit.php.
+    public const META_INDEX  = '_nova_weglot_languages';
 
     private WGTAI_Language_Service $language_service;
 
@@ -82,9 +88,20 @@ class WGTAI_Storage_Service
         // is already identical (a retry inside the same second produces the same
         // updated_at), so the write is confirmed by reading it back instead.
         if ($existing !== $payload) {
-            update_post_meta($source_post_id, $this->meta_key($internal_code), $payload);
+            // wp_slash() is mandatory: update_metadata() runs wp_unslash() over the
+            // value before writing, which strips one level of backslashes from every
+            // string in the payload. That silently destroys the structured documents
+            // built by wp_json_encode() -- \" terminates the JSON string early and
+            // \uXXXX loses its escape -- so the stored blob no longer decodes. Same
+            // reason as modules/elementor/includes/class-elementor-service.php:503.
+            update_post_meta($source_post_id, $this->meta_key($internal_code), wp_slash($payload));
 
-            if (null === $this->get($source_post_id, $internal_code)) {
+            // Compare the readback with what was requested, not merely against null:
+            // when a payload already exists, a failed write leaves the OLD payload in
+            // place and a null check would report stored:true for changes that were
+            // never saved. addslashes/stripslashes round-trips exactly, so the stored
+            // value is identical to $payload whenever the write landed.
+            if ($this->get($source_post_id, $internal_code) !== $payload) {
                 return new \WP_Error(
                     'wgtai_store_failed',
                     'Could not store the translation payload.',
@@ -100,7 +117,7 @@ class WGTAI_Storage_Service
             'language'       => $internal_code,
             'stored'         => true,
             'created'        => null === $existing,
-            'fields'         => array_values(array_keys($this->stored_fields($payload))),
+            'fields'         => array_keys($this->stored_fields($payload)),
             'url'            => $this->language_service->get_translated_url($source_post_id, $internal_code),
         ];
     }
@@ -202,49 +219,121 @@ class WGTAI_Storage_Service
      */
     private function build_payload(array $translation, string $internal_code, int $source_post_id, ?array $existing): array
     {
-        $payload = [
-            'language'       => $internal_code,
-            'source_post_id' => $source_post_id,
-            'updated_at'     => gmdate('c'),
-        ];
+        // Update semantics, matching the Polylang bridge (where wp_update_post
+        // leaves an omitted field intact) so the same NOVA request means the same
+        // thing on both providers:
+        //
+        //   field omitted  -> whatever is already stored is kept
+        //   field = null   -> that field is cleared for this locale
+        //   field = value  -> replaced
+        //
+        // Building from scratch instead meant a follow-up POST that carried only
+        // the field it was fixing silently erased the locale's content, excerpt
+        // and entire meta map, while still answering 200 stored:true.
+        $payload = is_array($existing) ? $existing : [];
 
-        if (is_array($existing) && isset($existing['created_at'])) {
-            $payload['created_at'] = (string) $existing['created_at'];
-        } else {
+        $payload['language']       = $internal_code;
+        $payload['source_post_id'] = $source_post_id;
+        $payload['updated_at']     = gmdate('c');
+
+        if (! isset($payload['created_at'])) {
             $payload['created_at'] = $payload['updated_at'];
+        } else {
+            $payload['created_at'] = (string) $payload['created_at'];
         }
 
-        if (isset($translation['title'])) {
-            $payload['title'] = sanitize_text_field((string) $translation['title']);
-        }
+        $this->apply_field($payload, $translation, 'title', 'title', function ($value) {
+            return sanitize_text_field((string) $value);
+        });
 
-        if (isset($translation['content'])) {
-            $payload['content'] = $this->sanitize_html((string) $translation['content']);
-        }
+        $this->apply_field($payload, $translation, 'content', 'content', function ($value) {
+            return $this->sanitize_html((string) $value);
+        });
 
-        if (isset($translation['excerpt'])) {
-            $payload['excerpt'] = $this->sanitize_html((string) $translation['excerpt']);
-        }
+        $this->apply_field($payload, $translation, 'excerpt', 'excerpt', function ($value) {
+            return $this->sanitize_html((string) $value);
+        });
 
         // Weglot cannot serve a translated slug that is not registered in its own
         // dashboard, so the value is kept for reporting but never used for routing.
-        if (isset($translation['slug'])) {
-            $payload['requested_slug'] = sanitize_title((string) $translation['slug']);
-        }
+        $this->apply_field($payload, $translation, 'slug', 'requested_slug', function ($value) {
+            return sanitize_title((string) $value);
+        });
 
-        $meta = [];
+        $payload['meta'] = $this->merge_meta($payload, $translation);
 
-        foreach (['meta', 'custom_fields'] as $meta_key) {
-            if (! empty($translation[$meta_key]) && is_array($translation[$meta_key])) {
-                $meta = array_merge($meta, $translation[$meta_key]);
-            }
-        }
-
-        if (! empty($meta)) {
-            $payload['meta'] = $this->sanitize_meta($meta);
+        if ([] === $payload['meta']) {
+            unset($payload['meta']);
         }
 
         return $payload;
+    }
+
+    /**
+     * Applies one caller-supplied field under the omit/null/value contract above.
+     *
+     * @param array<string,mixed> $payload
+     * @param array<string,mixed> $translation
+     */
+    private function apply_field(array &$payload, array $translation, string $input_key, string $payload_key, callable $sanitize): void
+    {
+        // array_key_exists, not isset: isset() is false for null, which is how a
+        // caller spells "clear this field".
+        if (! array_key_exists($input_key, $translation)) {
+            return;
+        }
+
+        if (null === $translation[$input_key]) {
+            unset($payload[$payload_key]);
+
+            return;
+        }
+
+        $payload[$payload_key] = $sanitize($translation[$input_key]);
+    }
+
+    /**
+     * Merges the request's meta keys over whatever the locale already stores.
+     *
+     * Per-key, like update_post_meta: a POST carrying one meta key must not drop
+     * the others. A key sent as null is removed, which is the only way to clear
+     * one (an empty meta object means "no meta keys in this request", not
+     * "delete every stored key").
+     *
+     * @param array<string,mixed> $payload
+     * @param array<string,mixed> $translation
+     *
+     * @return array<string,mixed>
+     */
+    private function merge_meta(array $payload, array $translation): array
+    {
+        $incoming = [];
+        $supplied = false;
+
+        foreach (['meta', 'custom_fields'] as $meta_key) {
+            if (array_key_exists($meta_key, $translation) && is_array($translation[$meta_key])) {
+                $incoming = array_merge($incoming, $translation[$meta_key]);
+                $supplied = true;
+            }
+        }
+
+        $stored = isset($payload['meta']) && is_array($payload['meta']) ? $payload['meta'] : [];
+
+        if (! $supplied) {
+            return $stored;
+        }
+
+        // Only the incoming keys are sanitised: the stored ones already were, and
+        // re-running wp_kses_post over a whole builder document on every partial
+        // update is pure cost.
+        $merged = array_merge($stored, $this->sanitize_meta($incoming));
+
+        return array_filter(
+            $merged,
+            static function ($value) {
+                return null !== $value;
+            }
+        );
     }
 
     private function sanitize_html(string $value): string
@@ -267,8 +356,17 @@ class WGTAI_Storage_Service
                 continue;
             }
 
-            if (is_string($value) && in_array($key, $structured, true)) {
-                $clean[$key] = $this->sanitize_structured_document($value);
+            if (in_array($key, $structured, true) && (is_string($value) || is_array($value))) {
+                // A JSON request body can carry the document either way. An array
+                // used to fall through to sanitize_deep and be stored as a PHP
+                // array, which the builder then reads back with json_decode() and
+                // cannot use, and which prepare_builder_exclusions() skips at its
+                // own is_string() check -- so the value was stored in a shape only
+                // half the pipeline understands. Normalise to the JSON string the
+                // builder expects.
+                $clean[$key] = is_array($value)
+                    ? $this->encode_structured_document($this->sanitize_deep($value))
+                    : $this->sanitize_structured_document($value);
                 continue;
             }
 
@@ -296,9 +394,13 @@ class WGTAI_Storage_Service
      * string terminates early. Sanitise the text leaves inside the document
      * instead, then re-encode.
      *
+     * Public because the render service drives its notranslate exclusions off the
+     * same list: a key that gets structured sanitisation but no builder
+     * protection is worse than either alone.
+     *
      * @return array<int,string>
      */
-    private function structured_meta_keys(): array
+    public function structured_meta_keys(): array
     {
         /**
          * @param array<int,string> $keys
@@ -316,7 +418,15 @@ class WGTAI_Storage_Service
             return $this->sanitize_html($value);
         }
 
-        $encoded = wp_json_encode($this->sanitize_deep($decoded));
+        return $this->encode_structured_document($this->sanitize_deep($decoded));
+    }
+
+    /**
+     * @param array<mixed> $document
+     */
+    private function encode_structured_document(array $document): string
+    {
+        $encoded = wp_json_encode($document);
 
         return is_string($encoded) ? $encoded : '';
     }
@@ -364,7 +474,7 @@ class WGTAI_Storage_Service
 
         sort($languages);
 
-        update_post_meta($post_id, self::META_INDEX, $languages);
+        update_post_meta($post_id, self::META_INDEX, wp_slash($languages));
     }
 
     private function remove_from_index(int $post_id, string $internal_code): void
@@ -384,6 +494,6 @@ class WGTAI_Storage_Service
             return;
         }
 
-        update_post_meta($post_id, self::META_INDEX, $languages);
+        update_post_meta($post_id, self::META_INDEX, wp_slash($languages));
     }
 }

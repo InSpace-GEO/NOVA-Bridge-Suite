@@ -58,6 +58,22 @@ destination languages. `custom_fields` is accepted as an alias for `meta`.
 `200 OK` when all items succeed, `207 Multi-Status` when some fail. The response
 carries a `notes` array restating the contract deviations below.
 
+### Update semantics
+
+A POST for a locale that already has a payload **merges** into it, matching the
+Polylang bridge (where `wp_update_post` leaves an omitted field intact), so a retry
+that carries only the field it is fixing is safe:
+
+| In the request | Effect |
+|---|---|
+| field omitted | whatever is stored is kept |
+| `"field": null` | that field is cleared for this locale |
+| `"field": value` | replaced |
+
+`meta` merges **per key**, like `update_post_meta` — sending one key does not drop
+the others, and `"meta": {}` means "this request carries no meta keys", not "delete
+them all". Clear a single key by sending it as `null`.
+
 ## What is served, and where
 
 | Payload field | Served through |
@@ -70,10 +86,20 @@ carries a `notes` array restating the contract deviations below.
 
 Head fields we translate are added to `weglot_exclude_blocks` for that request only,
 so Weglot does not re-translate our target-language title and meta description back
-through its API.
+through its API. Each field is gated on **the key that actually renders it**: with an
+SEO plugin active, `<title>` is built from `meta._yoast_wpseo_title` (a top-level
+`title` never reaches the head, because Yoast reads `$post->post_title` and does not
+run `the_title`); without one, `document_title_parts` carries the top-level `title`.
+
+`the_title` also feeds the theme's rendered `<h1>` and breadcrumb, which no head
+selector covers, so a translated `title` additionally excludes `.entry-title`,
+`.wp-block-post-title` and `.post-title`. A theme that names its title element
+something else needs one line through the `nova_weglot_title_selectors` filter, or
+Weglot machine-translates the title in the body.
 
 Storage: one meta key per locale, `_nova_weglot_i18n_<lang>`, plus an index at
-`_nova_weglot_i18n_languages`.
+`_nova_weglot_languages` — deliberately **outside** the `_nova_weglot_i18n_` prefix,
+so no locale code can resolve onto the index key.
 
 ### Page-builder pages (Elementor)
 
@@ -87,24 +113,48 @@ Two things follow, both handled here:
 - **The rendered builder markup carries no `.nova-weglot-i18n` wrapper**, so
   `weglot_exclude_blocks` would not cover it and Weglot would re-translate copy that
   is already in the target language — spending quota and garbling the text, since it
-  applies source→target to it. On every request with an `_elementor_data` payload the
-  render service diffs the stored document against the post's real one and excludes
-  only the elements whose settings actually differ, as
-  `.elementor-element-<id>`. Elements the payload left alone stay translatable by
-  Weglot, so a partial translation degrades sensibly instead of stranding source-language
-  text. With no readable original, everything in the stored document is excluded.
+  applies source→target to it. On every request with a builder payload the render
+  service diffs the stored document against the post's real one and excludes only the
+  **leaf** elements whose **text** actually differs, as `.elementor-element-<id>`.
+  Elements the payload left alone stay translatable by Weglot, so a partial
+  translation degrades sensibly instead of stranding source-language text. With no
+  readable original, everything in the stored document is excluded.
+
+  Leaf-only and text-only are both load-bearing. Weglot honours an exclusion for the
+  element *and its whole subtree*, so excluding a changed container would freeze every
+  nested widget the payload never touched; and the stored side has been through
+  `wp_kses_post` while the original has not, so comparing whole settings marked
+  untouched widgets as changed on a round-trip artifact alone. Both sides are
+  normalised before a difference is believed.
 - **Structured meta is not sanitised as HTML.** `wp_kses_post` rebuilds tag attributes
   double-quoted, which turns an escaped `\"` inside a JSON blob into a raw `"` and
   truncates the document. Keys listed by the `nova_weglot_structured_meta_keys` filter
-  (default: `_elementor_data`) are decoded, sanitised leaf by leaf, and re-encoded.
-  Nested array meta values are sanitised the same way rather than stored verbatim.
+  (default: `_elementor_data`) are decoded, sanitised leaf by leaf, and re-encoded —
+  whether they arrive as a JSON string or as a JSON array, which is normalised to a
+  string so the builder can read it back. Nested array meta values are sanitised the
+  same way rather than stored verbatim.
+
+Both sides are driven off the **same** key list, so registering a builder gets it
+sanitisation *and* notranslate protection. Registering only the first would leave the
+payload exposed to re-translation:
 
 ```php
 add_filter( 'nova_weglot_structured_meta_keys', function ( $keys ) {
     $keys[] = '_fl_builder_data';   // another builder that stores a JSON document
     return $keys;
 } );
+
+add_filter( 'nova_weglot_builder_selector_templates', function ( $templates ) {
+    $templates['_fl_builder_data'] = '.fl-node-%s';   // that builder's element wrapper
+    return $templates;
+} );
 ```
+
+Only Elementor ships with a template, because it is the only bridged builder whose
+payload reaches the page through post meta. Divi, WPBakery, Avada and Gutenberg copy
+arrives as `post_content` and is already covered by the `.nova-weglot-i18n` wrapper.
+The tree walker expects Elementor's `{id, settings, elements}` shape; a builder that
+nests differently needs its own walker rather than just a template.
 
 ## Limitations
 
@@ -120,6 +170,11 @@ These are Weglot's, not the bridge's:
 - **Nothing appears in Weglot's Translation List.** The dashboard and visual editor
   will not show NOVA content, so an editor working there is editing a layer that is
   not being served.
+- **`GET /languages` returns an empty `locale`.** The Polylang and WPML bridges report
+  a real WP locale (`fr_FR`) under that key; Weglot has none. The URL segment — which
+  the dashboard can customise, and which is *not* a locale — is reported under
+  `external_code`. Anything mapping `locale` → hreflang or → a WP language pack must
+  read `code` or `external_code` instead.
 - **Only singular views are swapped.** Archive, listing and search views keep the
   source-language title and excerpt, which Weglot then machine-translates — so a
   listing can show a different wording than the page it links to.
@@ -136,5 +191,11 @@ add_filter( 'nova_weglot_notranslate_selectors', function ( $selectors, $languag
 
 ## Verification status
 
-Implemented but **not yet verified against a live Weglot site.** See the checklist in
-the PR description before enabling for a client.
+`php tests/weglot-unit.php` runs standalone (no WordPress, no Weglot) and covers the
+storage, render, language and REST surfaces.
+
+Still **not verified against a live Weglot site.** `tests/weglot-regression.php`
+(`wp eval-file`) is the end-to-end pass; the two things only a real page settles are
+that `_elementor_data` reaches Elementor's `json_decode` intact through real
+`get_post_meta`, and that the excluded elements are exactly the ones that stay
+untranslated while the Weglot dashboard's word count does not move.

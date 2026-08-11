@@ -188,6 +188,145 @@ try {
         'The stored-language index does not list exactly the stored locale.'
     );
 
+    // --- a structured document survives real WordPress meta -------------------
+    //
+    // The path the unit harness can only approximate. update_metadata() runs
+    // wp_unslash() over the value, so without wp_slash() every backslash in the
+    // JSON is stripped here and nowhere else: \" terminates the string early and
+    // \uXXXX loses its escape. Both an <a href> and a non-ASCII character are
+    // needed, because they corrupt through different escapes.
+
+    $builder_document = wp_json_encode(
+        [[
+            'id'       => 'sec1',
+            'elType'   => 'section',
+            'settings' => [],
+            'elements' => [[
+                'id'       => 'col1',
+                'elType'   => 'column',
+                'settings' => [],
+                'elements' => [
+                    [
+                        'id'         => 'hd1',
+                        'elType'     => 'widget',
+                        'widgetType' => 'heading',
+                        'settings'   => ['title' => $marker . '-café-heading'],
+                    ],
+                    [
+                        'id'         => 'tx1',
+                        'elType'     => 'widget',
+                        'widgetType' => 'text-editor',
+                        'settings'   => [
+                            'editor' => '<p><a href="https://example.com/fr/">' . $marker . '-link</a></p>',
+                        ],
+                    ],
+                ],
+            ]],
+        ]]
+    );
+
+    $response = $server->dispatch(
+        nova_weglot_test_request(
+            'POST',
+            '/weglot-translations/v1/posts',
+            [
+                'source_post_id' => (int) $source_id,
+                'translations'   => [
+                    [
+                        'language' => $target,
+                        'meta'     => [
+                            '_elementor_data' => $builder_document,
+                            'nova_gallery'    => ['first' => $marker . '-one', 'second' => $marker . '-two'],
+                        ],
+                    ],
+                ],
+            ]
+        )
+    );
+
+    nova_weglot_test_assert(
+        200 === $response->get_status(),
+        'POST of a structured document returned ' . $response->get_status() . ': ' . wp_json_encode($response->get_data())
+    );
+
+    $payload   = $storage_service->get((int) $source_id, $target);
+    $stored_doc = $payload['meta']['_elementor_data'] ?? null;
+
+    nova_weglot_test_assert(is_string($stored_doc), 'The structured document was not stored as a string.');
+
+    $decoded_doc = json_decode((string) $stored_doc, true);
+
+    nova_weglot_test_assert(
+        is_array($decoded_doc),
+        'The stored structured document no longer decodes - this is the missing wp_slash() failure.'
+    );
+    nova_weglot_test_assert(
+        ($decoded_doc[0]['elements'][0]['elements'][1]['settings']['editor'] ?? '')
+            === '<p><a href="https://example.com/fr/">' . $marker . '-link</a></p>',
+        'The link inside the structured document did not survive storage.'
+    );
+    nova_weglot_test_assert(
+        ($decoded_doc[0]['elements'][0]['elements'][0]['settings']['title'] ?? '') === $marker . '-café-heading',
+        'The non-ASCII heading inside the structured document did not survive storage.'
+    );
+
+    // An array-valued meta key must reach a template intact, not as its first
+    // element: get_metadata_raw() unwraps one level for a $single read.
+    nova_weglot_test_assert(
+        ($payload['meta']['nova_gallery']['second'] ?? '') === $marker . '-two',
+        'An array meta value did not round-trip through storage.'
+    );
+
+    // --- a partial update must not erase the rest of the locale ---------------
+
+    $response = $server->dispatch(
+        nova_weglot_test_request(
+            'POST',
+            '/weglot-translations/v1/posts',
+            [
+                'source_post_id' => (int) $source_id,
+                'translations'   => [
+                    ['language' => $target, 'title' => $marker . '-retitled'],
+                ],
+            ]
+        )
+    );
+
+    nova_weglot_test_assert(
+        200 === $response->get_status(),
+        'A partial update returned ' . $response->get_status() . ': ' . wp_json_encode($response->get_data())
+    );
+
+    $payload = $storage_service->get((int) $source_id, $target);
+
+    nova_weglot_test_assert(
+        ($payload['title'] ?? '') === $marker . '-retitled',
+        'A partial update did not apply the field it carried.'
+    );
+    nova_weglot_test_assert(
+        ($payload['content'] ?? '') === '<p>' . $marker . '-translated-body</p>',
+        'A partial update erased the stored content.'
+    );
+    nova_weglot_test_assert(
+        ($payload['excerpt'] ?? '') === $marker . '-translated-excerpt',
+        'A partial update erased the stored excerpt.'
+    );
+    nova_weglot_test_assert(
+        is_string($payload['meta']['_elementor_data'] ?? null),
+        'A partial update erased the stored meta map.'
+    );
+
+    // --- the index cannot be deleted through a locale code --------------------
+
+    $response = $server->dispatch(
+        nova_weglot_test_request('DELETE', '/weglot-translations/v1/posts/' . (int) $source_id . '/translations/languages')
+    );
+
+    nova_weglot_test_assert(
+        $storage_service->get_stored_languages((int) $source_id) === [$target],
+        'DELETE .../translations/languages wiped the stored-language index.'
+    );
+
     $response = $server->dispatch(
         nova_weglot_test_request(
             'GET',
