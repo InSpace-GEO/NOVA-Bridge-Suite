@@ -594,6 +594,8 @@ function nova_bridge_suite_get_targeted_rest_module_keys( string $route ): ?arra
         $module_keys = [ 'multilingual_polylang' ];
     } elseif ( nova_bridge_suite_rest_route_matches( $route, 'wpml-translations/v1' ) ) {
         $module_keys = [ 'multilingual_wpml' ];
+    } elseif ( nova_bridge_suite_rest_route_matches( $route, 'weglot-translations/v1' ) ) {
+        $module_keys = [ 'multilingual_weglot' ];
     } elseif ( nova_bridge_suite_rest_route_matches( $route, 'nova-gutenberg/v1' ) ) {
         $module_keys = [ 'gutenberg_bridge' ];
     } elseif ( nova_bridge_suite_rest_route_matches( $route, 'nova-wpbakery/v1' ) ) {
@@ -623,6 +625,7 @@ function nova_bridge_suite_get_targeted_rest_module_keys( string $route ): ?arra
         nova_bridge_suite_rest_route_matches( $route, 'seor-bridge/v1' )
         || nova_bridge_suite_rest_route_matches( $route, 'polylang-translations/v1' )
         || nova_bridge_suite_rest_route_matches( $route, 'wpml-translations/v1' )
+        || nova_bridge_suite_rest_route_matches( $route, 'weglot-translations/v1' )
         || nova_bridge_suite_rest_route_matches( $route, 'nova-gutenberg/v1' )
         || nova_bridge_suite_rest_route_matches( $route, 'nova-wpbakery/v1' )
         || nova_bridge_suite_rest_route_matches( $route, 'nova-breakdance/v1' )

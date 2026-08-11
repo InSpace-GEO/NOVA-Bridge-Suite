@@ -42,6 +42,10 @@ function nova_bridge_suite_module_definitions(): array {
             'path'                 => 'modules/polylang/polylang-translation-api.php',
             'standalone_filenames' => [ 'polylang-translation-api.php' ],
         ],
+        'multilingual_weglot'    => [
+            'path'                 => 'modules/weglot/weglot-translation-api.php',
+            'standalone_filenames' => [ 'weglot-translation-api.php' ],
+        ],
         'woocommerce_rich_text'  => [
             'path'                 => 'modules/woocommerce/wc-content-below-products.php',
             'standalone_filenames' => [ 'wc-content-below-products.php' ],
@@ -351,6 +355,11 @@ function nova_bridge_suite_get_recommended_modules(): array {
             'label'       => 'Enable NOVA Polylang Bridge',
             'description' => 'Polylang detected. Enable the bridge to manage translations.',
             'plugins'     => [ 'polylang/polylang.php' ],
+        ],
+        'multilingual_weglot'    => [
+            'label'       => 'Enable NOVA Weglot Bridge',
+            'description' => 'Weglot detected. Enable the bridge to serve per-locale content on Weglot URLs.',
+            'plugins'     => [ 'weglot/weglot.php' ],
         ],
     ];
 
@@ -692,6 +701,19 @@ function nova_bridge_suite_register_settings(): void {
             'key'         => 'multilingual_polylang',
             'label'       => 'Enable NOVA Polylang Bridge',
             'description' => 'REST bridge for Polylang translations.',
+        ]
+    );
+
+    add_settings_field(
+        'nova_bridge_weglot',
+        'Weglot',
+        'nova_bridge_suite_render_checkbox_field',
+        'nova-settings',
+        'nova_bridge_multilingual',
+        [
+            'key'         => 'multilingual_weglot',
+            'label'       => 'Enable NOVA Weglot Bridge',
+            'description' => 'REST bridge that stores per-locale content and serves it on Weglot-translated URLs.',
         ]
     );
 

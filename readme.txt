@@ -15,7 +15,7 @@ NOVA Bridge Suite is the WordPress companion plugin for NOVA, your AI SEO automa
 Use it to:
 * Update content and layouts in popular page builders.
 * Push SEO metadata and custom fields alongside page updates.
-* Manage multilingual updates with WPML and Polylang.
+* Manage multilingual updates with WPML and Polylang, and serve per-locale content on Weglot.
 * Add rich text below WooCommerce category listings.
 * Enable NOVA Blog and Service Page custom post types.
 
