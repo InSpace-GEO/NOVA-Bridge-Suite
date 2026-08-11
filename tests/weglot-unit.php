@@ -140,8 +140,27 @@ function sanitize_text_field($value)
 
 function wp_kses_post($value)
 {
+    $value = (string) $value;
+
     // Enough to prove the sanitize path runs: drop script tags and their content.
-    return preg_replace('#<script\b[^>]*>.*?</script>#is', '', (string) $value);
+    $value = preg_replace('#<script\b[^>]*>.*?</script>#is', '', $value);
+
+    // Real wp_kses_post rebuilds tag attributes and re-emits them double-quoted
+    // (wp_kses_hair/wp_kses_attr). That is what corrupts a JSON blob passed
+    // through it: an escaped \" becomes a raw ". Reproduced here so the
+    // structured-document path is actually proven, not assumed.
+    return preg_replace_callback(
+        '#<[a-zA-Z][^>]*>#',
+        static function ($match) {
+            return str_replace('\\"', '"', $match[0]);
+        },
+        $value
+    );
+}
+
+function wp_json_encode($value, $options = 0, $depth = 512)
+{
+    return json_encode($value, $options, $depth);
 }
 
 function sanitize_title($value)
@@ -155,6 +174,11 @@ function sanitize_title($value)
 function esc_attr($value)
 {
     return htmlspecialchars((string) $value, ENT_QUOTES);
+}
+
+function wp_unslash($value)
+{
+    return is_string($value) ? stripslashes($value) : $value;
 }
 
 function current_user_can($capability, $object_id = null): bool
@@ -619,6 +643,175 @@ wgtai_check(
 );
 wgtai_check_true('wrapper still excluded', in_array('.nova-weglot-i18n', $de_blocks, true));
 wgtai_check('yoast title filter not registered without a title', wgtai_test_filter_registered('wpseo_title'), false);
+wgtai_check(
+    'no builder exclusions without an _elementor_data payload',
+    (bool) preg_grep('/^\.elementor-element-/', $de_blocks),
+    false
+);
+
+// ---------------------------------------------------------------------------
+// Page-builder pages: _elementor_data payloads
+//
+// Elementor renders from _elementor_data, not post_content, so the payload
+// reaches the page through the meta filter -- and that markup carries no
+// .nova-weglot-i18n wrapper. Weglot must be told to leave the elements we
+// rewrote alone, or it re-translates our own copy (garbling it, and spending
+// the quota this bridge exists to avoid).
+// ---------------------------------------------------------------------------
+
+function wgtai_test_elementor_doc(string $heading, string $body): string
+{
+    return json_encode(
+        [[
+            'id'       => 'sec1',
+            'elType'   => 'section',
+            'settings' => [],
+            'elements' => [[
+                'id'       => 'col1',
+                'elType'   => 'column',
+                'settings' => [],
+                'elements' => [
+                    ['id' => 'hd1', 'elType' => 'widget', 'widgetType' => 'heading', 'settings' => ['title' => $heading]],
+                    ['id' => 'tx1', 'elType' => 'widget', 'widgetType' => 'text-editor', 'settings' => ['editor' => $body]],
+                ],
+            ]],
+        ]]
+    );
+}
+
+wgtai_test_seed_post(44, 'elementor-pagina', 'Elementor pagina');
+$GLOBALS['wgtai_test_meta'][44]['_elementor_data'] = wgtai_test_elementor_doc('NL kop', '<p>NL body</p>');
+
+// Only the heading is translated; the text editor keeps the source value.
+$storage->save(44, [
+    'language' => 'fr',
+    'title'    => 'Page FR',
+    'meta'     => ['_elementor_data' => wgtai_test_elementor_doc('Titre FR', '<p>NL body</p>')],
+]);
+
+$GLOBALS['wgtai_test_filters']                 = [];
+$GLOBALS['wgtai_test_context']['current_lang'] = 'fr';
+$GLOBALS['wgtai_test_context']['queried_id']   = 44;
+$GLOBALS['wgtai_test_context']['current_id']   = 44;
+
+$render_el = new WGTAI_Render_Service($languages, $storage);
+$render_el->resolve_payload();
+$el_blocks = $render_el->filter_exclude_blocks([]);
+
+wgtai_check_true('changed element excluded from Weglot', in_array('.elementor-element-hd1', $el_blocks, true));
+wgtai_check(
+    'unchanged element still translated by Weglot',
+    in_array('.elementor-element-tx1', $el_blocks, true),
+    false
+);
+wgtai_check(
+    'unchanged container still translated by Weglot',
+    in_array('.elementor-element-sec1', $el_blocks, true),
+    false
+);
+wgtai_check_true('wrapper class still excluded on a builder page', in_array('.nova-weglot-i18n', $el_blocks, true));
+
+// The diff must be real: an identical document means we changed nothing.
+$storage->save(44, [
+    'language' => 'de',
+    'meta'     => ['_elementor_data' => wgtai_test_elementor_doc('NL kop', '<p>NL body</p>')],
+]);
+$GLOBALS['wgtai_test_filters']                 = [];
+$GLOBALS['wgtai_test_context']['current_lang'] = 'de';
+
+$render_same = new WGTAI_Render_Service($languages, $storage);
+$render_same->resolve_payload();
+wgtai_check(
+    'an identical document excludes nothing',
+    (bool) preg_grep('/^\.elementor-element-/', $render_same->filter_exclude_blocks([])),
+    false
+);
+
+// With no readable original we cannot tell what we changed, so everything we
+// serve is treated as ours -- re-translating our own copy is the worse fault.
+$GLOBALS['wgtai_test_meta'][44]['_elementor_data'] = 'not json at all';
+$GLOBALS['wgtai_test_filters']                     = [];
+$GLOBALS['wgtai_test_context']['current_lang']     = 'fr';
+
+$render_nodoc = new WGTAI_Render_Service($languages, $storage);
+$render_nodoc->resolve_payload();
+$nodoc_blocks = $render_nodoc->filter_exclude_blocks([]);
+wgtai_check_true('unreadable original excludes the heading', in_array('.elementor-element-hd1', $nodoc_blocks, true));
+wgtai_check_true('unreadable original excludes the body too', in_array('.elementor-element-tx1', $nodoc_blocks, true));
+
+// WordPress stores _elementor_data slashed; the diff must still work.
+$GLOBALS['wgtai_test_meta'][44]['_elementor_data'] = addslashes(wgtai_test_elementor_doc('NL kop', '<p>NL body</p>'));
+$GLOBALS['wgtai_test_filters']                     = [];
+
+$render_slashed = new WGTAI_Render_Service($languages, $storage);
+$render_slashed->resolve_payload();
+$slashed_blocks = $render_slashed->filter_exclude_blocks([]);
+wgtai_check_true('slashed original still diffs', in_array('.elementor-element-hd1', $slashed_blocks, true));
+wgtai_check(
+    'slashed original does not over-exclude',
+    in_array('.elementor-element-tx1', $slashed_blocks, true),
+    false
+);
+
+// An element ID that would break out of a CSS selector must never be emitted.
+$GLOBALS['wgtai_test_meta'][44]['_elementor_data'] = json_encode([['id' => 'ok1', 'settings' => ['title' => 'NL']]]);
+$storage->save(44, [
+    'language' => 'fr',
+    'meta'     => ['_elementor_data' => json_encode([
+        ['id' => 'ok1', 'settings' => ['title' => 'FR']],
+        ['id' => 'bad{color:red}', 'settings' => ['title' => 'FR']],
+    ])],
+]);
+$GLOBALS['wgtai_test_filters'] = [];
+
+$render_badid = new WGTAI_Render_Service($languages, $storage);
+$render_badid->resolve_payload();
+$badid_blocks = $render_badid->filter_exclude_blocks([]);
+wgtai_check_true('safe element id emitted', in_array('.elementor-element-ok1', $badid_blocks, true));
+wgtai_check(
+    'unsafe element id never reaches a selector',
+    (bool) preg_grep('/[{}]/', $badid_blocks),
+    false
+);
+
+// --- structured meta must survive sanitisation -----------------------------
+// wp_kses_post rebuilds tag attributes double-quoted, which turns an escaped \"
+// inside a JSON blob into a raw " and truncates the document. Structured keys
+// must be sanitised leaf-by-leaf instead.
+$linked = wgtai_test_elementor_doc('Titre FR', '<p><a href="https://example.com/fr/">Lien</a></p>');
+$storage->save(44, ['language' => 'fr', 'meta' => ['_elementor_data' => $linked]]);
+$stored_doc = $storage->get(44, 'fr')['meta']['_elementor_data'];
+
+wgtai_check_true('stored _elementor_data is still valid JSON', is_array(json_decode($stored_doc, true)));
+$decoded_doc = json_decode($stored_doc, true);
+wgtai_check(
+    'the link inside the document survived intact',
+    $decoded_doc[0]['elements'][0]['elements'][1]['settings']['editor'],
+    '<p><a href="https://example.com/fr/">Lien</a></p>'
+);
+wgtai_check(
+    'translated heading survived intact',
+    $decoded_doc[0]['elements'][0]['elements'][0]['settings']['title'],
+    'Titre FR'
+);
+
+// ...but sanitisation must still happen inside the document, and inside arrays,
+// which previously bypassed kses entirely.
+$scripted = json_encode([['id' => 'x1', 'settings' => ['title' => 'Hi<script>alert(1)</script>']]]);
+$storage->save(44, [
+    'language' => 'fr',
+    'meta'     => [
+        '_elementor_data' => $scripted,
+        'nested_field'    => ['deep' => ['bad' => 'Hi<script>alert(1)</script>']],
+    ],
+]);
+$after = $storage->get(44, 'fr')['meta'];
+wgtai_check(
+    'script stripped inside a structured document',
+    json_decode($after['_elementor_data'], true)[0]['settings']['title'],
+    'Hi'
+);
+wgtai_check('script stripped inside a nested array meta value', $after['nested_field']['deep']['bad'], 'Hi');
 
 // A post with no stored payload for the current language must be left alone.
 wgtai_test_seed_post(43, 'andere-pagina', 'Andere pagina');

@@ -259,10 +259,16 @@ class WGTAI_Storage_Service
      */
     private function sanitize_meta(array $meta): array
     {
-        $clean = [];
+        $clean      = [];
+        $structured = $this->structured_meta_keys();
 
         foreach ($meta as $key => $value) {
             if (! is_string($key) || '' === $key) {
+                continue;
+            }
+
+            if (is_string($value) && in_array($key, $structured, true)) {
+                $clean[$key] = $this->sanitize_structured_document($value);
                 continue;
             }
 
@@ -272,7 +278,76 @@ class WGTAI_Storage_Service
             }
 
             if (is_array($value)) {
-                $clean[$key] = $value;
+                // Arrays used to be stored verbatim, which let a caller without
+                // unfiltered_html smuggle markup past kses in a nested value.
+                $clean[$key] = $this->sanitize_deep($value);
+            }
+        }
+
+        return $clean;
+    }
+
+    /**
+     * Meta keys whose value is a structured document, not display HTML.
+     *
+     * A page builder stores its tree as a JSON string, and running that blob
+     * through wp_kses_post corrupts it: kses rebuilds tag attributes with double
+     * quotes, so an escaped \" inside the JSON comes back as a raw " and the
+     * string terminates early. Sanitise the text leaves inside the document
+     * instead, then re-encode.
+     *
+     * @return array<int,string>
+     */
+    private function structured_meta_keys(): array
+    {
+        /**
+         * @param array<int,string> $keys
+         */
+        return (array) apply_filters('nova_weglot_structured_meta_keys', ['_elementor_data']);
+    }
+
+    private function sanitize_structured_document(string $value): string
+    {
+        $decoded = json_decode($value, true);
+
+        if (! is_array($decoded)) {
+            // Not the structured document we were promised: treat it as ordinary
+            // HTML rather than storing it unchecked.
+            return $this->sanitize_html($value);
+        }
+
+        $encoded = wp_json_encode($this->sanitize_deep($decoded));
+
+        return is_string($encoded) ? $encoded : '';
+    }
+
+    /**
+     * Sanitises every string leaf, leaving structure and keys intact.
+     *
+     * Keys are deliberately untouched: they are a builder's setting names, and
+     * rewriting one silently detaches the value from the element that reads it.
+     *
+     * @param array<mixed> $value
+     *
+     * @return array<mixed>
+     */
+    private function sanitize_deep(array $value): array
+    {
+        $clean = [];
+
+        foreach ($value as $key => $item) {
+            if (is_string($item)) {
+                $clean[$key] = $this->sanitize_html($item);
+                continue;
+            }
+
+            if (is_array($item)) {
+                $clean[$key] = $this->sanitize_deep($item);
+                continue;
+            }
+
+            if (is_scalar($item) || null === $item) {
+                $clean[$key] = $item;
             }
         }
 

@@ -26,6 +26,9 @@ class WGTAI_Render_Service
     private string $language = '';
     private bool $filters_registered = false;
 
+    /** @var array<int,string> Elementor element IDs whose settings this payload changed. */
+    private array $builder_notranslate_ids = [];
+
     public function __construct(WGTAI_Language_Service $language_service, WGTAI_Storage_Service $storage_service)
     {
         $this->language_service = $language_service;
@@ -77,6 +80,10 @@ class WGTAI_Render_Service
         $this->payload  = $payload;
         $this->post_id  = $post_id;
         $this->language = $language;
+
+        // Must run BEFORE register_filters(): it reads the post's real
+        // _elementor_data, which our own get_post_metadata filter would shadow.
+        $this->prepare_builder_exclusions($post_id);
 
         $this->register_filters();
     }
@@ -254,6 +261,13 @@ class WGTAI_Render_Service
 
         $selectors = ['.nova-weglot-i18n'];
 
+        foreach ($this->builder_notranslate_ids as $element_id) {
+            // Elementor's own per-element wrapper class. A class selector avoids
+            // depending on attribute-selector support in Weglot's parser;
+            // [data-id="<id>"] is the equivalent if that ever needs changing.
+            $selectors[] = '.elementor-element-' . $element_id;
+        }
+
         if ($this->has_translated_title()) {
             $selectors[] = 'title';
             $selectors[] = 'meta[property="og:title"]';
@@ -313,6 +327,137 @@ class WGTAI_Render_Service
         }
 
         return $this->payload['meta'][$meta_key];
+    }
+
+    /**
+     * Marks the page-builder elements this payload rewrote as notranslate.
+     *
+     * Elementor renders from _elementor_data, not post_content, so a stored
+     * payload reaches an Elementor page through filter_post_metadata rather than
+     * the_content -- and the markup Elementor produces carries no
+     * .nova-weglot-i18n wrapper. Left alone, Weglot would machine-translate the
+     * copy we just served: that spends the word quota this bridge exists to
+     * avoid, and it re-runs source->target on already-translated text, which
+     * garbles it rather than being a harmless no-op.
+     *
+     * Excluding the whole builder wrapper would be wrong: elements the payload
+     * did NOT translate should still be handled by Weglot. So diff the stored
+     * document against the post's real one and exclude only the elements whose
+     * settings actually differ.
+     */
+    private function prepare_builder_exclusions(int $post_id): void
+    {
+        $this->builder_notranslate_ids = [];
+
+        $stored = $this->payload['meta']['_elementor_data'] ?? null;
+
+        if (! is_string($stored) || '' === trim($stored)) {
+            return;
+        }
+
+        $stored_tree = $this->decode_builder_document($stored);
+
+        if (null === $stored_tree) {
+            return;
+        }
+
+        $original_tree = $this->decode_builder_document(get_post_meta($post_id, '_elementor_data', true));
+        $original      = [];
+
+        if (null !== $original_tree) {
+            $this->index_builder_settings($original_tree, $original);
+        }
+
+        // With no readable original the index is empty, so every element counts
+        // as changed and the whole stored document is treated as ours. That is
+        // the intended fallback: leaving some source-language text in place is
+        // the lesser fault, because the alternative re-translates our own copy.
+        $changed = [];
+        $this->collect_changed_builder_ids($stored_tree, $original, $changed);
+
+        $this->builder_notranslate_ids = array_values(array_unique($changed));
+    }
+
+    /**
+     * @param mixed $raw
+     *
+     * @return array<int,mixed>|null
+     */
+    private function decode_builder_document($raw): ?array
+    {
+        if (! is_string($raw) || '' === trim($raw)) {
+            return null;
+        }
+
+        $decoded = json_decode($raw, true);
+
+        if (! is_array($decoded)) {
+            // WordPress stores _elementor_data slashed; Elementor unslashes
+            // before decoding, so fall back the same way.
+            $decoded = json_decode(wp_unslash($raw), true);
+        }
+
+        return is_array($decoded) ? $decoded : null;
+    }
+
+    /**
+     * @param array<int,mixed>    $elements
+     * @param array<string,mixed> $index
+     */
+    private function index_builder_settings(array $elements, array &$index): void
+    {
+        foreach ($elements as $element) {
+            if (! is_array($element)) {
+                continue;
+            }
+
+            if (isset($element['id']) && is_scalar($element['id'])) {
+                $index[(string) $element['id']] = isset($element['settings']) && is_array($element['settings'])
+                    ? $element['settings']
+                    : [];
+            }
+
+            if (isset($element['elements']) && is_array($element['elements'])) {
+                $this->index_builder_settings($element['elements'], $index);
+            }
+        }
+    }
+
+    /**
+     * @param array<int,mixed>    $elements
+     * @param array<string,mixed> $original
+     * @param array<int,string>   $changed
+     */
+    private function collect_changed_builder_ids(array $elements, array $original, array &$changed): void
+    {
+        foreach ($elements as $element) {
+            if (! is_array($element)) {
+                continue;
+            }
+
+            if (isset($element['id']) && is_scalar($element['id'])) {
+                $id = (string) $element['id'];
+
+                // The ID lands in a CSS selector, so only accept ones that
+                // cannot break out of it. Elementor's are short hex strings.
+                if (preg_match('/^[A-Za-z0-9_-]+$/', $id)) {
+                    $settings = isset($element['settings']) && is_array($element['settings'])
+                        ? $element['settings']
+                        : [];
+
+                    // Loose comparison: array == array is a recursive,
+                    // order-insensitive key/value match, which is what "did this
+                    // element's settings change" means here.
+                    if (! array_key_exists($id, $original) || $original[$id] != $settings) {
+                        $changed[] = $id;
+                    }
+                }
+            }
+
+            if (isset($element['elements']) && is_array($element['elements'])) {
+                $this->collect_changed_builder_ids($element['elements'], $original, $changed);
+            }
+        }
     }
 
     private function is_reserved_meta_key(string $meta_key): bool

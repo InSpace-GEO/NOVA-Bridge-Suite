@@ -75,6 +75,37 @@ through its API.
 Storage: one meta key per locale, `_nova_weglot_i18n_<lang>`, plus an index at
 `_nova_weglot_i18n_languages`.
 
+### Page-builder pages (Elementor)
+
+A builder renders from its own post meta, not from `post_content`, and Elementor's
+`the_content` filter *replaces* whatever ran before it — so swapping `content` does
+not reach an Elementor page. The channel that does is `meta`: send the translated
+document as `meta._elementor_data` and `get_post_metadata` serves it per locale.
+
+Two things follow, both handled here:
+
+- **The rendered builder markup carries no `.nova-weglot-i18n` wrapper**, so
+  `weglot_exclude_blocks` would not cover it and Weglot would re-translate copy that
+  is already in the target language — spending quota and garbling the text, since it
+  applies source→target to it. On every request with an `_elementor_data` payload the
+  render service diffs the stored document against the post's real one and excludes
+  only the elements whose settings actually differ, as
+  `.elementor-element-<id>`. Elements the payload left alone stay translatable by
+  Weglot, so a partial translation degrades sensibly instead of stranding source-language
+  text. With no readable original, everything in the stored document is excluded.
+- **Structured meta is not sanitised as HTML.** `wp_kses_post` rebuilds tag attributes
+  double-quoted, which turns an escaped `\"` inside a JSON blob into a raw `"` and
+  truncates the document. Keys listed by the `nova_weglot_structured_meta_keys` filter
+  (default: `_elementor_data`) are decoded, sanitised leaf by leaf, and re-encoded.
+  Nested array meta values are sanitised the same way rather than stored verbatim.
+
+```php
+add_filter( 'nova_weglot_structured_meta_keys', function ( $keys ) {
+    $keys[] = '_fl_builder_data';   // another builder that stores a JSON document
+    return $keys;
+} );
+```
+
 ## Limitations
 
 These are Weglot's, not the bridge's:
