@@ -2,7 +2,7 @@
 /**
  * Plugin Name: NOVA Bridge Suite
  * Description: Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
- * Version: 2.7.11
+ * Version: 2.8.0
  * Author: LUNA B.V.
  * Requires PHP: 7.4
  * License: Proprietary
@@ -13,7 +13,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'NOVA_BRIDGE_SUITE_VERSION', '2.7.11' );
+define( 'NOVA_BRIDGE_SUITE_VERSION', '2.8.0' );
 define( 'NOVA_BRIDGE_SUITE_PLUGIN_FILE', __FILE__ );
 define( 'NOVA_BRIDGE_SUITE_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'NOVA_BRIDGE_SUITE_OPTION', 'nova_bridge_settings' );
@@ -594,6 +594,8 @@ function nova_bridge_suite_get_targeted_rest_module_keys( string $route ): ?arra
         $module_keys = [ 'multilingual_polylang' ];
     } elseif ( nova_bridge_suite_rest_route_matches( $route, 'wpml-translations/v1' ) ) {
         $module_keys = [ 'multilingual_wpml' ];
+    } elseif ( nova_bridge_suite_rest_route_matches( $route, 'weglot-translations/v1' ) ) {
+        $module_keys = [ 'multilingual_weglot' ];
     } elseif ( nova_bridge_suite_rest_route_matches( $route, 'nova-gutenberg/v1' ) ) {
         $module_keys = [ 'gutenberg_bridge' ];
     } elseif ( nova_bridge_suite_rest_route_matches( $route, 'nova-wpbakery/v1' ) ) {
@@ -623,6 +625,7 @@ function nova_bridge_suite_get_targeted_rest_module_keys( string $route ): ?arra
         nova_bridge_suite_rest_route_matches( $route, 'seor-bridge/v1' )
         || nova_bridge_suite_rest_route_matches( $route, 'polylang-translations/v1' )
         || nova_bridge_suite_rest_route_matches( $route, 'wpml-translations/v1' )
+        || nova_bridge_suite_rest_route_matches( $route, 'weglot-translations/v1' )
         || nova_bridge_suite_rest_route_matches( $route, 'nova-gutenberg/v1' )
         || nova_bridge_suite_rest_route_matches( $route, 'nova-wpbakery/v1' )
         || nova_bridge_suite_rest_route_matches( $route, 'nova-breakdance/v1' )
