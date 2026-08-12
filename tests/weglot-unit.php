@@ -900,6 +900,132 @@ wgtai_check(
 );
 wgtai_check('script stripped inside a nested array meta value', $after['nested_field']['deep']['bad'], 'Hi');
 
+// ---------------------------------------------------------------------------
+// A human edits the source post AFTER we stored translations
+// ---------------------------------------------------------------------------
+// The worry these checks answer: someone changes one word in the source post and
+// Weglot re-translates the page, destroying our copy.
+//
+// It cannot destroy it. This module registers no save_post hook and payloads are
+// written only through the REST endpoint, so nothing an editor (or Weglot, which
+// never writes to the database at all) does can alter what we stored.
+//
+// What an edit DOES move is the Elementor exclusion set, because that is diffed
+// against the LIVE document at render time. The consequence is asserted below
+// and is the reason a source edit needs an operational answer, not just a
+// reassurance: an element we did not translate flips to excluded, so Weglot
+// stops translating it and the source language is stranded on the locale page.
+
+function wgtai_test_render_for(int $post_id, string $language, $languages, $storage): WGTAI_Render_Service
+{
+    $GLOBALS['wgtai_test_filters']                 = [];
+    $GLOBALS['wgtai_test_context']['current_lang'] = $language;
+    $GLOBALS['wgtai_test_context']['queried_id']   = $post_id;
+    $GLOBALS['wgtai_test_context']['current_id']   = $post_id;
+
+    $render = new WGTAI_Render_Service($languages, $storage);
+    $render->resolve_payload();
+
+    return $render;
+}
+
+$edit_source_body = '<p>EN body</p>';
+wgtai_test_seed_post(45, 'edited-pagina', 'Edited pagina');
+$GLOBALS['wgtai_test_meta'][45]['_elementor_data'] = wgtai_test_elementor_doc('EN heading', $edit_source_body);
+
+// We translated the heading only. The text editor still carries source copy, so
+// Weglot is supposed to machine-translate that one element.
+$storage->save(45, [
+    'language' => 'fr',
+    'title'    => 'Page FR',
+    'meta'     => ['_elementor_data' => wgtai_test_elementor_doc('Titre FR', $edit_source_body)],
+]);
+
+$edit_before = wgtai_test_render_for(45, 'fr', $languages, $storage)->filter_exclude_blocks([]);
+wgtai_check_true('before any edit: our translated heading is excluded', in_array('.elementor-element-hd1', $edit_before, true));
+wgtai_check(
+    'before any edit: Weglot still translates the element we left alone',
+    in_array('.elementor-element-tx1', $edit_before, true),
+    false
+);
+
+// The edit: one word changed, in the element we did NOT translate.
+$GLOBALS['wgtai_test_meta'][45]['_elementor_data'] = wgtai_test_elementor_doc('EN heading', '<p>EN body, reworded</p>');
+$edit_render = wgtai_test_render_for(45, 'fr', $languages, $storage);
+$edit_after  = $edit_render->filter_exclude_blocks([]);
+$edit_stored = json_decode($storage->get(45, 'fr')['meta']['_elementor_data'], true);
+
+// 1. The reassuring half: the edit cannot reach what we stored.
+wgtai_check(
+    'a source edit leaves our stored translation alone',
+    $edit_stored[0]['elements'][0]['elements'][0]['settings']['title'],
+    'Titre FR'
+);
+wgtai_check_true('the language index survives a source edit', in_array('fr', $storage->get_stored_languages(45), true));
+
+// 2. The edit does not reach the locale page either -- we serve the stored
+//    document verbatim, so the locale silently keeps pre-edit copy.
+wgtai_check(
+    'the edited wording never reaches the locale page',
+    wgtai_test_meta_via_wp($edit_render->filter_post_metadata(null, 45, '_elementor_data', true), true),
+    $storage->get(45, 'fr')['meta']['_elementor_data']
+);
+wgtai_check(
+    'the locale page still serves the pre-edit source body',
+    json_decode(wgtai_test_meta_via_wp($edit_render->filter_post_metadata(null, 45, '_elementor_data', true), true), true)[0]['elements'][0]['elements'][1]['settings']['editor'],
+    $edit_source_body
+);
+
+// 3. The damaging half: the edited element now differs from our stored copy, so
+//    it is excluded and Weglot stops translating it. One word changed in the
+//    source turns a machine-translated element into raw source language on the
+//    locale page. Asserted so the behaviour is pinned, not endorsed.
+wgtai_check_true(
+    'edit-sensitivity: the edited element flips to excluded',
+    in_array('.elementor-element-tx1', $edit_after, true)
+);
+wgtai_check_true('our own element stays excluded across the edit', in_array('.elementor-element-hd1', $edit_after, true));
+
+// 4. The mirror case: an edit that makes the source match our translation
+//    un-excludes it, and Weglot re-translates our own copy.
+$GLOBALS['wgtai_test_meta'][45]['_elementor_data'] = wgtai_test_elementor_doc('Titre FR', $edit_source_body);
+$edit_collide = wgtai_test_render_for(45, 'fr', $languages, $storage)->filter_exclude_blocks([]);
+wgtai_check(
+    'edit-sensitivity: a source edit matching our copy un-excludes it',
+    in_array('.elementor-element-hd1', $edit_collide, true),
+    false
+);
+
+// 5. post_content pages carry no such sensitivity: filter_content replaces the
+//    body wholesale and the .nova-weglot-i18n wrapper is excluded unconditionally,
+//    so an edit costs staleness only -- never stranded source language.
+wgtai_test_seed_post(46, 'edited-klassiek', 'Edited klassiek');
+$GLOBALS['wgtai_test_posts'][46]->post_content = '<p>EN body</p>';
+$storage->save(46, ['language' => 'fr', 'title' => 'Page FR', 'content' => '<p>Corps FR</p>']);
+
+$classic_render = wgtai_test_render_for(46, 'fr', $languages, $storage);
+$classic_before = $classic_render->filter_content('<p>EN body</p>');
+$GLOBALS['wgtai_test_posts'][46]->post_content = '<p>EN body, reworded</p>';
+$classic_render = wgtai_test_render_for(46, 'fr', $languages, $storage);
+$classic_after  = $classic_render->filter_content('<p>EN body, reworded</p>');
+
+wgtai_check('a post_content edit does not change what we serve', $classic_after, $classic_before);
+wgtai_check_true('our copy is still what renders', str_contains($classic_after, 'Corps FR'));
+wgtai_check(
+    'the edited wording never reaches the locale page',
+    str_contains($classic_after, 'reworded'),
+    false
+);
+wgtai_check_true(
+    'the wrapper is excluded regardless of the edit',
+    in_array('.nova-weglot-i18n', $classic_render->filter_exclude_blocks([]), true)
+);
+wgtai_check(
+    'no element-level exclusions to shift on a post_content page',
+    (bool) preg_grep('/^\.elementor-element-/', $classic_render->filter_exclude_blocks([])),
+    false
+);
+
 // A post with no stored payload for the current language must be left alone.
 wgtai_test_seed_post(43, 'andere-pagina', 'Andere pagina');
 $GLOBALS['wgtai_test_filters']               = [];
