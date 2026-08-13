@@ -110,6 +110,10 @@ class WGTAI_Render_Service
         add_filter('get_post_metadata', [$this, 'filter_post_metadata'], 10, 4);
         add_filter('weglot_exclude_blocks', [$this, 'filter_exclude_blocks']);
 
+        if ($this->payload_carries_builder_document()) {
+            $this->disable_builder_element_cache();
+        }
+
         $this->register_yoast_filters();
     }
 
@@ -245,6 +249,13 @@ class WGTAI_Render_Service
 
         if (! $this->applies_to((int) $object_id)) {
             return $value;
+        }
+
+        // A builder's rendered-HTML cache is language-blind: serving it would hand
+        // this locale whichever language rendered first. Report it as empty so the
+        // builder re-renders from the document we serve below.
+        if ($this->is_builder_cache_meta_key($meta_key) && $this->payload_carries_builder_document()) {
+            return [''];
         }
 
         $translated = $this->get_meta_value($meta_key);
@@ -638,6 +649,66 @@ class WGTAI_Render_Service
         $value = preg_replace('/\s+/u', ' ', $value);
 
         return is_string($value) ? trim($value) : '';
+    }
+
+    /**
+     * Takes Elementor's element cache out of the request when we are serving a
+     * translated document.
+     *
+     * Elementor::Document::print_elements() checks
+     *
+     *     'disable' !== get_option( 'elementor_element_cache_ttl', '' )   // ON by default
+     *
+     * and, when active, echoes RENDERED HTML stored in the post's
+     * _elementor_element_cache meta without ever consulting _elementor_data. That
+     * cache has no language dimension, so whichever language rendered first is
+     * served to every locale: /de/ /fr/ /es/ came back with the English body while
+     * their <title> and og/meta tags -- which are filters, not cached -- were
+     * correctly per-locale. Worse, our own notranslate exclusions are computed
+     * from the document we stored, so Weglot was told to leave that English alone.
+     *
+     * Disabling the cache for this request is what makes Elementor render live
+     * from the document filter_post_metadata() serves. It also stops
+     * set_document_cache() from writing the TRANSLATED HTML back onto the post,
+     * which would otherwise leak one locale's copy into every other language and
+     * into the source page.
+     *
+     * The meta read is shadowed too, so a build that consults the cache before
+     * checking the option still misses.
+     */
+    private function disable_builder_element_cache(): void
+    {
+        add_filter('option_elementor_element_cache_ttl', [$this, 'filter_element_cache_ttl'], 99);
+        add_filter('default_option_elementor_element_cache_ttl', [$this, 'filter_element_cache_ttl'], 99);
+    }
+
+    /**
+     * @param mixed $value
+     *
+     * @return string
+     */
+    public function filter_element_cache_ttl($value): string
+    {
+        return 'disable';
+    }
+
+    /**
+     * Post meta keys where a builder stores rendered HTML rather than a document.
+     *
+     * Elementor's is Document::CACHE_META_KEY. A builder registered through
+     * nova_weglot_structured_meta_keys can add its own here.
+     */
+    private function is_builder_cache_meta_key(string $meta_key): bool
+    {
+        /**
+         * @param array<int,string> $keys
+         */
+        $keys = (array) apply_filters(
+            'nova_weglot_builder_cache_meta_keys',
+            ['_elementor_element_cache']
+        );
+
+        return in_array($meta_key, $keys, true);
     }
 
     /**

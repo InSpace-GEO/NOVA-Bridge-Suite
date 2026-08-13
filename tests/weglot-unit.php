@@ -828,6 +828,36 @@ wgtai_check_true(
     )
 );
 
+// Elementor's element cache must be out of the way, or the locale gets whichever
+// language rendered FIRST: print_elements() echoes the rendered HTML stored in
+// _elementor_element_cache without ever consulting _elementor_data. Measured on
+// 24peptides /de/: 22 of 22 body widgets English, all 22 marked notranslate by our
+// own exclusions, while <title>/og/meta were correctly German.
+wgtai_check_true(
+    'element cache disabled for the request on a builder page',
+    wgtai_test_filter_registered('option_elementor_element_cache_ttl')
+);
+wgtai_check(
+    '...by forcing the option to disable',
+    $render_el_content->filter_element_cache_ttl('24'),
+    'disable'
+);
+wgtai_check_true(
+    '...including when the option is unset (default_option)',
+    wgtai_test_filter_registered('default_option_elementor_element_cache_ttl')
+);
+// Elementor reads the cache with get_json_meta() -> get_post_meta($id,$k,true),
+// then bails on empty($cache['timeout']). An empty string gets it there.
+$cached = wgtai_test_meta_via_wp(
+    $render_el_content->filter_post_metadata(null, 44, '_elementor_element_cache', true),
+    true
+);
+wgtai_check('the cached-HTML meta reads back empty', $cached, '');
+wgtai_check_true(
+    '...so Elementor would re-render instead of echoing the cache',
+    empty(is_string($cached) && '' !== $cached ? json_decode($cached, true) : [])
+);
+
 // The suppression is scoped to builder payloads: a post_content page still gets
 // its translated body, or this guard would blank every classic page.
 $storage->save(44, ['language' => 'de', 'content' => '<p>DE Text</p>']);
