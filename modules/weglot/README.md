@@ -133,6 +133,19 @@ Two things follow, both handled here:
   whether they arrive as a JSON string or as a JSON array, which is normalised to a
   string so the builder can read it back. Nested array meta values are sanitised the
   same way rather than stored verbatim.
+- **A structured key that cannot be stored intact fails the write.** If the value is not
+  decodable JSON, or cannot be re-encoded after sanitising (invalid UTF-8, a tree past
+  the JSON depth limit), `POST` returns `wgtai_invalid_structured_meta` /
+  `wgtai_structured_encode_failed` for that locale and the locale keeps its last good
+  payload. Storing it anyway is worse than failing: the builder reads the key back with
+  `json_decode()`, gets nothing, and renders an **empty** document — Elementor then
+  leaves `the_content` alone, and the theme prints the payload's raw `content` HTML with
+  the page template gone (seen on 24peptides `/fr/`, Aug 2026).
+- **`content` is never injected on a builder page.** When a payload carries a builder
+  document, `the_content` is left alone: the builder owns the render, so anything this
+  filter emits reaches a visitor only when the builder produced nothing — as raw,
+  unstyled HTML. Falling back to the source layout, which Weglot still translates, is
+  the better failure. Classic `post_content` pages are unaffected.
 
 Both sides are driven off the **same** key list, so registering a builder gets it
 sanitisation *and* notranslate protection. Registering only the first would leave the
@@ -199,3 +212,31 @@ Still **not verified against a live Weglot site.** `tests/weglot-regression.php`
 that `_elementor_data` reaches Elementor's `json_decode` intact through real
 `get_post_meta`, and that the excluded elements are exactly the ones that stay
 untranslated while the Weglot dashboard's word count does not move.
+
+### Page-builder render caches
+
+Elementor's **element cache** stores *rendered HTML* in the post's
+`_elementor_element_cache` meta and `Document::print_elements()` echoes it without ever
+reading `_elementor_data`:
+
+```php
+$is_element_cache_active = 'disable' !== get_option( 'elementor_element_cache_ttl', '' ); // ON by default
+```
+
+That cache has no language dimension, so whichever language renders first is served to
+every locale. Seen on 24peptides: `/de/ /fr/ /es/` returned the **English** body while
+their `<title>` and og/meta tags — filters, not cached — were correctly per-locale, and
+our own notranslate exclusions (computed from the document we stored) told Weglot to
+leave that English alone.
+
+While a payload with a builder document applies, this bridge therefore forces
+`elementor_element_cache_ttl` to `disable` for the request and reports
+`_elementor_element_cache` as empty. Elementor re-renders from the document
+`filter_post_metadata()` serves, and `set_document_cache()` never writes the translated
+HTML back onto the post — which would otherwise leak one locale's copy into every other
+language and into the source page. Register another builder's cache key through
+`nova_weglot_builder_cache_meta_keys`.
+
+**After deploying, purge the existing cache once** (Elementor → Tools → Regenerate CSS &
+Data): entries written before this fix survive their 24h TTL, and one of them may already
+hold a translated render of the source page.

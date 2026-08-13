@@ -84,6 +84,14 @@ class WGTAI_Storage_Service
         $existing = $this->get($source_post_id, $internal_code);
         $payload  = $this->build_payload($translation, $internal_code, $source_post_id, $existing);
 
+        // A payload we cannot sanitise without destroying it must not be stored:
+        // a builder document that lands unusable renders as nothing, and the
+        // theme then prints the payload's raw `content` HTML instead of the
+        // page template. Reporting the failure is what lets NOVA retry.
+        if (is_wp_error($payload)) {
+            return $payload;
+        }
+
         // update_post_meta() returns false both on failure AND when the stored value
         // is already identical (a retry inside the same second produces the same
         // updated_at), so the write is confirmed by reading it back instead.
@@ -215,9 +223,9 @@ class WGTAI_Storage_Service
      * @param array<string,mixed>      $translation
      * @param array<string,mixed>|null $existing
      *
-     * @return array<string,mixed>
+     * @return array<string,mixed>|\WP_Error
      */
-    private function build_payload(array $translation, string $internal_code, int $source_post_id, ?array $existing): array
+    private function build_payload(array $translation, string $internal_code, int $source_post_id, ?array $existing)
     {
         // Update semantics, matching the Polylang bridge (where wp_update_post
         // leaves an omitted field intact) so the same NOVA request means the same
@@ -260,7 +268,13 @@ class WGTAI_Storage_Service
             return sanitize_title((string) $value);
         });
 
-        $payload['meta'] = $this->merge_meta($payload, $translation);
+        $meta = $this->merge_meta($payload, $translation);
+
+        if (is_wp_error($meta)) {
+            return $meta;
+        }
+
+        $payload['meta'] = $meta;
 
         if ([] === $payload['meta']) {
             unset($payload['meta']);
@@ -303,9 +317,9 @@ class WGTAI_Storage_Service
      * @param array<string,mixed> $payload
      * @param array<string,mixed> $translation
      *
-     * @return array<string,mixed>
+     * @return array<string,mixed>|\WP_Error
      */
-    private function merge_meta(array $payload, array $translation): array
+    private function merge_meta(array $payload, array $translation)
     {
         $incoming = [];
         $supplied = false;
@@ -326,7 +340,13 @@ class WGTAI_Storage_Service
         // Only the incoming keys are sanitised: the stored ones already were, and
         // re-running wp_kses_post over a whole builder document on every partial
         // update is pure cost.
-        $merged = array_merge($stored, $this->sanitize_meta($incoming));
+        $sanitized = $this->sanitize_meta($incoming);
+
+        if (is_wp_error($sanitized)) {
+            return $sanitized;
+        }
+
+        $merged = array_merge($stored, $sanitized);
 
         return array_filter(
             $merged,
@@ -344,9 +364,9 @@ class WGTAI_Storage_Service
     /**
      * @param array<string,mixed> $meta
      *
-     * @return array<string,mixed>
+     * @return array<string,mixed>|\WP_Error
      */
-    private function sanitize_meta(array $meta): array
+    private function sanitize_meta(array $meta)
     {
         $clean      = [];
         $structured = $this->structured_meta_keys();
@@ -364,9 +384,15 @@ class WGTAI_Storage_Service
                 // own is_string() check -- so the value was stored in a shape only
                 // half the pipeline understands. Normalise to the JSON string the
                 // builder expects.
-                $clean[$key] = is_array($value)
-                    ? $this->encode_structured_document($this->sanitize_deep($value))
-                    : $this->sanitize_structured_document($value);
+                $document = is_array($value)
+                    ? $this->encode_structured_document($this->sanitize_deep($value), $key)
+                    : $this->sanitize_structured_document($value, $key);
+
+                if (is_wp_error($document)) {
+                    return $document;
+                }
+
+                $clean[$key] = $document;
                 continue;
             }
 
@@ -408,27 +434,67 @@ class WGTAI_Storage_Service
         return (array) apply_filters('nova_weglot_structured_meta_keys', ['_elementor_data']);
     }
 
-    private function sanitize_structured_document(string $value): string
+    /**
+     * @return string|\WP_Error
+     */
+    private function sanitize_structured_document(string $value, string $meta_key)
     {
         $decoded = json_decode($value, true);
 
         if (! is_array($decoded)) {
-            // Not the structured document we were promised: treat it as ordinary
-            // HTML rather than storing it unchecked.
-            return $this->sanitize_html($value);
+            // Not the structured document we were promised. This used to fall
+            // back to sanitize_html() and store the value as display HTML, which
+            // is the worst of both worlds: the write answers 200 stored:true, but
+            // the builder reads the key back with json_decode(), gets nothing, and
+            // renders an empty document -- so the theme prints the payload's raw
+            // `content` instead of the page template. Fail the write instead, so
+            // the caller sees it and the locale keeps its last good payload.
+            return new \WP_Error(
+                'wgtai_invalid_structured_meta',
+                sprintf(
+                    'Meta key "%s" is registered as a page-builder document but its value is not decodable JSON (%s). Nothing was stored for this locale.',
+                    $meta_key,
+                    json_last_error_msg()
+                ),
+                [
+                    'status'   => 400,
+                    'meta_key' => $meta_key,
+                ]
+            );
         }
 
-        return $this->encode_structured_document($this->sanitize_deep($decoded));
+        return $this->encode_structured_document($this->sanitize_deep($decoded), $meta_key);
     }
 
     /**
      * @param array<mixed> $document
+     *
+     * @return string|\WP_Error
      */
-    private function encode_structured_document(array $document): string
+    private function encode_structured_document(array $document, string $meta_key)
     {
         $encoded = wp_json_encode($document);
 
-        return is_string($encoded) ? $encoded : '';
+        // wp_json_encode() returns false when the data cannot be encoded at all
+        // (invalid UTF-8 that survives its sanity check, or a tree deeper than
+        // the JSON depth limit). Returning '' here stored an empty document, with
+        // the same silent outcome as the branch above.
+        if (! is_string($encoded) || '' === trim($encoded)) {
+            return new \WP_Error(
+                'wgtai_structured_encode_failed',
+                sprintf(
+                    'Could not re-encode meta key "%s" after sanitising it (%s). Nothing was stored for this locale.',
+                    $meta_key,
+                    json_last_error_msg()
+                ),
+                [
+                    'status'   => 500,
+                    'meta_key' => $meta_key,
+                ]
+            );
+        }
+
+        return $encoded;
     }
 
     /**
