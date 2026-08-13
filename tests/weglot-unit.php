@@ -798,6 +798,51 @@ wgtai_check(
 );
 wgtai_check_true('wrapper class still excluded on a builder page', in_array('.nova-weglot-i18n', $el_blocks, true));
 
+// A builder page must never have the payload's `content` printed into it. The
+// builder owns the render, so this filter's output only reaches a visitor when
+// the builder produced nothing -- and then it lands as raw HTML with the page
+// template gone (observed on 24peptides /fr/). Serving the source layout, which
+// Weglot still translates, is the better failure.
+$storage->save(44, [
+    'language' => 'fr',
+    'content'  => '<h1>Titre FR</h1><p>corps brut</p>',
+    'meta'     => ['_elementor_data' => wgtai_test_elementor_doc('Titre FR', '<p>NL body</p>')],
+]);
+$GLOBALS['wgtai_test_filters'] = [];
+$render_el_content = new WGTAI_Render_Service($languages, $storage);
+$render_el_content->resolve_payload();
+
+wgtai_check(
+    'raw content is not injected on a builder page',
+    $render_el_content->filter_content('<p>builder output</p>'),
+    '<p>builder output</p>'
+);
+wgtai_check_true(
+    '...while the builder document is still served to the builder',
+    false !== strpos(
+        (string) wgtai_test_meta_via_wp(
+            $render_el_content->filter_post_metadata(null, 44, '_elementor_data', true),
+            true
+        ),
+        'Titre FR'
+    )
+);
+
+// The suppression is scoped to builder payloads: a post_content page still gets
+// its translated body, or this guard would blank every classic page.
+$storage->save(44, ['language' => 'de', 'content' => '<p>DE Text</p>']);
+$GLOBALS['wgtai_test_filters']                 = [];
+$GLOBALS['wgtai_test_context']['current_lang'] = 'de';
+$render_el_classic = new WGTAI_Render_Service($languages, $storage);
+$render_el_classic->resolve_payload();
+
+wgtai_check_true(
+    'a payload without a builder document still replaces the body',
+    false !== strpos($render_el_classic->filter_content('<p>NL body</p>'), 'DE Text')
+);
+
+$GLOBALS['wgtai_test_context']['current_lang'] = 'fr';
+
 // The diff must be real: an identical document means we changed nothing.
 $storage->save(44, [
     'language' => 'de',
@@ -899,6 +944,56 @@ wgtai_check(
     'Hi'
 );
 wgtai_check('script stripped inside a nested array meta value', $after['nested_field']['deep']['bad'], 'Hi');
+
+// --- an unusable structured document must fail the write, not land silently ---
+// Observed on 24peptides /fr/: a locale whose _elementor_data was stored
+// unusable rendered an EMPTY Elementor document, so Elementor left the_content
+// alone and the theme printed the payload's raw `content` HTML on the page. Both
+// routes to that state used to return 200 stored:true.
+$good_doc = wgtai_test_elementor_doc('Titre FR', '<p>FR body</p>');
+$storage->save(44, ['language' => 'fr', 'meta' => ['_elementor_data' => $good_doc], 'title' => 'Bon titre']);
+$before_bad = $storage->get(44, 'fr');
+
+// 1. A structured key whose value is not decodable JSON.
+$not_json = $storage->save(44, [
+    'language' => 'fr',
+    'meta'     => ['_elementor_data' => '<p>raw html, not a document</p>'],
+]);
+wgtai_check_true('a non-JSON builder document is rejected', is_wp_error($not_json));
+wgtai_check('...with a code the caller can branch on', $not_json->get_error_code(), 'wgtai_invalid_structured_meta');
+wgtai_check('...naming the offending meta key', $not_json->get_error_data()['meta_key'], '_elementor_data');
+wgtai_check_true(
+    '...and the last good payload is left untouched',
+    $storage->get(44, 'fr') === $before_bad
+);
+
+// 2. A document that decodes but cannot be re-encoded after sanitisation.
+//    Invalid UTF-8 is the realistic trigger (wp_json_encode() returns false and
+//    the old code stored '' for the key). It has to arrive as an ARRAY to reach
+//    this branch: as a string it would fail json_decode first and be caught
+//    above, which is why the previous fixture never exercised this guard.
+$encode_failed = $storage->save(44, [
+    'language' => 'fr',
+    'meta'     => ['_elementor_data' => [['id' => 'u1', 'settings' => ['title' => "b\xB0d"]]]],
+]);
+wgtai_check_true('a document that cannot be re-encoded is rejected', is_wp_error($encode_failed));
+wgtai_check(
+    '...with the encode-failure code, not the decode one',
+    $encode_failed->get_error_code(),
+    'wgtai_structured_encode_failed'
+);
+wgtai_check_true(
+    '...and it too leaves the stored payload alone',
+    $storage->get(44, 'fr') === $before_bad
+);
+
+// 3. The rejection is per-request, not sticky: a good document still stores.
+$recovered = $storage->save(44, ['language' => 'fr', 'meta' => ['_elementor_data' => $good_doc]]);
+wgtai_check_true('a valid document still stores after a rejection', ! is_wp_error($recovered));
+wgtai_check_true(
+    '...and Elementor would read a non-empty tree back',
+    ! empty(json_decode($storage->get(44, 'fr')['meta']['_elementor_data'], true))
+);
 
 // ---------------------------------------------------------------------------
 // A human edits the source post AFTER we stored translations

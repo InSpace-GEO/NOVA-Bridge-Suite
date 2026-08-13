@@ -133,6 +133,19 @@ Two things follow, both handled here:
   whether they arrive as a JSON string or as a JSON array, which is normalised to a
   string so the builder can read it back. Nested array meta values are sanitised the
   same way rather than stored verbatim.
+- **A structured key that cannot be stored intact fails the write.** If the value is not
+  decodable JSON, or cannot be re-encoded after sanitising (invalid UTF-8, a tree past
+  the JSON depth limit), `POST` returns `wgtai_invalid_structured_meta` /
+  `wgtai_structured_encode_failed` for that locale and the locale keeps its last good
+  payload. Storing it anyway is worse than failing: the builder reads the key back with
+  `json_decode()`, gets nothing, and renders an **empty** document — Elementor then
+  leaves `the_content` alone, and the theme prints the payload's raw `content` HTML with
+  the page template gone (seen on 24peptides `/fr/`, Aug 2026).
+- **`content` is never injected on a builder page.** When a payload carries a builder
+  document, `the_content` is left alone: the builder owns the render, so anything this
+  filter emits reaches a visitor only when the builder produced nothing — as raw,
+  unstyled HTML. Falling back to the source layout, which Weglot still translates, is
+  the better failure. Classic `post_content` pages are unaffected.
 
 Both sides are driven off the **same** key list, so registering a builder gets it
 sanitisation *and* notranslate protection. Registering only the first would leave the

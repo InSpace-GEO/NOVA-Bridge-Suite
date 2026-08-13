@@ -143,6 +143,17 @@ class WGTAI_Render_Service
             return $content;
         }
 
+        // On a builder page the builder owns the render, and this filter's output
+        // only ever reaches the visitor when the builder produced nothing --
+        // Elementor's apply_builder_in_content() leaves the_content alone when its
+        // own content is empty. That surfaced on 24peptides /fr/ as the payload's
+        // raw HTML printed straight into the theme's entry-content, with the whole
+        // page template gone. Serving nothing here is strictly better: the page
+        // falls back to the source layout, which Weglot still translates.
+        if ($this->payload_carries_builder_document()) {
+            return $content;
+        }
+
         return sprintf(
             '<div class="nova-weglot-i18n nova-weglot-i18n--%s" data-wg-notranslate>%s</div>',
             esc_attr($this->language),
@@ -627,6 +638,31 @@ class WGTAI_Render_Service
         $value = preg_replace('/\s+/u', ' ', $value);
 
         return is_string($value) ? trim($value) : '';
+    }
+
+    /**
+     * True when this payload carries a page-builder document for the post, i.e.
+     * the builder -- not the_content -- is what renders the page.
+     *
+     * Driven by the same key list as sanitisation and the notranslate
+     * exclusions, so registering a builder through
+     * nova_weglot_structured_meta_keys covers all three.
+     */
+    private function payload_carries_builder_document(): bool
+    {
+        foreach ($this->storage_service->structured_meta_keys() as $meta_key) {
+            if (! is_string($meta_key) || '' === $meta_key) {
+                continue;
+            }
+
+            $document = $this->get_meta_value($meta_key);
+
+            if (is_string($document) && '' !== trim($document)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function is_reserved_meta_key(string $meta_key): bool
