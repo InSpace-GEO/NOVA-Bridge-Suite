@@ -4,7 +4,7 @@ Tags: seo, automation, content, rest-api, page builder
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.8.0
+Stable tag: 2.9.0
 License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -41,6 +41,12 @@ Yes. If WooCommerce is active you can enable the rich text field module for cate
 1. NOVA Settings screen with module toggles.
 
 == Changelog ==
+
+= 2.9.0 =
+* Keep generated sections in their own template blocks instead of scattering titles and bodies across unrelated parts of a cloned page.
+* Fill content slots built with a theme's own heading and text elements, so generated copy replaces the template's copy instead of being added underneath it.
+* Never overwrite hero, call-to-action, button or image content when filling a cloned template.
+* Report how many slots were filled and how many sections were appended on create responses.
 
 = 2.8.0 =
 * Serve NOVA's own per-locale content on Weglot sites, so translated pages use your copy instead of a machine translation.

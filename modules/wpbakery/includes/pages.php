@@ -1123,6 +1123,7 @@ function nova_wpb_create_page( $request ) {
 	}
 
 	// Replace template slots instead of appending duplicates.
+	$nova_slot_report = null;
 	if ( $using_template && ! $keep_source_content && ! empty( $append_sections ) && is_array( $append_sections ) ) {
 		if ( ! function_exists( 'nova_wpb_replace_template_slots_with_sections' ) ) {
 			return new WP_Error(
@@ -1136,7 +1137,8 @@ function nova_wpb_create_page( $request ) {
 			$base_shortcodes,
 			$append_sections,
 			$postarr['post_title'],
-			true
+			true,
+			$nova_slot_report
 		);
 	}
 
@@ -1208,7 +1210,18 @@ function nova_wpb_create_page( $request ) {
 		update_post_meta( $post_id, '_wpb_vc_js_status', 'true' );
 	}
 
-	return new WP_REST_Response( array( 'id' => $post_id ), 201 );
+	/*
+	 * Additive diagnostics. Existing consumers read .id; this exists so a run that
+	 * filled nothing and appended everything is visible in the response instead of
+	 * only on the rendered page.
+	 */
+	$response_body = array( 'id' => $post_id );
+	if ( is_array( $nova_slot_report ) ) {
+		unset( $nova_slot_report['shell'] );
+		$response_body['nova'] = $nova_slot_report;
+	}
+
+	return new WP_REST_Response( $response_body, 201 );
 }
 
 /**
