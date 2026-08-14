@@ -553,4 +553,192 @@ nova_wpb_check( false !== strpos( $field_edit, 'text = \'Boek nu\'' ), 'A field-
 $bad_field = nova_wpb_apply_text_updates_to_compact( $compact_doc, array( array( 'path' => $btn_path, 'field' => 'data-keep', 'text' => 'nope' ) ) );
 nova_wpb_check( is_wp_error( $bad_field ) && 'nova_wpb_unsupported_field' === $bad_field->get_error_code(), 'Structural attributes became writable.' );
 
+// ---------------------------------------------------------------------------
+// Which nodes may host content: nova_wpb_slot_carrier_for_node()
+// ---------------------------------------------------------------------------
+
+/** Build a compact node the way the parser would, for direct carrier checks. */
+function nova_wpb_test_node( $tag, $attributes = array(), $text = '', $children = array() ) {
+	return array(
+		'tag'          => $tag,
+		'attributes'   => $attributes,
+		'text'         => $text,
+		'self_closing' => ( '' === $text && empty( $children ) ),
+		'children'     => $children,
+	);
+}
+
+function nova_wpb_test_carrier( $tag, $attributes = array(), $text = '' ) {
+	return nova_wpb_slot_carrier_for_node( nova_wpb_test_node( $tag, $attributes, $text ) );
+}
+
+$c = nova_wpb_test_carrier( 'vc_column_text', array(), '<p>x</p>' );
+nova_wpb_check( is_array( $c ) && 'text' === $c['kind'] && 'body' === $c['field'], 'vc_column_text is no longer a body slot.' );
+
+$c = nova_wpb_test_carrier( 'vc_custom_heading', array( 'text' => 'Kop', 'font_container' => 'tag:h2' ) );
+nova_wpb_check( is_array( $c ) && 'heading' === $c['kind'] && 'text' === $c['field'], 'vc_custom_heading is no longer a heading slot.' );
+
+$c = nova_wpb_test_carrier( 'split_line_heading', array( 'text_content' => 'Kop' ) );
+nova_wpb_check( is_array( $c ) && 'heading' === $c['kind'] && 'text_content' === $c['field'], 'Salient split_line_heading lost its heading carrier.' );
+
+$c = nova_wpb_test_carrier( 'nectar_responsive_text', array(), '<p>x</p>' );
+nova_wpb_check( is_array( $c ) && 'text' === $c['kind'] && 'body' === $c['field'], 'Salient nectar_responsive_text lost its body carrier.' );
+
+nova_wpb_check( null === nova_wpb_test_carrier( 'vc_btn', array( 'title' => 'Klik', 'link' => 'url:%2Fx%2F' ) ), 'A vc_btn was offered as a heading slot.' );
+nova_wpb_check( null === nova_wpb_test_carrier( 'vc_btn', array( 'title' => 'Klik' ) ), 'A vc_btn without a link attribute was offered as a heading slot.' );
+nova_wpb_check( null === nova_wpb_test_carrier( 'nectar_btn', array( 'text' => 'Klik', 'url' => '/x/' ) ), 'A nectar_btn was offered as a slot.' );
+nova_wpb_check( null === nova_wpb_test_carrier( 'nectar_cta', array( 'link_text' => 'Klik', 'url' => '/x/' ) ), 'A nectar_cta was offered as a slot.' );
+nova_wpb_check( null === nova_wpb_test_carrier( 'vc_single_image', array( 'image' => '12' ) ), 'An image was offered as a slot.' );
+nova_wpb_check( null === nova_wpb_test_carrier( 'vc_row' ), 'A layout row was offered as a slot.' );
+nova_wpb_check( null === nova_wpb_test_carrier( 'toggle', array( 'title' => 'Vraag?' ), 'Antwoord' ), 'An accordion item was offered as a slot.' );
+nova_wpb_check( null === nova_wpb_test_carrier( 'vc_empty_space', array( 'height' => '20px' ) ), 'A spacer was offered as a slot.' );
+nova_wpb_check( null === nova_wpb_slot_carrier_for_node( array() ), 'An empty node was offered as a slot.' );
+nova_wpb_check( null === nova_wpb_slot_carrier_for_node( 'not-a-node' ), 'A non-array node was offered as a slot.' );
+
+// Embeds: default_text_field_for_tag falls back to 'body' for any unmapped leaf with
+// inner text, which made raw/media shortcodes look like prose containers.
+nova_wpb_check( null === nova_wpb_test_carrier( 'vc_raw_html', array(), 'PGRpdj4=' ), 'vc_raw_html was offered as a body slot; its payload would be overwritten.' );
+nova_wpb_check( null === nova_wpb_test_carrier( 'vc_gmaps', array(), '<iframe></iframe>' ), 'An embedded map was offered as a body slot.' );
+nova_wpb_check( null === nova_wpb_test_carrier( 'vc_raw_js', array(), 'var a=1;' ), 'A raw JS block was offered as a body slot.' );
+
+// A heading carrying WPBakery's packed `link` attribute is still a heading.
+$c = nova_wpb_test_carrier( 'vc_custom_heading', array( 'text' => 'Kop', 'link' => 'url:%23|||', 'font_container' => 'tag:h2' ) );
+nova_wpb_check( is_array( $c ) && 'heading' === $c['kind'], 'A linked heading was refused as a slot; the template copy would survive next to an injected duplicate.' );
+
+// An explicit url attribute still disqualifies: that is a link element, not a heading.
+nova_wpb_check( null === nova_wpb_test_carrier( 'some_theme_link', array( 'text' => 'Klik', 'url' => '/x/' ) ), 'An unknown element with its own url attribute was offered as a slot.' );
+
+// ---------------------------------------------------------------------------
+// A linked heading fills in place instead of gaining a duplicate
+// ---------------------------------------------------------------------------
+
+$linked_heading = '[vc_row el_class="content"][vc_column width="1/1"]'
+	. '[vc_custom_heading text="Oude kop" link="url:%23|||" font_container="tag:h2"]'
+	. '[vc_column_text]<p>Oude tekst</p>[/vc_column_text]'
+	. '[/vc_column][/vc_row]';
+
+$r = null;
+list( $out, $rest ) = nova_wpb_replace_template_slots_with_sections( $linked_heading, array( $nova_wpb_sections[0] ), '', true, $r );
+nova_wpb_check( 1 === $r['slots_found'], 'A linked heading + text pair was not recognised as one slot.' );
+nova_wpb_check( 0 === $r['headings_injected'], 'A second heading was injected next to a linked heading — this is the duplicate heading on the page.' );
+nova_wpb_check( false === strpos( $out, 'Oude kop' ), 'The linked heading kept its template copy.' );
+nova_wpb_check( 1 === substr_count( $out, 'vc_custom_heading' ), 'The document ended up with two headings where the template had one.' );
+nova_wpb_check( false !== strpos( $out, 'link="url:%23|||"' ), 'The heading link was dropped while writing the section title.' );
+nova_wpb_check( false !== strpos( $out, 'text="Sectie een"' ), 'The section title did not land in the linked heading.' );
+
+// ---------------------------------------------------------------------------
+// Embeds inside a fillable row are left alone
+// ---------------------------------------------------------------------------
+
+$row_with_raw = '[vc_row el_class="content"][vc_column width="1/1"]'
+	. '[vc_raw_html]PGRpdj5tYXA8L2Rpdj4=[/vc_raw_html]'
+	. '[vc_column_text]<p>Oude tekst</p>[/vc_column_text]'
+	. '[/vc_column][/vc_row]';
+
+$r = null;
+list( $out, $rest ) = nova_wpb_replace_template_slots_with_sections( $row_with_raw, array( $nova_wpb_sections[0] ), '', true, $r );
+nova_wpb_check( 1 === $r['slots_found'], 'A raw HTML block was counted as a content slot.' );
+nova_wpb_check( false !== strpos( $out, 'PGRpdj5tYXA8L2Rpdj4=' ), 'A raw HTML payload was overwritten by a generated section.' );
+nova_wpb_check( false !== strpos( $out, '<p>Body een</p>' ), 'The section body did not reach the real text block.' );
+nova_wpb_check( strpos( $out, 'PGRpdj5tYXA8L2Rpdj4=' ) < strpos( $out, 'Sectie een' ), 'The injected heading landed above the raw HTML block instead of beside its own body.' );
+nova_wpb_check( strpos( $out, 'Sectie een' ) < strpos( $out, 'Body een' ), 'The injected heading landed after its body.' );
+
+// ---------------------------------------------------------------------------
+// Blank rows are pruned on any theme, not only on vc_* elements
+// ---------------------------------------------------------------------------
+
+$salient_two_rows = '[vc_row][vc_column width="1/1"]'
+	. '[split_line_heading text_content="Kop A"]'
+	. '[nectar_responsive_text]<p>Tekst A</p>[/nectar_responsive_text]'
+	. '[/vc_column][/vc_row]'
+	. '[vc_row][vc_column width="1/1"]'
+	. '[split_line_heading text_content="Kop B"]'
+	. '[nectar_responsive_text]<p>Tekst B</p>[/nectar_responsive_text]'
+	. '[/vc_column][/vc_row]';
+
+$r = null;
+list( $out, $rest ) = nova_wpb_replace_template_slots_with_sections( $salient_two_rows, array( $nova_wpb_sections[0] ), '', true, $r );
+nova_wpb_check( 2 === $r['slots_found'] && 1 === $r['slots_filled'], 'Salient slot detection changed.' );
+nova_wpb_check( false === strpos( $out, 'Kop B' ) && false === strpos( $out, 'Tekst B' ), 'The unfilled Salient row kept its template copy.' );
+nova_wpb_check( 1 === substr_count( $out, '[vc_row]' ), 'The emptied Salient row was left on the page as a blank block.' );
+nova_wpb_check( false === strpos( $out, 'split_line_heading text_content=""' ), 'An emptied Salient heading survived the prune.' );
+
+// Same shape on vc_* elements: parity between themes.
+$generic_two_rows = '[vc_row el_class="content"][vc_column width="1/1"]'
+	. '[vc_custom_heading text="Kop A" font_container="tag:h2"]'
+	. '[vc_column_text]<p>Tekst A</p>[/vc_column_text]'
+	. '[/vc_column][/vc_row]'
+	. '[vc_row el_class="content"][vc_column width="1/1"]'
+	. '[vc_custom_heading text="Kop B" font_container="tag:h2"]'
+	. '[vc_column_text]<p>Tekst B</p>[/vc_column_text]'
+	. '[/vc_column][/vc_row]';
+
+$r = null;
+list( $out_g, $rest ) = nova_wpb_replace_template_slots_with_sections( $generic_two_rows, array( $nova_wpb_sections[0] ), '', true, $r );
+nova_wpb_check( 1 === substr_count( $out_g, '[vc_row' ), 'The emptied vc_* row was left on the page.' );
+
+// A row whose carriers are empty but which still holds a button is real content.
+$blank_with_button = '[vc_row el_class="content"][vc_column width="1/1"]'
+	. '[split_line_heading text_content=""]'
+	. '[nectar_btn text="Neem contact op" url="/contact/"]'
+	. '[/vc_column][/vc_row]';
+$r = null;
+list( $out, $rest ) = nova_wpb_replace_template_slots_with_sections( $blank_with_button, array(), '', true, $r );
+nova_wpb_check( $out === $blank_with_button, 'A row holding a button was pruned as if it were blank.' );
+
+// Direct predicate checks.
+$blank_row = nova_wpb_parse_shortcodes_to_compact( '[vc_row][vc_column width="1/1"][split_line_heading text_content=""][nectar_responsive_text][/nectar_responsive_text][/vc_column][/vc_row]' );
+nova_wpb_check( true === nova_wpb_row_is_blank_after_clearing( $blank_row[0] ), 'A row of empty theme carriers was not recognised as blank.' );
+
+$button_row = nova_wpb_parse_shortcodes_to_compact( '[vc_row][vc_column width="1/1"][split_line_heading text_content=""][nectar_btn text="Klik" url="/x/"][/vc_column][/vc_row]' );
+nova_wpb_check( false === nova_wpb_row_is_blank_after_clearing( $button_row[0] ), 'A row holding a button was reported blank.' );
+
+$image_row = nova_wpb_parse_shortcodes_to_compact( '[vc_row][vc_column width="1/1"][vc_single_image image="9"][/vc_column][/vc_row]' );
+nova_wpb_check( false === nova_wpb_row_is_blank_after_clearing( $image_row[0] ), 'An image-only row was reported blank; it has no carriers at all.' );
+
+// A row with no content carriers at all is not "blank", it is chrome: pruning a
+// spacer/divider row would delete template layout the sections never asked for.
+$spacer_row = nova_wpb_parse_shortcodes_to_compact( '[vc_row][vc_column width="1/1"][vc_empty_space height="60px"][vc_separator][/vc_column][/vc_row]' );
+nova_wpb_check( false === nova_wpb_row_is_blank_after_clearing( $spacer_row[0] ), 'A spacer row with no carriers was reported blank and would be pruned.' );
+
+$spacer_doc = '[vc_row el_class="content"][vc_column width="1/1"][vc_empty_space height="60px"][/vc_column][/vc_row]'
+	. '[vc_row el_class="content"][vc_column width="1/1"][vc_custom_heading text="Kop" font_container="tag:h2"][vc_column_text]<p>Tekst</p>[/vc_column_text][/vc_column][/vc_row]';
+$r = null;
+list( $out, $rest ) = nova_wpb_replace_template_slots_with_sections( $spacer_doc, array( $nova_wpb_sections[0] ), '', true, $r );
+nova_wpb_check( false !== strpos( $out, 'vc_empty_space' ), 'A spacer row was pruned out of the template.' );
+
+$full_row = nova_wpb_parse_shortcodes_to_compact( '[vc_row][vc_column width="1/1"][split_line_heading text_content="Kop"][/vc_column][/vc_row]' );
+nova_wpb_check( false === nova_wpb_row_is_blank_after_clearing( $full_row[0] ), 'A row with copy in it was reported blank.' );
+
+nova_wpb_check( false === nova_wpb_row_is_blank_after_clearing( array( 'tag' => 'vc_column' ) ), 'A non-row node was accepted by the blank-row predicate.' );
+
+// ---------------------------------------------------------------------------
+// Mixed themes in one document, and idempotence on theme elements
+// ---------------------------------------------------------------------------
+
+$mixed = '[vc_row el_class="content"][vc_column width="1/1"]'
+	. '[split_line_heading text_content="Kop A"]'
+	. '[nectar_responsive_text]<p>Tekst A</p>[/nectar_responsive_text]'
+	. '[/vc_column][/vc_row]'
+	. '[vc_row el_class="content"][vc_column width="1/1"]'
+	. '[vc_custom_heading text="Kop B" font_container="tag:h2"]'
+	. '[vc_column_text]<p>Tekst B</p>[/vc_column_text]'
+	. '[/vc_column][/vc_row]';
+
+$r = null;
+list( $out, $rest ) = nova_wpb_replace_template_slots_with_sections( $mixed, array( $nova_wpb_sections[0], $nova_wpb_sections[1] ), '', true, $r );
+nova_wpb_check( 2 === $r['slots_found'] && 2 === $r['slots_filled'] && 0 === count( $rest ), 'A mixed-theme template did not fill both slots.' );
+nova_wpb_check( false !== strpos( $out, 'text_content="Sectie een"' ), 'Section 1 did not land in the theme heading.' );
+nova_wpb_check( false !== strpos( $out, 'text="Sectie twee"' ), 'Section 2 did not land in the vc_* heading.' );
+nova_wpb_check( strpos( $out, 'Sectie een' ) < strpos( $out, 'Sectie twee' ), 'Sections landed out of document order across themes.' );
+
+$r2 = null;
+list( $out2, $rest2 ) = nova_wpb_replace_template_slots_with_sections( $out, array( $nova_wpb_sections[0], $nova_wpb_sections[1] ), '', true, $r2 );
+nova_wpb_check( 0 === $r2['headings_injected'] && 0 === $r2['text_blocks_injected'], 'Re-running the fill over theme elements injected duplicates.' );
+nova_wpb_check( 2 === $r2['slots_found'], 'Filled theme slots stopped being recognised on a second pass.' );
+
+// Serialization stays byte-exact for the documents these paths touch.
+$linked_doc = '[vc_row el_class="content"][vc_column width="1/1"][vc_custom_heading text="Kop" link="url:%23|||" font_container="tag:h2"][vc_raw_html]PGRpdj4=[/vc_raw_html][/vc_column][/vc_row]';
+nova_wpb_check( $linked_doc === nova_wpb_compact_to_shortcodes( nova_wpb_parse_shortcodes_to_compact( $linked_doc ) ), 'A linked-heading + raw-HTML document no longer round-trips byte-exactly.' );
+
 nova_wpb_report();

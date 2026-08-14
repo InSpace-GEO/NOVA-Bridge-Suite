@@ -775,6 +775,59 @@ function nova_wpb_prune_placeholder_rows( $compact ) {
 }
 
 /**
+ * Tags that must never host generated content.
+ *
+ * Two groups: layout/structured elements that own their own content model, and
+ * elements whose body is not prose. The second group matters because
+ * nova_wpb_default_text_field_for_tag() falls back to 'body' for ANY unmapped leaf
+ * shortcode with inner text — which made [vc_raw_html] a body slot and overwrote its
+ * payload with a section.
+ */
+function nova_wpb_never_slot_tags() {
+	return array(
+		// Layout containers.
+		'vc_row',
+		'vc_row_inner',
+		'vc_column',
+		'vc_column_inner',
+		'vc_empty_space',
+		'vc_separator',
+		// Structured content with its own model.
+		'toggle',
+		'vc_toggle',
+		'toggles',
+		'ot_faqs',
+		'info_apps2',
+		'vc_tta_section',
+		'vc_tta_accordion',
+		'vc_tta_tabs',
+		// Buttons and calls to action. Excluded by tag because a packed `link`
+		// attribute alone cannot tell a button apart from a linked heading.
+		'vc_btn',
+		'vc_btn2',
+		'button',
+		'nectar_btn',
+		'nectar_cta',
+		'vc_cta',
+		// Media and embeds: a body that is not prose.
+		'vc_single_image',
+		'image_with_animation',
+		'vc_gallery',
+		'vc_images_carousel',
+		'vc_masonry_grid',
+		'vc_basic_grid',
+		'vc_raw_html',
+		'vc_raw_js',
+		'vc_gmaps',
+		'vc_video',
+		'vc_widget_sidebar',
+		'vc_icon',
+		'vc_progress_bar',
+		'vc_pie',
+	);
+}
+
+/**
  * Decide whether a node can host generated content, and which of its fields carries it.
  *
  * Driven by the same field metadata the outline is built from, rather than a fixed tag
@@ -801,24 +854,13 @@ function nova_wpb_slot_carrier_for_node( $node ) {
 	 * Structured elements own their own content model. FAQ/accordion carriers are filled
 	 * by the FAQ path, and layout containers are never content.
 	 */
-	$never = array(
-		'vc_row',
-		'vc_row_inner',
-		'vc_column',
-		'vc_column_inner',
-		'vc_empty_space',
-		'vc_separator',
-		'toggle',
-		'vc_toggle',
-		'toggles',
-		'ot_faqs',
-		'info_apps2',
-	);
+	$never = nova_wpb_never_slot_tags();
 	if ( in_array( $tag, $never, true ) ) {
 		return null;
 	}
 
-	$fields = nova_wpb_fields_for_node( $node );
+	$attributes = isset( $node['attributes'] ) && is_array( $node['attributes'] ) ? $node['attributes'] : array();
+	$fields     = nova_wpb_fields_for_node( $node );
 	if ( empty( $fields ) ) {
 		return null;
 	}
@@ -826,11 +868,22 @@ function nova_wpb_slot_carrier_for_node( $node ) {
 	/*
 	 * A text carrier that also carries a link is a button or CTA, not a heading.
 	 * Writing a section title into it would silently retarget a conversion element.
+	 *
+	 * link_url is exempt when it was DERIVED from WPBakery's packed `link` attribute
+	 * rather than written as its own attribute: `link` is the generic "make this
+	 * element a link" param that vc_custom_heading carries on ordinary templates, so
+	 * rejecting on it left a linked heading unfilled AND uncleared, and the fill then
+	 * injected a second heading beside it — duplicate headings, the NOVA-268 symptom.
+	 * Real button elements are excluded by tag above.
 	 */
-	foreach ( $fields as $meta ) {
-		if ( isset( $meta['format'] ) && 'url' === $meta['format'] ) {
-			return null;
+	foreach ( $fields as $field_name => $meta ) {
+		if ( ! isset( $meta['format'] ) || 'url' !== $meta['format'] ) {
+			continue;
 		}
+		if ( 'link_url' === $field_name && ! array_key_exists( 'link_url', $attributes ) ) {
+			continue;
+		}
+		return null;
 	}
 
 	$field = nova_wpb_default_text_field_for_tag( $tag, $node );
@@ -851,6 +904,66 @@ function nova_wpb_slot_carrier_for_node( $node ) {
 
 	// url/image carriers are never content slots.
 	return null;
+}
+
+/**
+ * True when every content carrier in a row is empty, so the row renders as blank space.
+ *
+ * Carrier-driven, unlike nova_wpb_is_placeholder_slot_row(), which only recognises
+ * vc_custom_heading/heading/vc_column_text. On a theme with its own text elements that
+ * predicate never matches, so cleared-but-unfilled rows stayed on the page as empty
+ * blocks — the same hardcoded-tag-list failure this fix exists to remove.
+ *
+ * A row holding a button, image or other non-carrier content is never blank.
+ */
+function nova_wpb_row_is_blank_after_clearing( $row ) {
+	if ( ! is_array( $row ) || empty( $row['tag'] ) || 'vc_row' !== (string) $row['tag'] ) {
+		return false;
+	}
+
+	$carriers_seen = 0;
+	$blank         = true;
+	$layout        = array( 'vc_row', 'vc_row_inner', 'vc_column', 'vc_column_inner', 'vc_empty_space', 'vc_separator' );
+
+	$walk = function ( $node ) use ( &$walk, &$carriers_seen, &$blank, $layout ) {
+		if ( ! $blank || ! is_array( $node ) ) {
+			return;
+		}
+
+		$tag = isset( $node['tag'] ) ? (string) $node['tag'] : '';
+
+		if ( '' !== $tag && ! in_array( $tag, $layout, true ) ) {
+			$carrier = nova_wpb_slot_carrier_for_node( $node );
+
+			if ( null !== $carrier ) {
+				$carriers_seen++;
+
+				if ( 'body' === $carrier['field'] || 'content' === $carrier['field'] ) {
+					$value = isset( $node['text'] ) ? (string) $node['text'] : '';
+				} else {
+					$value = isset( $node['attributes'][ $carrier['field'] ] ) ? (string) $node['attributes'][ $carrier['field'] ] : '';
+				}
+
+				if ( '' !== trim( wp_strip_all_tags( $value ) ) ) {
+					$blank = false;
+					return;
+				}
+			} elseif ( ! empty( nova_wpb_fields_for_node( $node ) ) ) {
+				// A button, image or structured element: real content, keep the row.
+				$blank = false;
+				return;
+			}
+		}
+
+		if ( ! empty( $node['children'] ) && is_array( $node['children'] ) ) {
+			foreach ( $node['children'] as $child ) {
+				$walk( $child );
+			}
+		}
+	};
+	$walk( $row );
+
+	return ( $blank && $carriers_seen > 0 );
 }
 
 /**
@@ -1463,7 +1576,8 @@ function nova_wpb_replace_template_slots_with_sections( $shortcodes, $sections, 
 		// Prune only eligible rows that ended up empty; never template chrome.
 		$kept = array();
 		foreach ( $compact as $row_index => $node ) {
-			if ( in_array( (int) $row_index, $eligible_rows, true ) && nova_wpb_is_placeholder_slot_row( $node ) ) {
+			$prunable = nova_wpb_is_placeholder_slot_row( $node ) || nova_wpb_row_is_blank_after_clearing( $node );
+			if ( in_array( (int) $row_index, $eligible_rows, true ) && $prunable ) {
 				continue;
 			}
 			$kept[] = $node;
