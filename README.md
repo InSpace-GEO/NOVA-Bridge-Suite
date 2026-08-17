@@ -17,7 +17,7 @@ Use it to automatically:
 
 - Update content and layouts in popular page builders.
 - Push SEO metadata and custom fields alongside page updates.
-- Manage multilingual updates with WPML and Polylang, and serve per-locale content on Weglot.
+- Manage multilingual updates with WPML, Polylang and Weglot.
 - Add rich text below WooCommerce category listings.
 - Enable NOVA Blog and Service Page custom post types.
 And much more.
