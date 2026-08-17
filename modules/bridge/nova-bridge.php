@@ -2632,7 +2632,9 @@ if (!function_exists('cf_tmrb_update_post_meta_all_payload')) {
 
     foreach ($normalized_input as $k => $v) {
       $normKey = cf_tmrb_normalize_key($k);
-      $san     = cf_tmrb_sanitize_deep($v);
+      $san     = ($normKey === 'aux_metafields_custom_styles' && is_string($v))
+        ? sanitize_textarea_field($v)
+        : cf_tmrb_sanitize_deep($v);
 
       // Dotted/bracket path -> container write
       if (strpos($normKey, '.') !== false) {

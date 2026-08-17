@@ -15,6 +15,7 @@ NOVA Bridge Suite is the WordPress companion plugin for NOVA, your AI SEO automa
 Use it to:
 * Update content and layouts in popular page builders.
 * Push SEO metadata and custom fields alongside page updates.
+* Copy Auxin/Phlox page settings through the meta_all REST field.
 * Manage multilingual updates with WPML and Polylang, and serve per-locale content on Weglot.
 * Add rich text below WooCommerce category listings.
 * Enable NOVA Blog and Service Page custom post types.
@@ -45,6 +46,9 @@ Yes. If WooCommerce is active you can enable the rich text field module for cate
 = 2.8.0 =
 * Serve NOVA's own per-locale content on Weglot sites, so translated pages use your copy instead of a machine translation.
 * Keep translated page-builder content out of Weglot's translation pass, so it is served verbatim and uses no word quota.
+
+= 2.7.12 =
+* Add Core Bridge support for Auxin/Phlox page settings through meta_all.
 
 = 2.7.11 =
 * Use WordPress translations for Blog archive pagination labels.
