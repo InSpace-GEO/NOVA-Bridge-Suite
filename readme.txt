@@ -4,7 +4,7 @@ Tags: seo, automation, content, rest-api, page builder
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.8.1
+Stable tag: 2.8.2
 License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -41,6 +41,10 @@ Yes. If WooCommerce is active you can enable the rich text field module for cate
 1. NOVA Settings screen with module toggles.
 
 == Changelog ==
+
+= 2.8.2 =
+* Reject unsafe nested Avada text updates, preserve mixed shortcode content and post status, append overflow in an independent section, and keep rendered Avada content synchronized with its builder mirrors.
+* Save Elementor documents through Elementor's native lifecycle so hooks, canonical metadata, and caches stay synchronized.
 
 = 2.8.1 =
 * Preserve Auxin/Phlox custom page CSS supplied through meta_all.

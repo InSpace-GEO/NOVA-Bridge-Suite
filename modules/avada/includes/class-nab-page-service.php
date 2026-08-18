@@ -74,7 +74,7 @@ class Page_Service {
     }
 
     public function update_page(int $post_id, array $data) {
-        $args = $this->prepare_post_args($data);
+        $args = $this->prepare_post_args($data, false);
         $args['ID'] = $post_id;
 
         $updated = wp_update_post($args, true);
@@ -82,13 +82,16 @@ class Page_Service {
             return $updated;
         }
 
-        $this->persist_layout_and_meta($post_id, $data);
+        $persisted = $this->persist_layout_and_meta($post_id, $data);
+        if (is_wp_error($persisted)) {
+            return $persisted;
+        }
 
         return get_post($post_id);
     }
 
     public function create_page(array $data) {
-        $args = $this->prepare_post_args($data);
+        $args = $this->prepare_post_args($data, true);
         if (!isset($args['post_type'])) {
             $args['post_type'] = 'page';
         }
@@ -98,12 +101,15 @@ class Page_Service {
             return $post_id;
         }
 
-        $this->persist_layout_and_meta($post_id, $data);
+        $persisted = $this->persist_layout_and_meta($post_id, $data);
+        if (is_wp_error($persisted)) {
+            return $persisted;
+        }
 
         return get_post($post_id);
     }
 
-    private function prepare_post_args(array $data): array {
+    private function prepare_post_args(array $data, bool $creating): array {
         $args = [];
 
         if (isset($data['status'])) {
@@ -147,14 +153,17 @@ class Page_Service {
             $args['post_content'] = wp_kses_post((string) $data['content']);
         }
 
-        if (!isset($args['post_status'])) {
+        if ($creating && !isset($args['post_status'])) {
             $args['post_status'] = 'draft';
         }
 
         return $args;
     }
 
-    private function persist_layout_and_meta(int $post_id, array $data): void {
+    /**
+     * @return true|WP_Error
+     */
+    private function persist_layout_and_meta(int $post_id, array $data) {
         $layout = $data['layout'] ?? [];
         $shortcodes = '';
         $builder_touched = false;
@@ -166,16 +175,28 @@ class Page_Service {
         }
 
         if ('' !== $shortcodes) {
-            $slashed = wp_slash($shortcodes);
-            update_post_meta($post_id, '_fusion_builder_shortcodes', $slashed);
-            update_post_meta($post_id, '_fusion_builder_content', $slashed);
-            wp_update_post([
-                'ID'           => $post_id,
-                'post_content' => $slashed,
-            ]);
-
-            $status = isset($layout['status']) ? sanitize_text_field((string) $layout['status']) : 'active';
-            update_post_meta($post_id, '_fusion_builder_status', $status);
+            $content_result = wp_update_post(
+                wp_slash([
+                    'ID'           => $post_id,
+                    'post_content' => $shortcodes,
+                ]),
+                true
+            );
+            if (is_wp_error($content_result)) {
+                return new WP_Error(
+                    'nova_avada_post_content_write_failed',
+                    __('Avada content could not be saved to the page.', 'nova-bridge-suite'),
+                    ['status' => 500, 'cause' => $content_result->get_error_code()]
+                );
+            }
+            $stored_post = get_post($post_id);
+            if (!$stored_post instanceof WP_Post || (string) $stored_post->post_content !== $shortcodes) {
+                return new WP_Error(
+                    'nova_avada_layout_persistence_failed',
+                    __('Avada content was not stored consistently.', 'nova-bridge-suite'),
+                    ['status' => 500]
+                );
+            }
             $builder_touched = true;
         }
 
@@ -190,9 +211,34 @@ class Page_Service {
             }
         }
 
+        if ($builder_touched) {
+            $slashed = wp_slash($shortcodes);
+            update_post_meta($post_id, '_fusion_builder_shortcodes', $slashed);
+            update_post_meta($post_id, '_fusion_builder_content', $slashed);
+
+            $status = isset($layout['status']) ? sanitize_text_field((string) $layout['status']) : 'active';
+            update_post_meta($post_id, '_fusion_builder_status', $status);
+        }
+
         if ($builder_touched || array_key_exists('publish_builder', $data)) {
             $this->finalize_builder($post_id, $data, $builder_touched);
         }
+
+        if ($builder_touched) {
+            $stored_post = get_post($post_id);
+            if (!$stored_post instanceof WP_Post ||
+                (string) $stored_post->post_content !== $shortcodes ||
+                (string) get_post_meta($post_id, '_fusion_builder_shortcodes', true) !== $shortcodes ||
+                (string) get_post_meta($post_id, '_fusion_builder_content', true) !== $shortcodes) {
+                return new WP_Error(
+                    'nova_avada_layout_persistence_failed',
+                    __('Avada content was not stored consistently.', 'nova-bridge-suite'),
+                    ['status' => 500]
+                );
+            }
+        }
+
+        return true;
     }
 
     private function collect_fusion_meta(int $post_id): array {
@@ -214,6 +260,11 @@ class Page_Service {
     }
 
     private function get_builder_shortcodes(WP_Post $post): string {
+        $content = (string) $post->post_content;
+        if ('' !== trim($content)) {
+            return $content;
+        }
+
         $meta_keys = [
             '_fusion_builder_shortcodes',
             '_fusion_builder_content',
@@ -227,11 +278,6 @@ class Page_Service {
             }
         }
 
-        $content = (string) $post->post_content;
-        if ('' !== trim($content)) {
-            return $content;
-        }
-
         return '';
     }
 
@@ -240,8 +286,10 @@ class Page_Service {
      *
      * @param array<string, mixed> $layout
      * @param array<int, array<string, string>> $updates
+     *
+     * @return array<string, mixed>|WP_Error
      */
-    public function apply_text_updates(array $layout, array $updates): array {
+    public function apply_text_updates(array $layout, array $updates) {
         if (empty($layout['compact']) || !is_array($layout['compact']) || empty($updates)) {
             return $layout;
         }
@@ -261,6 +309,18 @@ class Page_Service {
 
         if (empty($map)) {
             return $layout;
+        }
+
+        $protected_path = $this->find_non_leaf_update_path($layout['compact'], $map);
+        if (null !== $protected_path) {
+            return new WP_Error(
+                'nova_avada_protected_text_update',
+                __('Text updates can only target leaf elements; this element contains nested Avada content.', 'nova-bridge-suite'),
+                [
+                    'status' => 422,
+                    'path'   => $protected_path,
+                ]
+            );
         }
 
         $layout['compact'] = $this->replace_text_in_nodes($layout['compact'], $map);
@@ -316,7 +376,7 @@ class Page_Service {
         }
 
         if (!empty($layout['compact']) && is_array($layout['compact'])) {
-            $layout['compact'] = $this->append_to_last_column($layout['compact'], $sanitized);
+            $layout['compact'][] = $this->build_text_container($sanitized);
             unset($layout['raw_shortcodes']);
             return $layout;
         }
@@ -447,10 +507,6 @@ class Page_Service {
                     $node['attributes']['size'] = $match[1];
                 }
                 $node['text'] = $map[$path];
-                // Drop any child text fragments to avoid concatenating old + new content.
-                if (isset($node['children']) && is_array($node['children'])) {
-                    $node['children'] = [];
-                }
             }
 
             if (!empty($node['children']) && is_array($node['children'])) {
@@ -460,6 +516,37 @@ class Page_Service {
         unset($node);
 
         return $nodes;
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $nodes
+     * @param array<string, string>            $map
+     */
+    private function find_non_leaf_update_path(array $nodes, array $map): ?string {
+        foreach ($nodes as $node) {
+            if (!is_array($node)) {
+                continue;
+            }
+
+            $path = isset($node['path']) ? (string) $node['path'] : '';
+            if (
+                '' !== $path &&
+                array_key_exists($path, $map) &&
+                !empty($node['children']) &&
+                is_array($node['children'])
+            ) {
+                return $path;
+            }
+
+            if (!empty($node['children']) && is_array($node['children'])) {
+                $found = $this->find_non_leaf_update_path($node['children'], $map);
+                if (null !== $found) {
+                    return $found;
+                }
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -526,32 +613,6 @@ class Page_Service {
                 ]],
             ]],
         ];
-
-        return $nodes;
-    }
-
-    /**
-     * @param array<int, array<string, mixed>> $nodes
-     */
-    private function append_to_last_column(array $nodes, string $sanitized_html): array {
-        $column_ref = &$this->find_last_column_ref($nodes);
-        if (null !== $column_ref) {
-            if (!isset($column_ref['children']) || !is_array($column_ref['children'])) {
-                $column_ref['children'] = [];
-            }
-
-            $column_ref['children'][] = [
-                'tag'        => 'fusion_text',
-                'attributes' => [],
-                'text'       => $sanitized_html,
-                'children'   => [],
-            ];
-            return $nodes;
-        }
-        unset($column_ref);
-
-        // If no column found, create a container/row/column/text and append to root.
-        $nodes[] = $this->build_text_container($sanitized_html);
 
         return $nodes;
     }

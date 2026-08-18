@@ -473,7 +473,7 @@ class Elementor_Service {
 	}
 
 	/**
-	 * Persist Elementor document back to post meta.
+	 * Persist an Elementor document through Elementor's document lifecycle.
 	 *
 	 * @param int   $post_id  Post ID.
 	 * @param array $document Document data.
@@ -481,48 +481,130 @@ class Elementor_Service {
 	 * @return true|WP_Error
 	 */
 	private function persist_elementor_document( $post_id, array $document, array $options = array() ) {
-		global $wpdb;
+		$canonical_document = null;
+		$captured_save       = false;
+		$failure_reason      = '';
+		$failure_detail      = '';
+		$failure_status      = 500;
+		$capture_save        = null;
+		$validate_save       = null;
+		$save_result         = false;
+		$lifecycle_started   = false;
+		$runtime_meta        = array();
 
-		$raw_json = isset( $options['raw_json'] ) ? $options['raw_json'] : null;
-
-		if (
-			! is_string( $raw_json )
-			|| '' === trim( $raw_json )
-			|| preg_match( '/[\xF0-\xF4][\x80-\xBF]{3}/', $raw_json )
-		) {
-			$raw_json = $this->encode_json_string(
-				$document,
-				'seor_eb_encode_failed',
-				__( 'Elementor document could not be encoded for persistence.', 'nova-bridge-suite' )
+		foreach ( array( '_elementor_edit_mode', '_elementor_template_type', '_elementor_version' ) as $meta_key ) {
+			$runtime_meta[ $meta_key ] = array(
+				'exists' => metadata_exists( 'post', $post_id, $meta_key ),
+				'value'  => get_post_meta( $post_id, $meta_key, true ),
 			);
-			if ( is_wp_error( $raw_json ) ) {
-				return $raw_json;
+		}
+
+		try {
+			if ( ! class_exists( '\\Elementor\\Plugin' ) ) {
+				$failure_reason = 'elementor_api_unavailable';
+			} else {
+				$plugin            = \Elementor\Plugin::instance();
+				$documents_manager = isset( $plugin->documents ) ? $plugin->documents : null;
+				$elementor_document = $documents_manager && method_exists( $documents_manager, 'get' )
+					? $documents_manager->get( $post_id, false )
+					: null;
+
+				if (
+					! is_object( $elementor_document )
+					|| ! method_exists( $elementor_document, 'save' )
+					|| ! method_exists( $elementor_document, 'set_is_built_with_elementor' )
+					|| ! method_exists( $elementor_document, 'is_editable_by_current_user' )
+					|| ! isset( $plugin->elements_manager )
+					|| ! method_exists( $plugin->elements_manager, 'get_element' )
+				) {
+					$failure_reason = 'elementor_api_unavailable';
+				} elseif ( ! $elementor_document->is_editable_by_current_user() ) {
+					$failure_reason = 'elementor_save_rejected';
+					$failure_status = 403;
+					$failure_detail = 'The current user cannot edit this Elementor document.';
+				} else {
+					$validate_save = function ( $save_data, $saving_document ) use ( $elementor_document, $plugin, &$failure_reason, &$failure_detail ) {
+						$elements = isset( $save_data['elements'] ) && is_array( $save_data['elements'] )
+							? $save_data['elements']
+							: array();
+
+						if ( $saving_document === $elementor_document && ! $this->elementor_elements_are_registered( $elements, $plugin->elements_manager ) ) {
+							$failure_reason = 'elementor_element_unavailable';
+							$failure_detail = 'Elementor could not instantiate every requested element.';
+							unset( $save_data['elements'] );
+						}
+
+						return $save_data;
+					};
+					$capture_save = static function ( $saved_post_id, $editor_data ) use ( $post_id, &$canonical_document, &$captured_save ) {
+						if ( (int) $saved_post_id === (int) $post_id && is_array( $editor_data ) ) {
+							$canonical_document = $editor_data;
+							$captured_save       = true;
+						}
+					};
+					add_filter( 'elementor/document/save/data', $validate_save, PHP_INT_MAX, 2 );
+					add_action( 'elementor/editor/after_save', $capture_save, PHP_INT_MAX, 2 );
+
+					$lifecycle_started = true;
+					$elementor_document->set_is_built_with_elementor( true );
+					$save_result = $elementor_document->save( array( 'elements' => $document ) );
+				}
+			}
+		} catch ( \Throwable $e ) {
+			if ( '' === $failure_reason ) {
+				$failure_reason = 'elementor_save_exception';
+			}
+			$failure_detail = $e->getMessage();
+		} finally {
+			if ( null !== $validate_save ) {
+				remove_filter( 'elementor/document/save/data', $validate_save, PHP_INT_MAX );
+			}
+			if ( null !== $capture_save ) {
+				remove_action( 'elementor/editor/after_save', $capture_save, PHP_INT_MAX );
 			}
 		}
 
-		$write_result = update_post_meta( $post_id, '_elementor_data', wp_slash( $raw_json ) );
-		$db_error     = isset( $wpdb->last_error ) ? (string) $wpdb->last_error : '';
+		if ( '' === $failure_reason && false === $save_result ) {
+			$failure_reason = 'elementor_save_rejected';
+			$failure_status = 403;
+			$failure_detail = 'Elementor did not complete its document save lifecycle.';
+		} elseif ( '' === $failure_reason && ! $captured_save ) {
+			$failure_reason = 'elementor_save_incomplete';
+			$failure_detail = 'Elementor did not provide canonical document data after saving.';
+		}
 
 		clean_post_cache( $post_id );
-		$stored_after_write = $this->get_document_data_from_meta( $post_id );
-		$failure_reason     = '';
+		$stored_after_write = '' === $failure_reason ? $this->get_document_data_from_meta( $post_id ) : null;
 
-		if ( null === $stored_after_write ) {
-			$failure_reason = 'missing_meta';
-		} elseif ( is_wp_error( $stored_after_write ) ) {
-			$failure_reason = 'unreadable_meta';
-		} elseif ( ! $this->documents_match( $document, $stored_after_write ) ) {
-			$failure_reason = 'write_mismatch';
+		if ( '' === $failure_reason ) {
+			if ( null === $stored_after_write ) {
+				$failure_reason = 'missing_meta';
+			} elseif ( is_wp_error( $stored_after_write ) ) {
+				$failure_reason = 'unreadable_meta';
+				$failure_detail = $stored_after_write->get_error_code();
+			} elseif ( ! $this->documents_match( $canonical_document, $stored_after_write ) ) {
+				$failure_reason = 'write_mismatch';
+			}
 		}
 
 		if ( '' !== $failure_reason ) {
-			$safe_reason = '' !== $db_error ? 'database_error' : $failure_reason;
+			if ( $lifecycle_started ) {
+				foreach ( $runtime_meta as $meta_key => $snapshot ) {
+					if ( $snapshot['exists'] ) {
+						update_post_meta( $post_id, $meta_key, $snapshot['value'] );
+					} else {
+						delete_post_meta( $post_id, $meta_key );
+					}
+				}
+				clean_post_cache( $post_id );
+			}
+
 			error_log(
 				sprintf(
 					'NOVA Elementor document write failed for post %1$d (%2$s): %3$s',
 					(int) $post_id,
 					$failure_reason,
-					'' !== $db_error ? $db_error : 'metadata write did not persist (result: ' . var_export( $write_result, true ) . ')'
+					'' !== $failure_detail ? $failure_detail : 'Elementor metadata did not persist its canonical document.'
 				)
 			);
 
@@ -530,9 +612,9 @@ class Elementor_Service {
 				'seor_eb_elementor_meta_write_failed',
 				__( 'WordPress did not persist the Elementor document.', 'nova-bridge-suite' ),
 				array(
-					'status'  => 500,
+					'status'  => $failure_status,
 					'post_id' => (int) $post_id,
-					'reason'  => $safe_reason,
+					'reason'  => $failure_reason,
 				)
 			);
 		}
@@ -546,10 +628,41 @@ class Elementor_Service {
 			return $page_settings_result;
 		}
 
-		$this->sync_elementor_runtime_meta( $post_id );
 		clean_post_cache( $post_id );
 
-		return $this->verify_persisted_elementor_document( $post_id, $document, $page_settings );
+		return $this->verify_persisted_elementor_document( $post_id, $canonical_document, $page_settings );
+	}
+
+	/**
+	 * Confirm Elementor can instantiate every element after save filters run.
+	 *
+	 * @param array  $elements         Elementor elements.
+	 * @param object $elements_manager Elementor elements manager.
+	 * @return bool
+	 */
+	private function elementor_elements_are_registered( array $elements, $elements_manager ) {
+		foreach ( $elements as $element ) {
+			if ( ! is_array( $element ) ) {
+				return false;
+			}
+
+			$element_type = isset( $element['elType'] ) ? (string) $element['elType'] : '';
+			$widget_type  = isset( $element['widgetType'] ) ? (string) $element['widgetType'] : null;
+
+			if ( '' === $element_type || ! $elements_manager->get_element( $element_type, $widget_type ) ) {
+				return false;
+			}
+
+			if (
+				! empty( $element['elements'] )
+				&& is_array( $element['elements'] )
+				&& ! $this->elementor_elements_are_registered( $element['elements'], $elements_manager )
+			) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	/**
@@ -1043,20 +1156,6 @@ class Elementor_Service {
 		update_post_meta( $post_id, '_elementor_page_settings', $page_settings['value'] );
 
 		return true;
-	}
-
-	/**
-	 * Keep Elementor runtime meta aligned after saving document data.
-	 *
-	 * @param int $post_id Post ID.
-	 */
-	private function sync_elementor_runtime_meta( $post_id ) {
-		update_post_meta( $post_id, '_elementor_edit_mode', 'builder' );
-		update_post_meta( $post_id, '_elementor_template_type', 'page' );
-
-		if ( defined( 'ELEMENTOR_VERSION' ) ) {
-			update_post_meta( $post_id, '_elementor_version', ELEMENTOR_VERSION );
-		}
 	}
 
 	/**

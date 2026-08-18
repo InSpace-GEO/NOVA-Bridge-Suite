@@ -4,7 +4,7 @@
 - Requires at least: 6.0
 - Tested up to: 7.0
 - Requires PHP: 7.4
-- Stable tag: 2.8.1
+- Stable tag: 2.8.2
 - License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -17,7 +17,7 @@ Use it to automatically:
 
 - Update content and layouts in popular page builders.
 - Push SEO metadata and custom fields alongside page updates.
-- Manage multilingual updates with WPML, Polylang and Weglot.
+- Manage multilingual updates with WPML and Polylang, and serve per-locale content on Weglot.
 - Add rich text below WooCommerce category listings.
 - Enable NOVA Blog and Service Page custom post types.
 And much more.
