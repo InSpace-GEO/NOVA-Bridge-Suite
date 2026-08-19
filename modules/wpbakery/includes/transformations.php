@@ -46,10 +46,14 @@ function nova_wpb_normalize_compact_tree( $compact ) {
 }
 
 /**
- * Convert FAQ HTML inside a section:
- * <h3>Q</h3><p>A</p> => [ot_faqs title="Q"]A[/ot_faqs]
+ * Convert FAQ HTML inside a section into WPBakery's own accordion element:
+ * <h3>Q</h3><p>A</p> => one [vc_tta_section] per question, inside one [vc_tta_accordion].
+ *
+ * ot_faqs is a theme shortcode, not a WPBakery core element -- on a site whose theme
+ * doesn't register it, it renders as literal unprocessed text (NOVA-268). vc_tta_accordion
+ * and vc_tta_section ship with WPBakery itself, so they render regardless of theme.
  */
-function nova_wpb_convert_faq_html_to_ot_faqs( $html ) {
+function nova_wpb_convert_faq_html_to_vc_tta_accordion( $html ) {
 	$html = (string) $html;
 
 	// Capture h3 blocks and everything until next h3 (or end).
@@ -57,8 +61,8 @@ function nova_wpb_convert_faq_html_to_ot_faqs( $html ) {
 		return $html;
 	}
 
-	$out = '';
-	foreach ( $ms as $m ) {
+	$sections = '';
+	foreach ( $ms as $i => $m ) {
 		$q = trim( wp_strip_all_tags( (string) $m[1] ) );
 		$a = trim( (string) $m[2] );
 
@@ -73,10 +77,20 @@ function nova_wpb_convert_faq_html_to_ot_faqs( $html ) {
 		// Keep safe HTML in answers.
 		$a = wp_kses_post( $a );
 
-		$out .= '[ot_faqs title="' . esc_attr( $q ) . '"]' . $a . '[/ot_faqs]' . "\n\n";
+		// Deterministic (not random) so re-running the fill over the same content
+		// produces byte-identical output instead of a new tab_id on every run.
+		$tab_id = substr( md5( $i . '|' . $q ), 0, 8 );
+
+		$sections .= '[vc_tta_section title="' . esc_attr( $q ) . '" tab_id="' . esc_attr( $tab_id ) . '"]'
+			. '[vc_column_text]' . $a . '[/vc_column_text]'
+			. '[/vc_tta_section]';
 	}
 
-	return ( '' !== trim( $out ) ) ? trim( $out ) : $html;
+	if ( '' === trim( $sections ) ) {
+		return $html;
+	}
+
+	return '[vc_tta_accordion style="flat" active_section="1" collapsible_all="true"]' . $sections . '[/vc_tta_accordion]';
 }
 
 /**
@@ -92,7 +106,9 @@ function nova_wpb_convert_faq_html_to_ot_faqs( $html ) {
  *     ...
  *   ]
  *
- * Also converts the FAQ section (Veelgestelde vragen) into ot_faqs shortcodes.
+ * Also tags the FAQ section (Veelgestelde vragen) as type:"faq" so it becomes a
+ * native WPBakery accordion (nova_wpb_apply_transformations()) instead of a plain
+ * heading + text block.
  */
 function nova_wpb_expand_single_html_section_to_multiple( $sections, $page_title = '' ) {
 	if ( ! is_array( $sections ) ) {
@@ -143,16 +159,22 @@ function nova_wpb_expand_single_html_section_to_multiple( $sections, $page_title
 				continue;
 			}
 
-			// Convert FAQ section.
-			if ( '' !== $title && false !== stripos( $title, 'veelgestelde vragen' ) ) {
-				$chunk = nova_wpb_convert_faq_html_to_ot_faqs( $chunk );
-			}
-
-			$new[] = array(
+			$new_section = array(
 				'title'     => $title,
 				'body'      => $chunk,
 				'title_tag' => 'h2',
 			);
+
+			/*
+			 * Tag as FAQ rather than converting here: this keeps the accordion
+			 * conversion in the one place that does it (nova_wpb_apply_transformations)
+			 * and, via the type:"faq" tag, keeps the section out of slot-filling too.
+			 */
+			if ( '' !== $title && false !== stripos( $title, 'veelgestelde vragen' ) ) {
+				$new_section['type'] = 'faq';
+			}
+
+			$new[] = $new_section;
 		}
 	}
 
@@ -247,13 +269,32 @@ function nova_wpb_apply_transformations( $shortcodes, $remove_paths, $text_updat
 		foreach ( $append_sections as $section ) {
 			// FAQ section type support.
 			if ( isset( $section['type'] ) && 'faq' === strtolower( (string) $section['type'] ) ) {
-				$faq_title = isset( $section['title'] ) ? wp_strip_all_tags( (string) $section['title'] ) : '';
-				$faq_body  = isset( $section['body'] ) ? wp_kses_post( (string) $section['body'] ) : '';
-				if ( '' !== trim( $faq_title ) && '' !== trim( $faq_body ) ) {
-					// Put FAQs inside a text container so nested shortcodes render reliably.
-					$shortcodes .= '[vc_row][vc_column][vc_column_text]'
-						. '[ot_faqs title="' . esc_attr( $faq_title ) . '"]' . $faq_body . '[/ot_faqs]'
-						. '[/vc_column_text][/vc_column][/vc_row]';
+				$faq_title    = isset( $section['title'] ) ? wp_strip_all_tags( (string) $section['title'] ) : '';
+				$faq_body_raw = isset( $section['body'] ) ? wp_kses_post( (string) $section['body'] ) : '';
+
+				/*
+				 * A body shaped as "<h3>Q</h3><p>A</p>..." explodes into one vc_tta_section
+				 * per question inside one vc_tta_accordion (same helper the single-mega-section
+				 * expander uses) -- WPBakery's own accordion element, not a theme shortcode
+				 * (NOVA-268: ot_faqs only renders on themes that happen to register it).
+				 */
+				$faq_accordion = ( '' !== trim( $faq_body_raw ) && function_exists( 'nova_wpb_convert_faq_html_to_vc_tta_accordion' ) )
+					? nova_wpb_convert_faq_html_to_vc_tta_accordion( $faq_body_raw )
+					: $faq_body_raw;
+
+				// No "<h3>Q</h3><p>A</p>" pairs found: one item under the section title.
+				if ( $faq_accordion === $faq_body_raw ) {
+					$faq_accordion = ( '' !== trim( $faq_title ) && '' !== trim( $faq_body_raw ) )
+						? '[vc_tta_accordion style="flat" active_section="1" collapsible_all="true"]'
+							. '[vc_tta_section title="' . esc_attr( $faq_title ) . '" tab_id="' . esc_attr( substr( md5( $faq_title ), 0, 8 ) ) . '"]'
+							. '[vc_column_text]' . $faq_body_raw . '[/vc_column_text]'
+							. '[/vc_tta_section][/vc_tta_accordion]'
+						: '';
+				}
+
+				if ( '' !== trim( $faq_accordion ) ) {
+					// vc_tta_accordion is a structural WPBakery element, a row/column sibling.
+					$shortcodes .= '[vc_row][vc_column]' . $faq_accordion . '[/vc_column][/vc_row]';
 				}
 				continue;
 			}
@@ -1445,18 +1486,36 @@ function nova_wpb_replace_template_slots_with_sections( $shortcodes, $sections, 
 	$report['rows_eligible']   = count( $eligible_rows );
 	$report['rows_ineligible'] = (int) $ineligible_rows;
 
+	/*
+	 * A type:"faq" section is not a heading+text pair, it is a set of Q&A items that
+	 * nova_wpb_apply_transformations() turns into a vc_tta_accordion. Feeding
+	 * one to a slot writes the raw "<h3>Q</h3><p>A</p>..." straight into a heading/text
+	 * carrier as plain copy, which is indistinguishable from a successful fill and loses
+	 * the accordion entirely. FAQ sections never compete for a slot; they always fall
+	 * through to $remaining below.
+	 */
+	$fillable = array();
+	foreach ( $sections as $idx => $sec ) {
+		$sec_type = isset( $sec['type'] ) ? strtolower( trim( (string) $sec['type'] ) ) : '';
+		if ( 'faq' !== $sec_type ) {
+			$fillable[] = $idx;
+		}
+	}
+
 	$section_i  = 0;
+	$consumed   = array();
 	$injections = array();
-	$total      = count( $sections );
+	$total      = count( $fillable );
 
 	foreach ( $slots as $slot_index => $slot ) {
 		if ( $section_i >= $total ) {
 			break;
 		}
 
-		$sec_title = $sections[ $section_i ]['title'];
-		$sec_body  = $sections[ $section_i ]['body'];
-		$sec_tag   = $sections[ $section_i ]['title_tag'];
+		$sec_idx   = $fillable[ $section_i ];
+		$sec_title = $sections[ $sec_idx ]['title'];
+		$sec_body  = $sections[ $sec_idx ]['body'];
+		$sec_tag   = $sections[ $sec_idx ]['title_tag'];
 
 		/*
 		 * Suppress a duplicate heading only on the very first slot, and only when the
@@ -1515,6 +1574,7 @@ function nova_wpb_replace_template_slots_with_sections( $shortcodes, $sections, 
 		}
 
 		$report['slots_filled']++;
+		$consumed[ $sec_idx ] = true;
 		$section_i++;
 	}
 
@@ -1589,10 +1649,13 @@ function nova_wpb_replace_template_slots_with_sections( $shortcodes, $sections, 
 	$compact = nova_wpb_normalize_compact_tree( $compact );
 
 	$new_shortcodes = nova_wpb_compact_to_shortcodes( $compact );
-	$remaining      = array();
 
-	if ( $section_i < count( $sections ) ) {
-		$remaining = array_slice( $sections, $section_i );
+	// Order-preserving: everything not matched to a slot, FAQ sections included.
+	$remaining = array();
+	foreach ( $sections as $idx => $sec ) {
+		if ( empty( $consumed[ $idx ] ) ) {
+			$remaining[] = $sec;
+		}
 	}
 
 	$report['sections_appended'] = count( $remaining );

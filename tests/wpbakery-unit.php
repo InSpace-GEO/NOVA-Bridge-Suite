@@ -741,4 +741,114 @@ nova_wpb_check( 2 === $r2['slots_found'], 'Filled theme slots stopped being reco
 $linked_doc = '[vc_row el_class="content"][vc_column width="1/1"][vc_custom_heading text="Kop" link="url:%23|||" font_container="tag:h2"][vc_raw_html]PGRpdj4=[/vc_raw_html][/vc_column][/vc_row]';
 nova_wpb_check( $linked_doc === nova_wpb_compact_to_shortcodes( nova_wpb_parse_shortcodes_to_compact( $linked_doc ) ), 'A linked-heading + raw-HTML document no longer round-trips byte-exactly.' );
 
+// ---------------------------------------------------------------------------
+// type:"faq" sections never fill a slot as plain text (Retoppers live-test finding)
+// ---------------------------------------------------------------------------
+
+$faq_section = array(
+	'title'     => 'Veelgestelde vragen',
+	'body'      => '<h3>Vraag een</h3><p>Antwoord een</p><h3>Vraag twee</h3><p>Antwoord twee</p>',
+	'title_tag' => 'h2',
+	'type'      => 'faq',
+);
+
+$one_slot_doc = '[vc_row el_class="content"][vc_column width="1/1"]'
+	. '[split_line_heading text_content="Kop"]'
+	. '[nectar_responsive_text]<p>Tekst</p>[/nectar_responsive_text]'
+	. '[/vc_column][/vc_row]';
+
+$r = null;
+list( $out, $rest ) = nova_wpb_replace_template_slots_with_sections( $one_slot_doc, array( $faq_section, $nova_wpb_sections[0] ), '', true, $r );
+nova_wpb_check( 1 === $r['slots_filled'], 'A single available slot did not get filled when a FAQ section led the list.' );
+nova_wpb_check( false !== strpos( $out, 'text_content="Sectie een"' ), 'The ordinary section behind a FAQ section did not take the free slot.' );
+nova_wpb_check( false === strpos( $out, 'Veelgestelde vragen' ) && false === strpos( $out, 'Vraag een' ), 'A FAQ section was written into a slot as plain text.' );
+nova_wpb_check( 1 === count( $rest ) && 'faq' === strtolower( (string) $rest[0]['type'] ), 'The FAQ section was consumed instead of passed through to $remaining.' );
+
+// FAQ-only run: nothing to fill, the section must come back whole, not dropped.
+$r = null;
+list( $out_faq_only, $rest_faq_only ) = nova_wpb_replace_template_slots_with_sections( $one_slot_doc, array( $faq_section ), '', true, $r );
+nova_wpb_check( 0 === $r['slots_filled'], 'A FAQ-only section list still reported a filled slot.' );
+nova_wpb_check( 1 === count( $rest_faq_only ) && 'Veelgestelde vragen' === $rest_faq_only[0]['title'], 'A lone FAQ section was lost instead of passed through.' );
+
+// End-to-end: slot-fill then apply_transformations, the order pages.php actually runs in.
+$final = nova_wpb_apply_transformations( $out, array(), array(), '', $rest );
+nova_wpb_check( false !== strpos( $final, '[vc_tta_accordion' ), 'No native vc_tta_accordion was produced end-to-end.' );
+nova_wpb_check( 1 === substr_count( $final, '[vc_tta_accordion' ), 'End-to-end produced more than one accordion for one FAQ section.' );
+nova_wpb_check(
+	1 === preg_match( '/\[vc_tta_section title="Vraag een" tab_id="[a-f0-9]{8}"\]\[vc_column_text\]Antwoord een\[\/vc_column_text\]\[\/vc_tta_section\]/', $final ),
+	'Question one did not become its own vc_tta_section end-to-end.'
+);
+nova_wpb_check(
+	1 === preg_match( '/\[vc_tta_section title="Vraag twee" tab_id="[a-f0-9]{8}"\]\[vc_column_text\]Antwoord twee\[\/vc_column_text\]\[\/vc_tta_section\]/', $final ),
+	'Question two did not become its own vc_tta_section end-to-end.'
+);
+nova_wpb_check( false === strpos( $final, '<h3>Vraag een</h3>' ), 'The FAQ body still contained a raw h3 instead of being exploded into vc_tta_section items.' );
+nova_wpb_check( false === strpos( $final, 'ot_faqs' ), 'A theme shortcode (ot_faqs) was emitted instead of the native WPBakery accordion.' );
+
+// ---------------------------------------------------------------------------
+// apply_transformations(): a multi-question FAQ body explodes into one
+// vc_tta_section per question inside a single vc_tta_accordion, using
+// WPBakery's own accordion element rather than a theme-dependent shortcode.
+// ---------------------------------------------------------------------------
+
+$faq_only_out = nova_wpb_apply_transformations( '', array(), array(), '', array( $faq_section ) );
+nova_wpb_check( 1 === substr_count( $faq_only_out, '[vc_tta_accordion' ), 'A two-question FAQ section did not produce exactly one accordion.' );
+nova_wpb_check( 2 === substr_count( $faq_only_out, '[vc_tta_section title=' ), 'A two-question FAQ section did not produce two vc_tta_section items.' );
+nova_wpb_check(
+	1 === preg_match( '/\[vc_tta_section title="Vraag een" tab_id="([a-f0-9]{8})"\]\[vc_column_text\]Antwoord een\[\/vc_column_text\]\[\/vc_tta_section\]/', $faq_only_out, $m1 ),
+	'Question one was not rendered as its own vc_tta_section.'
+);
+nova_wpb_check(
+	1 === preg_match( '/\[vc_tta_section title="Vraag twee" tab_id="([a-f0-9]{8})"\]\[vc_column_text\]Antwoord twee\[\/vc_column_text\]\[\/vc_tta_section\]/', $faq_only_out, $m2 ),
+	'Question two was not rendered as its own vc_tta_section.'
+);
+nova_wpb_check( empty( $m1 ) || empty( $m2 ) || $m1[1] !== $m2[1], 'Two different questions were assigned the same tab_id.' );
+nova_wpb_check( false === strpos( $faq_only_out, 'title="Veelgestelde vragen"' ), 'The section title leaked into a vc_tta_section instead of being discarded once questions were found.' );
+nova_wpb_check( false === strpos( $faq_only_out, 'ot_faqs' ), 'A theme shortcode (ot_faqs) was emitted instead of the native WPBakery accordion.' );
+
+// Re-running over its own output must not mint new tab_ids (idempotence).
+$faq_only_out_2 = nova_wpb_apply_transformations( '', array(), array(), '', array( $faq_section ) );
+nova_wpb_check( $faq_only_out === $faq_only_out_2, 'Re-running the same FAQ section produced a different accordion (non-deterministic tab_id).' );
+
+// No "<h3>Q</h3><p>A</p>" pairs: fall back to one item under the section title.
+$faq_no_pairs = array(
+	'title'     => 'Veelgestelde vragen',
+	'body'      => '<p>Gewone tekst zonder vraag-structuur.</p>',
+	'title_tag' => 'h2',
+	'type'      => 'faq',
+);
+$fallback_out = nova_wpb_apply_transformations( '', array(), array(), '', array( $faq_no_pairs ) );
+nova_wpb_check( 1 === substr_count( $fallback_out, '[vc_tta_accordion' ), 'A body with no Q/A pairs did not produce exactly one fallback accordion.' );
+nova_wpb_check( 1 === substr_count( $fallback_out, '[vc_tta_section title=' ), 'A body with no Q/A pairs produced more or fewer than one fallback item.' );
+nova_wpb_check(
+	1 === preg_match( '/\[vc_tta_section title="Veelgestelde vragen" tab_id="[a-f0-9]{8}"\]\[vc_column_text\]<p>Gewone tekst zonder vraag-structuur\.<\/p>\[\/vc_column_text\]\[\/vc_tta_section\]/', $fallback_out ),
+	'The no-pairs fallback did not wrap the whole body under the section title.'
+);
+
+// An empty FAQ body must not emit an empty accordion shell.
+$faq_empty = array( 'title' => 'Veelgestelde vragen', 'body' => '', 'title_tag' => 'h2', 'type' => 'faq' );
+nova_wpb_check( '' === nova_wpb_apply_transformations( '', array(), array(), '', array( $faq_empty ) ), 'An empty FAQ section emitted an accordion shell with no content.' );
+
+// The single-mega-section expander tags its FAQ subsection instead of pre-converting it.
+$mega_section = array(
+	array(
+		'title'     => '',
+		'body'      => '<h2>Intro</h2><p>Introtekst</p>'
+			. '<h2>Veelgestelde vragen</h2><h3>Vraag A</h3><p>Antwoord A</p>',
+		'title_tag' => 'h2',
+	),
+);
+$expanded = nova_wpb_expand_single_html_section_to_multiple( $mega_section, 'Pagina titel' );
+nova_wpb_check( 2 === count( $expanded ), 'The mega-section split did not produce an intro chunk plus an FAQ chunk.' );
+$faq_chunk = $expanded[1];
+nova_wpb_check( 'Veelgestelde vragen' === $faq_chunk['title'], 'The second chunk was not the FAQ subsection.' );
+nova_wpb_check( isset( $faq_chunk['type'] ) && 'faq' === $faq_chunk['type'], 'The mega-section expander did not tag its FAQ subsection as type:"faq".' );
+nova_wpb_check( false !== strpos( $faq_chunk['body'], '<h3>Vraag A</h3>' ), 'The mega-section expander pre-converted the FAQ body instead of leaving it raw for apply_transformations.' );
+
+$mega_out = nova_wpb_apply_transformations( '', array(), array(), '', $expanded );
+nova_wpb_check(
+	1 === preg_match( '/\[vc_tta_section title="Vraag A" tab_id="[a-f0-9]{8}"\]\[vc_column_text\]Antwoord A\[\/vc_column_text\]\[\/vc_tta_section\]/', $mega_out ),
+	'A FAQ subsection found inside a single mega-section did not become a native accordion.'
+);
+
 nova_wpb_report();
