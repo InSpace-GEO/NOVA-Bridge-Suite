@@ -443,6 +443,100 @@ try {
             'The stored term name did not round-trip.'
         );
 
+        // --- the body Parse translations actually sends, through real arg
+        // --- validation ------------------------------------------------------
+        //
+        // tests/weglot-unit.php calls create_term_translations() directly, so it
+        // can only pin the structural precondition: nothing in
+        // get_term_endpoint_args() sets additionalProperties => false. Whether
+        // rest_validate_value_from_schema() then TOLERATES the extra top-level
+        // content_below_products the flow emits, or 400s the whole request
+        // before the callback runs, is settled only here -- this is the one
+        // dispatch in the suite that goes through WordPress's own validator.
+        //
+        // Verdicts are printed per field rather than folded into one assertion:
+        // a bare "POST /terms returned 400" would not say which of the three
+        // keys the validator objected to. The top-level content_below_products
+        // is deliberately reported and NOT asserted -- it is expected to be
+        // dropped today, because term_ignored_fields()
+        // (class-wgtai-rest-controller.php) names only parent_id, so asserting
+        // it would fail the run on a known, separately-tracked gap instead of
+        // measuring it.
+
+        $probe_slug       = $marker . '-term-slug';
+        $probe_meta_below = '<p>' . $marker . '-below-meta</p>';
+
+        $response = $server->dispatch(
+            nova_weglot_test_request(
+                'POST',
+                '/weglot-translations/v1/terms',
+                [
+                    'source_term_id' => $term_id,
+                    'taxonomy'       => 'product_cat',
+                    'translations'   => [
+                        [
+                            'language'               => $target,
+                            'name'                   => $marker . '-term-name-' . $target,
+                            'slug'                   => $probe_slug,
+                            'content_below_products' => '<p>' . $marker . '-below-top-level</p>',
+                            'meta'                   => [
+                                '_yoast_wpseo_title'     => $marker . '-term-seo-title',
+                                'content_below_products' => $probe_meta_below,
+                            ],
+                        ],
+                    ],
+                ]
+            )
+        );
+
+        $probe_status   = (int) $response->get_status();
+        $probe_data     = $response->get_data();
+        $probe_accepted = in_array($probe_status, [200, 207], true);
+        $probe_result   = $probe_accepted ? ($probe_data['results'][0] ?? []) : [];
+        $probe_payload  = $probe_accepted ? $storage_service->get_term($term_id, $target) : null;
+        $probe_payload  = is_array($probe_payload) ? $probe_payload : [];
+
+        if (! $probe_accepted) {
+            $probe_below = 'not reached (request rejected)';
+        } elseif (array_key_exists('content_below_products', $probe_payload)) {
+            $probe_below = 'STORED as a payload field';
+        } elseif (in_array('content_below_products', (array) ($probe_result['fields'] ?? []), true)) {
+            $probe_below = 'reported in fields[]';
+        } elseif (in_array('content_below_products', (array) ($probe_result['ignored_fields'] ?? []), true)) {
+            $probe_below = 'reported in ignored_fields[]';
+        } else {
+            $probe_below = 'accepted, dropped, NOT reported';
+        }
+
+        $probe_verdict = [
+            'status'                 => $probe_status,
+            'rejected_params'        => $probe_accepted
+                ? []
+                : array_keys((array) ($probe_data['data']['params'] ?? [])),
+            'meta'                   => ($probe_payload['meta']['content_below_products'] ?? null) === $probe_meta_below
+                ? 'stored'
+                : 'NOT stored',
+            'slug'                   => '' !== (string) ($probe_payload['requested_slug'] ?? '')
+                ? 'recorded as requested_slug=' . $probe_payload['requested_slug']
+                : 'NOT recorded',
+            'content_below_products' => $probe_below,
+        ];
+
+        printf("terms flow-body probe: %s\n", wp_json_encode($probe_verdict));
+
+        nova_weglot_test_assert(
+            $probe_accepted,
+            'WordPress arg validation rejected the body the flow sends: ' . wp_json_encode($probe_verdict)
+        );
+        nova_weglot_test_assert(
+            'stored' === $probe_verdict['meta'],
+            'meta did not survive the flow body: ' . wp_json_encode($probe_verdict)
+        );
+        nova_weglot_test_assert(
+            'NOT recorded' !== $probe_verdict['slug'],
+            'slug did not survive the flow body: ' . wp_json_encode($probe_verdict)
+        );
+
         // --- GET /terms/{id}/translations ----------------------------------------
 
         $response = $server->dispatch(
