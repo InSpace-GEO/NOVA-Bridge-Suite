@@ -13,6 +13,7 @@ define('WGTAI_PLUGIN_FILE', __FILE__);
 define('WGTAI_PLUGIN_DIR', plugin_dir_path(__FILE__));
 
 require_once WGTAI_PLUGIN_DIR . 'includes/class-wgtai-language-service.php';
+require_once WGTAI_PLUGIN_DIR . 'includes/class-wgtai-storage-entity.php';
 require_once WGTAI_PLUGIN_DIR . 'includes/class-wgtai-storage-service.php';
 require_once WGTAI_PLUGIN_DIR . 'includes/class-wgtai-render-service.php';
 require_once WGTAI_PLUGIN_DIR . 'includes/class-wgtai-rest-controller.php';
