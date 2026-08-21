@@ -92,6 +92,80 @@ $modern_shortcode = (new \NovaAvadaBridge\Layout_Transformer())->from_layout($mo
 $checks['explicit title size stays unchanged'] =
     '[fusion_title size="3"]New subheading[/fusion_title]' === $modern_shortcode;
 
+$nested_text = $node('fusion_text', '0.0.0.0', '<p>Old copy</p>', [
+    $node('text', '0.0.0.0.0', '<p>Old fragment</p>'),
+    $node('fusion_button', '0.0.0.0.1', 'Keep CTA'),
+    $node('fusion_imageframe', '0.0.0.0.2', 'https://example.com/keep.jpg'),
+    $node('fusion_form', '0.0.0.0.3'),
+]);
+$nested_update = $service->apply_text_updates(
+    ['compact' => [$nested_text]],
+    [['path' => '0.0.0.0', 'text' => '<p>New copy</p>']]
+);
+$checks['nested text target fails safely'] =
+    is_wp_error($nested_update) &&
+    'nova_avada_protected_text_update' === $nested_update->get_error_code() &&
+    422 === ($nested_update->get_error_data()['status'] ?? null) &&
+    '0.0.0.0' === ($nested_update->get_error_data()['path'] ?? null);
+$checks['nested source remains unchanged'] = '<p>Old copy</p>' === $nested_text['text'];
+
+$safe_root = $node('fusion_builder_container', '2', '', [
+    $node('fusion_builder_row', '2.0', '', [
+        $node('fusion_builder_column', '2.0.0', '', [
+            $node('fusion_text', '2.0.0.0', '<p>Editable leaf</p>'),
+            $node('fusion_button', '2.0.0.1', 'Keep CTA'),
+            $node('fusion_imageframe', '2.0.0.2', 'https://example.com/keep.jpg'),
+            $node('fusion_form', '2.0.0.3'),
+        ]),
+    ]),
+]);
+$safe_update = $service->apply_text_updates(
+    ['compact' => [$safe_root]],
+    [['path' => '2.0.0.0', 'text' => '<p>Updated leaf</p>']]
+);
+$checks['leaf text update succeeds'] = !is_wp_error($safe_update);
+$checks['leaf update preserves protected siblings'] =
+    !is_wp_error($safe_update) &&
+    array_slice($safe_root['children'][0]['children'][0]['children'], 1) ===
+        array_slice($safe_update['compact'][0]['children'][0]['children'][0]['children'], 1);
+
+$summary = (new \NovaAvadaBridge\Layout_Transformer())->to_outline_summary([$nested_text]);
+$checks['summary exposes nested child risk'] =
+    true === ($summary[0]['has_children'] ?? false) &&
+    ['text', 'fusion_button', 'fusion_imageframe', 'fusion_form'] === ($summary[0]['child_tags'] ?? []);
+
+$mixed_content = $node('fusion_text', '0', '<p>Mixed copy</p>', [
+    $node('text', '0.0', '<p>Mixed copy</p>'),
+    $node('fusion_button', '0.1', 'Nested CTA'),
+]);
+$mixed_shortcode = (new \NovaAvadaBridge\Layout_Transformer())->from_layout([$mixed_content]);
+$checks['mixed text and shortcode order round-trips without duplication'] =
+    '[fusion_text]<p>Mixed copy</p>[fusion_button]Nested CTA[/fusion_button][/fusion_text]' === $mixed_shortcode;
+
+$unanchored = $service->append_html_block($layout, '<h2>Independent content</h2>');
+$checks['unanchored append creates an independent root'] =
+    !is_wp_error($unanchored) &&
+    3 === count($unanchored['compact']) &&
+    $blogs_root === $unanchored['compact'][1];
+$unanchored_shortcode = !is_wp_error($unanchored)
+    ? (new \NovaAvadaBridge\Layout_Transformer())->from_layout($unanchored['compact'])
+    : '';
+$blogs_position = strpos($unanchored_shortcode, 'Blogs over code 95');
+$independent_position = strpos($unanchored_shortcode, 'Independent content');
+$checks['unanchored append follows existing roots'] =
+    false !== $blogs_position &&
+    false !== $independent_position &&
+    $blogs_position < $independent_position;
+
+$prepare_args = new ReflectionMethod($service, 'prepare_post_args');
+$prepare_args->setAccessible(true);
+$update_args = $prepare_args->invoke($service, [], false);
+$create_args = $prepare_args->invoke($service, [], true);
+$explicit_args = $prepare_args->invoke($service, ['status' => 'private'], false);
+$checks['update without status preserves existing status'] = !isset($update_args['post_status']);
+$checks['create without status defaults to draft'] = 'draft' === ($create_args['post_status'] ?? null);
+$checks['explicit update status remains supported'] = 'private' === ($explicit_args['post_status'] ?? null);
+
 foreach ($checks as $label => $passed) {
     WP_CLI::line(($passed ? 'PASS' : 'FAIL') . '  ' . $label);
 }

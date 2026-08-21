@@ -4,7 +4,7 @@ Tags: seo, automation, content, rest-api, page builder
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.8.0
+Stable tag: 2.8.3
 License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -41,6 +41,20 @@ Yes. If WooCommerce is active you can enable the rich text field module for cate
 1. NOVA Settings screen with module toggles.
 
 == Changelog ==
+
+= 2.8.3 =
+* Keep generated sections in their own template blocks instead of scattering titles and bodies across unrelated parts of a cloned page.
+* Fill content slots built with a theme's own heading and text elements, so generated copy replaces the template's copy instead of being added underneath it.
+* Never overwrite hero, call-to-action, button or image content when filling a cloned template.
+* Report how many slots were filled and how many sections were appended on create responses and round-trip errors.
+* Reuse an empty native WPBakery FAQ accordion in its template position, render its supplied heading immediately before it, and fall back without dropping partial FAQ HTML.
+
+= 2.8.2 =
+* Reject unsafe nested Avada text updates, preserve mixed shortcode content and post status, append overflow in an independent section, and keep rendered Avada content synchronized with its builder mirrors.
+* Save Elementor documents through Elementor's native lifecycle so hooks, canonical metadata, and caches stay synchronized.
+
+= 2.8.1 =
+* Preserve Auxin/Phlox custom page CSS supplied through meta_all.
 
 = 2.8.0 =
 * Serve NOVA's own per-locale content on Weglot sites, so translated pages use your copy instead of a machine translation.

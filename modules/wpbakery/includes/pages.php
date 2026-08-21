@@ -1084,6 +1084,11 @@ function nova_wpb_create_page( $request ) {
 		$using_template  = true;
 	}
 
+	$nova_slot_report = null;
+	if ( $using_template && ! $keep_source_content && ! empty( $append_sections ) ) {
+		$nova_slot_report = nova_wpb_new_slot_report( $append_sections );
+	}
+
 	$builder_payload = nova_wpb_builder_payload_from_params( $params );
 	if ( null !== $builder_payload ) {
 		$validated_updates = nova_wpb_validate_builder_document(
@@ -1092,6 +1097,13 @@ function nova_wpb_create_page( $request ) {
 			false !== strpos( $base_shortcodes, '[vc_' ) || ( $using_template && nova_wpb_has_wpbakery_layout( $source_post ) )
 		);
 		if ( is_wp_error( $validated_updates ) ) {
+			if (
+				'nova_wpb_unsafe_roundtrip' === $validated_updates->get_error_code()
+				&& is_array( $nova_slot_report )
+			) {
+				$nova_slot_report['skipped'] = 'unsafe_roundtrip';
+				$validated_updates = nova_wpb_attach_slot_report_to_error( $validated_updates, $nova_slot_report );
+			}
 			return $validated_updates;
 		}
 		$text_updates = $validated_updates;
@@ -1109,6 +1121,13 @@ function nova_wpb_create_page( $request ) {
 
 		$base_shortcodes = nova_wpb_apply_transformations( $base_shortcodes, $remove_paths, $text_updates, '', array() );
 		if ( is_wp_error( $base_shortcodes ) ) {
+			if (
+				'nova_wpb_unsafe_roundtrip' === $base_shortcodes->get_error_code()
+				&& is_array( $nova_slot_report )
+			) {
+				$nova_slot_report['skipped'] = 'unsafe_roundtrip';
+				$base_shortcodes = nova_wpb_attach_slot_report_to_error( $base_shortcodes, $nova_slot_report );
+			}
 			return $base_shortcodes;
 		}
 		$remove_paths = array();
@@ -1136,7 +1155,8 @@ function nova_wpb_create_page( $request ) {
 			$base_shortcodes,
 			$append_sections,
 			$postarr['post_title'],
-			true
+			true,
+			$nova_slot_report
 		);
 	}
 
@@ -1156,6 +1176,12 @@ function nova_wpb_create_page( $request ) {
 		$append_sections
 	);
 	if ( is_wp_error( $shortcodes ) ) {
+		if (
+			is_array( $nova_slot_report )
+			&& 'unsafe_roundtrip' === ( $nova_slot_report['skipped'] ?? '' )
+		) {
+			$shortcodes = nova_wpb_attach_slot_report_to_error( $shortcodes, $nova_slot_report );
+		}
 		return $shortcodes;
 	}
 
@@ -1208,7 +1234,18 @@ function nova_wpb_create_page( $request ) {
 		update_post_meta( $post_id, '_wpb_vc_js_status', 'true' );
 	}
 
-	return new WP_REST_Response( array( 'id' => $post_id ), 201 );
+	/*
+	 * Additive diagnostics. Existing consumers read .id; this exists so a run that
+	 * filled nothing and appended everything is visible in the response instead of
+	 * only on the rendered page.
+	 */
+	$response_body = array( 'id' => $post_id );
+	if ( is_array( $nova_slot_report ) ) {
+		unset( $nova_slot_report['shell'] );
+		$response_body['nova'] = $nova_slot_report;
+	}
+
+	return new WP_REST_Response( $response_body, 201 );
 }
 
 /**
