@@ -47,6 +47,10 @@ class WP_Error {
 	public function get_error_data() {
 		return $this->data;
 	}
+
+	public function add_data( $data, $code = '' ) {
+		$this->data = $data;
+	}
 }
 
 function is_wp_error( $thing ) {
@@ -517,6 +521,28 @@ $r = null;
 list( $out, $rest ) = nova_wpb_replace_template_slots_with_sections( $nova_wpb_generic_template, array(), '', true, $r );
 nova_wpb_check( $out === $nova_wpb_generic_template && 0 === count( $rest ), 'An empty section list modified the template.' );
 
+// Unsafe round-trip errors retain their coverage data and expose slot diagnostics.
+$coverage_data = array(
+	'status'     => 422,
+	'byte_exact' => false,
+	'source'     => array( 'shortcodes' => 2 ),
+	'serialized' => array( 'shortcodes' => 1 ),
+);
+$coverage_error = new WP_Error( 'nova_wpb_unsafe_roundtrip', 'Unsafe WPBakery document.', $coverage_data );
+$slot_report = nova_wpb_new_slot_report( array( array( 'title' => 'Section' ) ) );
+$slot_report['skipped'] = 'unsafe_roundtrip';
+$slot_report['shell'] = array( 'row' => array( 'el_class' => 'internal' ) );
+$reported_error = nova_wpb_attach_slot_report_to_error( $coverage_error, $slot_report );
+$reported_data  = $reported_error->get_error_data();
+nova_wpb_check( $reported_error === $coverage_error, 'Attaching slot diagnostics replaced the original WP_Error.' );
+nova_wpb_check( 'nova_wpb_unsafe_roundtrip' === $reported_error->get_error_code(), 'Attaching slot diagnostics changed the error code.' );
+nova_wpb_check( 'Unsafe WPBakery document.' === $reported_error->get_error_message(), 'Attaching slot diagnostics changed the error message.' );
+nova_wpb_check( $coverage_data === array_intersect_key( $reported_data, $coverage_data ), 'Attaching slot diagnostics changed round-trip coverage data.' );
+nova_wpb_check( isset( $reported_data['nova'] ) && 'unsafe_roundtrip' === $reported_data['nova']['skipped'] && 1 === $reported_data['nova']['sections_total'], 'Unsafe round-trip diagnostics were not attached to the error.' );
+nova_wpb_check( ! isset( $reported_data['nova']['shell'] ), 'Internal slot shell data leaked into the error response.' );
+nova_wpb_check( 'not-an-error' === nova_wpb_attach_slot_report_to_error( 'not-an-error', $slot_report ), 'A non-error value was changed while attaching diagnostics.' );
+nova_wpb_check( $coverage_error === nova_wpb_attach_slot_report_to_error( $coverage_error, null ), 'A non-array report changed the error.' );
+
 // ---------------------------------------------------------------------------
 // Path helpers
 // ---------------------------------------------------------------------------
@@ -774,6 +800,8 @@ nova_wpb_check( 1 === count( $rest_faq_only ) && 'Veelgestelde vragen' === $rest
 $final = nova_wpb_apply_transformations( $out, array(), array(), '', $rest );
 nova_wpb_check( false !== strpos( $final, '[vc_tta_accordion' ), 'No native vc_tta_accordion was produced end-to-end.' );
 nova_wpb_check( 1 === substr_count( $final, '[vc_tta_accordion' ), 'End-to-end produced more than one accordion for one FAQ section.' );
+nova_wpb_check( 1 === substr_count( $final, '[vc_custom_heading text="Veelgestelde vragen"' ), 'The FAQ section title was not rendered as an overall heading end-to-end.' );
+nova_wpb_check( strpos( $final, '[vc_custom_heading text="Veelgestelde vragen"' ) < strpos( $final, '[vc_tta_accordion' ), 'The FAQ section title was not rendered before its accordion.' );
 nova_wpb_check(
 	1 === preg_match( '/\[vc_tta_section title="Vraag een" tab_id="[a-f0-9]{8}"\]\[vc_column_text\]Antwoord een\[\/vc_column_text\]\[\/vc_tta_section\]/', $final ),
 	'Question one did not become its own vc_tta_section end-to-end.'
@@ -794,6 +822,9 @@ nova_wpb_check( false === strpos( $final, 'ot_faqs' ), 'A theme shortcode (ot_fa
 $faq_only_out = nova_wpb_apply_transformations( '', array(), array(), '', array( $faq_section ) );
 nova_wpb_check( 1 === substr_count( $faq_only_out, '[vc_tta_accordion' ), 'A two-question FAQ section did not produce exactly one accordion.' );
 nova_wpb_check( 2 === substr_count( $faq_only_out, '[vc_tta_section title=' ), 'A two-question FAQ section did not produce two vc_tta_section items.' );
+nova_wpb_check( 1 === substr_count( $faq_only_out, '[vc_custom_heading text="Veelgestelde vragen"' ), 'A FAQ append did not render its supplied section title exactly once.' );
+nova_wpb_check( false !== strpos( $faq_only_out, 'font_container="tag:h2"' ), 'A FAQ append did not honor its supplied H2 title tag.' );
+nova_wpb_check( strpos( $faq_only_out, '[vc_custom_heading text="Veelgestelde vragen"' ) < strpos( $faq_only_out, '[vc_tta_accordion' ), 'A FAQ append rendered its title after the accordion.' );
 nova_wpb_check(
 	1 === preg_match( '/\[vc_tta_section title="Vraag een" tab_id="([a-f0-9]{8})"\]\[vc_column_text\]Antwoord een\[\/vc_column_text\]\[\/vc_tta_section\]/', $faq_only_out, $m1 ),
 	'Question one was not rendered as its own vc_tta_section.'
@@ -810,6 +841,93 @@ nova_wpb_check( false === strpos( $faq_only_out, 'ot_faqs' ), 'A theme shortcode
 $faq_only_out_2 = nova_wpb_apply_transformations( '', array(), array(), '', array( $faq_section ) );
 nova_wpb_check( $faq_only_out === $faq_only_out_2, 'Re-running the same FAQ section produced a different accordion (non-deterministic tab_id).' );
 
+// Reuse the cleared Retoppers FAQ slot instead of appending below template chrome.
+$retoppers_doc = '[vc_row el_class="faq-slot"][vc_column]'
+	. '[vc_column_text el_class="faq-title"]</p><h2>Veelgestelde vragen</h2><p>[/vc_column_text]'
+	. '[vc_tta_accordion style="modern" active_section="2"]'
+	. '[vc_tta_section title="Oud een"][vc_column_text]Oud antwoord een[/vc_column_text][/vc_tta_section]'
+	. '[vc_tta_section title="Oud twee"][vc_column_text]Oud antwoord twee[/vc_column_text][/vc_tta_section]'
+	. '[vc_tta_section title="Oud drie"][vc_column_text]Oud antwoord drie[/vc_column_text][/vc_tta_section]'
+	. '[vc_tta_section title="Oud vier"][vc_column_text]Oud antwoord vier[/vc_column_text][/vc_tta_section]'
+	. '[/vc_tta_accordion][/vc_column][/vc_row]'
+	. '[vc_row][vc_column][vso_auteur_block name="Yarno"][/vc_column][/vc_row]'
+	. '[vc_row][vc_column][vso_laatste_blog_items amount="3"][/vc_column][/vc_row]';
+$retoppers_remove = array(
+	'0.0.0',
+	'0.0.1.0', '0.0.1.0.0',
+	'0.0.1.1', '0.0.1.1.0',
+	'0.0.1.2', '0.0.1.2.0',
+	'0.0.1.3', '0.0.1.3.0',
+);
+$faq_section_three         = $faq_section;
+$faq_section_three['body'] = $faq_section['body'] . '<h3>Vraag drie</h3><p>Antwoord drie</p>';
+$faq_section_three['title'] = 'Nieuwe veelgestelde vragen';
+$faq_section_three['title_tag'] = 'h3';
+
+// PATCH-shaped one pass and CREATE-shaped remove-then-append must be identical.
+$retoppers_out = nova_wpb_apply_transformations( $retoppers_doc, $retoppers_remove, array(), '', array( $faq_section_three ) );
+$retoppers_empty = nova_wpb_apply_transformations( $retoppers_doc, $retoppers_remove, array(), '', array() );
+$retoppers_two_pass = nova_wpb_apply_transformations( $retoppers_empty, array(), array(), '', array( $faq_section_three ) );
+nova_wpb_check( $retoppers_out === $retoppers_two_pass, 'One-pass and two-pass FAQ replacement produced different documents.' );
+nova_wpb_check( 1 === substr_count( $retoppers_out, '[vc_tta_accordion' ), 'An empty template FAQ slot produced a second accordion.' );
+nova_wpb_check( 3 === substr_count( $retoppers_out, '[vc_tta_section title=' ), 'The reused FAQ slot did not receive every generated question.' );
+nova_wpb_check( 3 === substr_count( $retoppers_out, '[vc_row' ), 'Reusing the FAQ slot changed the top-level row count.' );
+nova_wpb_check( false !== strpos( $retoppers_out, '[vc_tta_accordion style="modern" active_section="2"]' ), 'Reusing the FAQ slot discarded its template attributes.' );
+$retoppers_heading_pos = strpos( $retoppers_out, '[vc_custom_heading text="Nieuwe veelgestelde vragen"' );
+$retoppers_faq_pos    = strpos( $retoppers_out, '[vc_tta_accordion' );
+$retoppers_author_pos = strpos( $retoppers_out, 'vso_auteur_block' );
+$retoppers_latest_pos = strpos( $retoppers_out, 'vso_laatste_blog_items' );
+nova_wpb_check( false !== $retoppers_heading_pos && false !== $retoppers_faq_pos && false !== $retoppers_author_pos && false !== $retoppers_latest_pos, 'The transformed document lost a required FAQ heading or template marker.' );
+nova_wpb_check( 1 === substr_count( $retoppers_out, '[vc_custom_heading text="Nieuwe veelgestelde vragen"' ), 'A removed template FAQ heading was not replaced exactly once.' );
+nova_wpb_check( false !== strpos( $retoppers_out, 'font_container="tag:h3"' ), 'The reused FAQ slot did not honor its supplied H3 title tag.' );
+nova_wpb_check( $retoppers_heading_pos < $retoppers_faq_pos, 'The replacement FAQ heading was not inserted before the reused accordion.' );
+nova_wpb_check( $retoppers_faq_pos < $retoppers_author_pos, 'The FAQ moved below the template author block.' );
+nova_wpb_check( $retoppers_faq_pos < $retoppers_latest_pos, 'The FAQ moved below the related-post block.' );
+nova_wpb_check( $retoppers_author_pos < $retoppers_latest_pos, 'Reusing the FAQ slot changed the template chrome order.' );
+nova_wpb_check( false === strpos( $retoppers_out, 'Oud een' ) && false === strpos( $retoppers_out, 'Oud antwoord vier' ), 'Old FAQ content survived the replacement.' );
+nova_wpb_check( $retoppers_doc === nova_wpb_compact_to_shortcodes( nova_wpb_parse_shortcodes_to_compact( $retoppers_doc ) ), 'The empty FAQ template fixture does not round-trip byte-exactly.' );
+
+// A surviving live-style HTML heading is updated in place, not duplicated.
+$retoppers_keep_heading_remove = array_slice( $retoppers_remove, 1 );
+$retoppers_keep_heading_out = nova_wpb_apply_transformations( $retoppers_doc, $retoppers_keep_heading_remove, array(), '', array( $faq_section_three ) );
+nova_wpb_check( 0 === substr_count( $retoppers_keep_heading_out, '[vc_custom_heading' ), 'A surviving FAQ heading caused a second custom heading to be injected.' );
+nova_wpb_check( false !== strpos( $retoppers_keep_heading_out, '[vc_column_text el_class="faq-title"]</p><h3>Nieuwe veelgestelde vragen</h3><p>[/vc_column_text]' ), 'The surviving HTML FAQ heading was not updated in place with its wrapper preserved.' );
+nova_wpb_check( 1 === substr_count( $retoppers_keep_heading_out, 'Nieuwe veelgestelde vragen' ), 'The surviving HTML FAQ heading was duplicated.' );
+
+// A surviving vc_custom_heading is also updated in place with unrelated attributes intact.
+$custom_heading_doc = '[vc_row][vc_column]'
+	. '[vc_custom_heading text="Oude FAQ titel" use_theme_fonts="no" font_container="tag:h2" el_class="keep-heading"]'
+	. '[vc_tta_accordion style="modern"][/vc_tta_accordion]'
+	. '[/vc_column][/vc_row]';
+$custom_heading_out = nova_wpb_apply_transformations( $custom_heading_doc, array(), array(), '', array( $faq_section_three ) );
+nova_wpb_check( 1 === substr_count( $custom_heading_out, '[vc_custom_heading' ), 'Updating a structured FAQ heading created a duplicate heading.' );
+nova_wpb_check( false !== strpos( $custom_heading_out, 'text="Nieuwe veelgestelde vragen"' ), 'The structured FAQ heading text was not updated.' );
+nova_wpb_check( false !== strpos( $custom_heading_out, 'font_container="tag:h3"' ), 'The structured FAQ heading tag was not updated.' );
+nova_wpb_check( false !== strpos( $custom_heading_out, 'use_theme_fonts="no"' ) && false !== strpos( $custom_heading_out, 'el_class="keep-heading"' ), 'Updating the structured FAQ heading discarded unrelated attributes.' );
+
+// Never rewrite a raw/structured block merely because its payload contains one heading.
+$raw_heading_doc = '[vc_row][vc_column]'
+	. '[vc_raw_html]<h2>Do not touch</h2>[/vc_raw_html]'
+	. '[vc_tta_accordion style="modern"][/vc_tta_accordion]'
+	. '[/vc_column][/vc_row]';
+$raw_heading_out = nova_wpb_apply_transformations( $raw_heading_doc, array(), array(), '', array( $faq_section_three ) );
+nova_wpb_check( false !== strpos( $raw_heading_out, '[vc_raw_html]<h2>Do not touch</h2>[/vc_raw_html]' ), 'FAQ heading reuse overwrote a never-slot raw HTML block.' );
+nova_wpb_check( 1 === substr_count( $raw_heading_out, '[vc_custom_heading text="Nieuwe veelgestelde vragen"' ), 'A safe FAQ heading was not inserted after refusing to rewrite raw HTML.' );
+nova_wpb_check( strpos( $raw_heading_out, '[vc_raw_html]' ) < strpos( $raw_heading_out, '[vc_custom_heading' ) && strpos( $raw_heading_out, '[vc_custom_heading' ) < strpos( $raw_heading_out, '[vc_tta_accordion' ), 'The safe FAQ heading was not inserted directly before the accordion.' );
+
+// Ambiguous or occupied accordions are not overwritten; current append fallback remains.
+$ambiguous_doc = '[vc_row][vc_column][vc_tta_accordion][/vc_tta_accordion][/vc_column][/vc_row]'
+	. '[vc_row][vc_column][vc_tta_accordion][/vc_tta_accordion][/vc_column][/vc_row]';
+$ambiguous_out = nova_wpb_apply_transformations( $ambiguous_doc, array(), array(), '', array( $faq_section ) );
+nova_wpb_check( 3 === substr_count( $ambiguous_out, '[vc_tta_accordion' ), 'Multiple empty FAQ slots did not use the append fallback.' );
+nova_wpb_check( 1 === substr_count( $ambiguous_out, '[vc_custom_heading text="Veelgestelde vragen"' ), 'The ambiguous-slot fallback did not render one overall FAQ heading.' );
+
+$occupied_doc = '[vc_row][vc_column][vc_tta_accordion][vc_tta_section title="Bestaand"][vc_column_text]Bestaand antwoord[/vc_column_text][/vc_tta_section][/vc_tta_accordion][/vc_column][/vc_row]';
+$occupied_out = nova_wpb_apply_transformations( $occupied_doc, array(), array(), '', array( $faq_section ) );
+nova_wpb_check( 2 === substr_count( $occupied_out, '[vc_tta_accordion' ), 'A populated accordion was overwritten instead of using the append fallback.' );
+nova_wpb_check( false !== strpos( $occupied_out, 'Bestaand antwoord' ), 'The append fallback modified an existing populated accordion.' );
+nova_wpb_check( 1 === substr_count( $occupied_out, '[vc_custom_heading text="Veelgestelde vragen"' ), 'The occupied-slot fallback did not render one overall FAQ heading.' );
+
 // No "<h3>Q</h3><p>A</p>" pairs: fall back to one item under the section title.
 $faq_no_pairs = array(
 	'title'     => 'Veelgestelde vragen',
@@ -824,10 +942,94 @@ nova_wpb_check(
 	1 === preg_match( '/\[vc_tta_section title="Veelgestelde vragen" tab_id="[a-f0-9]{8}"\]\[vc_column_text\]<p>Gewone tekst zonder vraag-structuur\.<\/p>\[\/vc_column_text\]\[\/vc_tta_section\]/', $fallback_out ),
 	'The no-pairs fallback did not wrap the whole body under the section title.'
 );
+nova_wpb_check( 1 === substr_count( $fallback_out, '[vc_custom_heading text="Veelgestelde vragen"' ), 'The no-pairs fallback did not retain the overall FAQ heading contract.' );
+
+// Partial FAQ conversion is lossless: mixed or malformed bodies fall back whole.
+$partial_faq_bodies = array(
+	'preamble'       => '<p>Inleiding behouden.</p><h3>Vraag een</h3><p>Antwoord een</p>',
+	'empty question' => '<h3>Vraag een</h3><p>Antwoord een</p><h3></h3><p>Los antwoord behouden.</p>',
+	'empty answer'   => '<h3>Vraag een</h3><p>Antwoord een</p><h3>Vraag zonder antwoord</h3>',
+	'unmatched h3'   => '<h3>Vraag een</h3><p>Antwoord een</p><h3>Onvolledig<p>Niet verliezen.</p>',
+);
+foreach ( $partial_faq_bodies as $label => $body ) {
+	nova_wpb_check(
+		$body === nova_wpb_convert_faq_html_to_vc_tta_accordion( $body ),
+		'Partial FAQ conversion lost content: ' . $label
+	);
+}
+
+$faq_with_preamble = $faq_section;
+$faq_with_preamble['body'] = $partial_faq_bodies['preamble'];
+$preamble_slot_doc = '[vc_row][vc_column][vc_tta_accordion style="modern"][/vc_tta_accordion][/vc_column][/vc_row]'
+	. '[vc_row][vc_column][vso_auteur_block name="Yarno"][/vc_column][/vc_row]';
+$preamble_slot_out = nova_wpb_apply_transformations( $preamble_slot_doc, array(), array(), '', array( $faq_with_preamble ) );
+nova_wpb_check( 1 === substr_count( $preamble_slot_out, '[vc_tta_accordion' ), 'A partial FAQ body created a second accordion instead of reusing the template slot.' );
+nova_wpb_check( 1 === substr_count( $preamble_slot_out, '[vc_tta_section title=' ), 'A partial FAQ body did not use the one-item lossless fallback.' );
+nova_wpb_check( false !== strpos( $preamble_slot_out, '<p>Inleiding behouden.</p>' ) && false !== strpos( $preamble_slot_out, '<h3>Vraag een</h3>' ) && false !== strpos( $preamble_slot_out, '<p>Antwoord een</p>' ), 'The lossless FAQ fallback dropped preamble, question, or answer content.' );
+nova_wpb_check( false !== strpos( $preamble_slot_out, '[vc_tta_accordion style="modern"]' ), 'The lossless FAQ fallback discarded template accordion attributes.' );
+nova_wpb_check( strpos( $preamble_slot_out, '[vc_custom_heading text="Veelgestelde vragen"' ) < strpos( $preamble_slot_out, '[vc_tta_accordion' ), 'The lossless FAQ fallback moved its heading below the accordion.' );
+nova_wpb_check( strpos( $preamble_slot_out, '[vc_tta_accordion' ) < strpos( $preamble_slot_out, 'vso_auteur_block' ), 'The lossless FAQ fallback moved below the author block.' );
+
+// Invalid heading tags are normalized to H2; an empty title emits no heading.
+$faq_invalid_tag = $faq_section;
+$faq_invalid_tag['title_tag'] = 'h1';
+$invalid_tag_out = nova_wpb_apply_transformations( '', array(), array(), '', array( $faq_invalid_tag ) );
+nova_wpb_check( false !== strpos( $invalid_tag_out, 'font_container="tag:h2"' ), 'An invalid FAQ heading tag was not normalized to H2.' );
+$faq_empty_title = $faq_section;
+$faq_empty_title['title'] = '';
+$empty_title_out = nova_wpb_apply_transformations( '', array(), array(), '', array( $faq_empty_title ) );
+nova_wpb_check( 0 === substr_count( $empty_title_out, '[vc_custom_heading' ), 'An empty FAQ title emitted an empty heading.' );
+$empty_title_no_pairs = $faq_no_pairs;
+$empty_title_no_pairs['title'] = '';
+$empty_title_no_pairs_out = nova_wpb_apply_transformations( '', array(), array(), '', array( $empty_title_no_pairs ) );
+nova_wpb_check( false !== strpos( $empty_title_no_pairs_out, '<p>Gewone tekst zonder vraag-structuur.</p>' ), 'A titleless unstructured FAQ body was dropped.' );
+nova_wpb_check( 1 === substr_count( $empty_title_no_pairs_out, '[vc_tta_section title="FAQ"' ), 'A titleless unstructured FAQ body did not receive the deterministic fallback item title.' );
+$empty_title_partial = $faq_with_preamble;
+$empty_title_partial['title'] = '';
+$empty_title_partial_out = nova_wpb_apply_transformations( '', array(), array(), '', array( $empty_title_partial ) );
+nova_wpb_check( false !== strpos( $empty_title_partial_out, '<p>Inleiding behouden.</p>' ) && false !== strpos( $empty_title_partial_out, '<h3>Vraag een</h3>' ) && false !== strpos( $empty_title_partial_out, '<p>Antwoord een</p>' ), 'A titleless partial FAQ body was dropped.' );
+nova_wpb_check( 1 === substr_count( $empty_title_partial_out, '[vc_tta_section title="FAQ"' ), 'A titleless partial FAQ body did not receive the deterministic fallback item title.' );
+$empty_title_slot_doc = '[vc_row][vc_column][vc_column_text]<h2>Template FAQ title</h2>[/vc_column_text][vc_tta_accordion][/vc_tta_accordion][/vc_column][/vc_row]';
+$empty_title_slot_out = nova_wpb_apply_transformations( $empty_title_slot_doc, array(), array(), '', array( $faq_empty_title ) );
+nova_wpb_check( false !== strpos( $empty_title_slot_out, '<h2>Template FAQ title</h2>' ), 'An empty supplied FAQ title unexpectedly deleted the template heading.' );
+nova_wpb_check( 0 === substr_count( $empty_title_slot_out, '[vc_custom_heading' ), 'An empty supplied FAQ title injected a duplicate heading into the template slot.' );
 
 // An empty FAQ body must not emit an empty accordion shell.
 $faq_empty = array( 'title' => 'Veelgestelde vragen', 'body' => '', 'title_tag' => 'h2', 'type' => 'faq' );
 nova_wpb_check( '' === nova_wpb_apply_transformations( '', array(), array(), '', array( $faq_empty ) ), 'An empty FAQ section emitted an accordion shell with no content.' );
+
+// The create-time slot filler must preserve a native FAQ row for the final FAQ pass.
+$faq_slot_doc = '[vc_row][vc_column][vc_column_text]<h2>Veelgestelde vragen</h2>[/vc_column_text][vc_tta_accordion][/vc_tta_accordion][/vc_column][/vc_row]';
+$r = null;
+list( $faq_slot_after_fill, $faq_slot_remaining ) = nova_wpb_replace_template_slots_with_sections( $faq_slot_doc, array( $nova_wpb_sections[0] ), '', true, $r );
+nova_wpb_check( $faq_slot_doc === $faq_slot_after_fill, 'The create-time slot filler modified a native FAQ placeholder row.' );
+nova_wpb_check( 0 === $r['slots_found'] && 1 === count( $faq_slot_remaining ), 'The create-time slot filler consumed content into a native FAQ placeholder row.' );
+
+// An FAQ column protects itself without making a sibling content column ineligible.
+$mixed_faq_slot_doc = '[vc_row]'
+	. '[vc_column width="1/2"][vc_custom_heading text="Oude kop" font_container="tag:h2"]'
+	. '[vc_column_text]<p>Oude tekst</p>[/vc_column_text][/vc_column]'
+	. '[vc_column width="1/2"][vc_column_text]<h2>Veelgestelde vragen</h2>[/vc_column_text]'
+	. '[vc_tta_accordion style="modern"][/vc_tta_accordion][/vc_column]'
+	. '[/vc_row]';
+$r = null;
+list( $mixed_faq_slot_out, $mixed_faq_slot_remaining ) = nova_wpb_replace_template_slots_with_sections( $mixed_faq_slot_doc, array( $nova_wpb_sections[0] ), '', true, $r );
+nova_wpb_check( 1 === $r['slots_found'] && 1 === $r['slots_filled'] && 0 === count( $mixed_faq_slot_remaining ), 'An FAQ column made its sibling content column unfillable.' );
+nova_wpb_check( false !== strpos( $mixed_faq_slot_out, 'text="Sectie een"' ) && false !== strpos( $mixed_faq_slot_out, '<p>Body een</p>' ), 'Generated content did not replace the sibling column slot.' );
+nova_wpb_check( false === strpos( $mixed_faq_slot_out, 'Oude kop' ) && false === strpos( $mixed_faq_slot_out, 'Oude tekst' ), 'Old sibling-column copy survived beside generated content.' );
+nova_wpb_check( false !== strpos( $mixed_faq_slot_out, '<h2>Veelgestelde vragen</h2>' ) && false !== strpos( $mixed_faq_slot_out, '[vc_tta_accordion style="modern"]' ), 'Filling a sibling column modified the reserved FAQ column.' );
+
+$nested_faq_slot_doc = '[vc_row][vc_column width="1/1"]'
+	. '[vc_custom_heading text="Oude buitenkop" font_container="tag:h2"]'
+	. '[vc_column_text]<p>Oude buitentekst</p>[/vc_column_text]'
+	. '[vc_row_inner][vc_column_inner width="1/1"][vc_column_text]<h2>Veelgestelde vragen</h2>[/vc_column_text]'
+	. '[vc_tta_accordion style="modern"][/vc_tta_accordion][/vc_column_inner][/vc_row_inner]'
+	. '[/vc_column][/vc_row]';
+$r = null;
+list( $nested_faq_slot_out, $nested_faq_slot_remaining ) = nova_wpb_replace_template_slots_with_sections( $nested_faq_slot_doc, array( $nova_wpb_sections[0] ), '', true, $r );
+nova_wpb_check( 1 === $r['slots_found'] && 1 === $r['slots_filled'] && 0 === count( $nested_faq_slot_remaining ), 'A nested FAQ column made its outer content column unfillable.' );
+nova_wpb_check( false !== strpos( $nested_faq_slot_out, 'text="Sectie een"' ) && false !== strpos( $nested_faq_slot_out, '<p>Body een</p>' ), 'Generated content did not replace the outer slot beside a nested FAQ column.' );
+nova_wpb_check( false !== strpos( $nested_faq_slot_out, '<h2>Veelgestelde vragen</h2>' ) && false !== strpos( $nested_faq_slot_out, '[vc_tta_accordion style="modern"]' ), 'Filling an outer slot modified its nested FAQ column.' );
 
 // The single-mega-section expander tags its FAQ subsection instead of pre-converting it.
 $mega_section = array(

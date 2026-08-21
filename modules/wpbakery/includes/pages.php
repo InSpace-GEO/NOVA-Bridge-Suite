@@ -1084,6 +1084,11 @@ function nova_wpb_create_page( $request ) {
 		$using_template  = true;
 	}
 
+	$nova_slot_report = null;
+	if ( $using_template && ! $keep_source_content && ! empty( $append_sections ) ) {
+		$nova_slot_report = nova_wpb_new_slot_report( $append_sections );
+	}
+
 	$builder_payload = nova_wpb_builder_payload_from_params( $params );
 	if ( null !== $builder_payload ) {
 		$validated_updates = nova_wpb_validate_builder_document(
@@ -1092,6 +1097,13 @@ function nova_wpb_create_page( $request ) {
 			false !== strpos( $base_shortcodes, '[vc_' ) || ( $using_template && nova_wpb_has_wpbakery_layout( $source_post ) )
 		);
 		if ( is_wp_error( $validated_updates ) ) {
+			if (
+				'nova_wpb_unsafe_roundtrip' === $validated_updates->get_error_code()
+				&& is_array( $nova_slot_report )
+			) {
+				$nova_slot_report['skipped'] = 'unsafe_roundtrip';
+				$validated_updates = nova_wpb_attach_slot_report_to_error( $validated_updates, $nova_slot_report );
+			}
 			return $validated_updates;
 		}
 		$text_updates = $validated_updates;
@@ -1109,6 +1121,13 @@ function nova_wpb_create_page( $request ) {
 
 		$base_shortcodes = nova_wpb_apply_transformations( $base_shortcodes, $remove_paths, $text_updates, '', array() );
 		if ( is_wp_error( $base_shortcodes ) ) {
+			if (
+				'nova_wpb_unsafe_roundtrip' === $base_shortcodes->get_error_code()
+				&& is_array( $nova_slot_report )
+			) {
+				$nova_slot_report['skipped'] = 'unsafe_roundtrip';
+				$base_shortcodes = nova_wpb_attach_slot_report_to_error( $base_shortcodes, $nova_slot_report );
+			}
 			return $base_shortcodes;
 		}
 		$remove_paths = array();
@@ -1123,7 +1142,6 @@ function nova_wpb_create_page( $request ) {
 	}
 
 	// Replace template slots instead of appending duplicates.
-	$nova_slot_report = null;
 	if ( $using_template && ! $keep_source_content && ! empty( $append_sections ) && is_array( $append_sections ) ) {
 		if ( ! function_exists( 'nova_wpb_replace_template_slots_with_sections' ) ) {
 			return new WP_Error(
@@ -1158,6 +1176,12 @@ function nova_wpb_create_page( $request ) {
 		$append_sections
 	);
 	if ( is_wp_error( $shortcodes ) ) {
+		if (
+			is_array( $nova_slot_report )
+			&& 'unsafe_roundtrip' === ( $nova_slot_report['skipped'] ?? '' )
+		) {
+			$shortcodes = nova_wpb_attach_slot_report_to_error( $shortcodes, $nova_slot_report );
+		}
 		return $shortcodes;
 	}
 

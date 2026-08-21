@@ -55,9 +55,15 @@ function nova_wpb_normalize_compact_tree( $compact ) {
  */
 function nova_wpb_convert_faq_html_to_vc_tta_accordion( $html ) {
 	$html = (string) $html;
+	$pattern = '/<h3\b[^>]*>(.*?)<\/h3>\s*([\s\S]*?)(?=<h3\b|$)/i';
 
 	// Capture h3 blocks and everything until next h3 (or end).
-	if ( ! preg_match_all( '/<h3\b[^>]*>(.*?)<\/h3>\s*([\s\S]*?)(?=<h3\b|$)/i', $html, $ms, PREG_SET_ORDER ) ) {
+	if ( ! preg_match_all( $pattern, $html, $ms, PREG_SET_ORDER ) ) {
+		return $html;
+	}
+
+	// Convert atomically: never discard content outside recognised Q/A blocks.
+	if ( trim( implode( '', array_column( $ms, 0 ) ) ) !== trim( $html ) ) {
 		return $html;
 	}
 
@@ -67,7 +73,7 @@ function nova_wpb_convert_faq_html_to_vc_tta_accordion( $html ) {
 		$a = trim( (string) $m[2] );
 
 		if ( '' === $q || '' === $a ) {
-			continue;
+			return $html;
 		}
 
 		// If answer is wrapped in a single <p>...</p>, unwrap it.
@@ -91,6 +97,204 @@ function nova_wpb_convert_faq_html_to_vc_tta_accordion( $html ) {
 	}
 
 	return '[vc_tta_accordion style="flat" active_section="1" collapsible_all="true"]' . $sections . '[/vc_tta_accordion]';
+}
+
+function nova_wpb_faq_heading_data( $section ) {
+	$title = isset( $section['title'] ) ? wp_strip_all_tags( (string) $section['title'] ) : '';
+	$tag   = isset( $section['title_tag'] ) ? strtolower( trim( (string) $section['title_tag'] ) ) : 'h2';
+	if ( ! in_array( $tag, array( 'h2', 'h3', 'h4' ), true ) ) {
+		$tag = 'h2';
+	}
+
+	return array( $title, $tag );
+}
+
+/**
+ * Render one append_sections type:"faq" entry as a native WPBakery accordion.
+ */
+function nova_wpb_render_faq_section( $section ) {
+	list( $faq_title ) = nova_wpb_faq_heading_data( $section );
+	$faq_body_raw = isset( $section['body'] ) ? wp_kses_post( (string) $section['body'] ) : '';
+	$accordion    = ( '' !== trim( $faq_body_raw ) )
+		? nova_wpb_convert_faq_html_to_vc_tta_accordion( $faq_body_raw )
+		: '';
+
+	// Body not fully representable as Q/A pairs: keep it whole under the section title.
+	if ( $accordion === $faq_body_raw ) {
+		$fallback_title = '' !== trim( $faq_title ) ? $faq_title : __( 'FAQ', 'nova-bridge' );
+		$accordion = ( '' !== trim( $faq_body_raw ) )
+			? '[vc_tta_accordion style="flat" active_section="1" collapsible_all="true"]'
+				. '[vc_tta_section title="' . esc_attr( $fallback_title ) . '" tab_id="' . esc_attr( substr( md5( $fallback_title ), 0, 8 ) ) . '"]'
+				. '[vc_column_text]' . $faq_body_raw . '[/vc_column_text]'
+				. '[/vc_tta_section][/vc_tta_accordion]'
+			: '';
+	}
+
+	return $accordion;
+}
+
+/**
+ * Update a heading immediately before an FAQ accordion without replacing its wrapper.
+ */
+function nova_wpb_update_faq_heading_node( &$node, $title, $title_tag ) {
+	if ( ! is_array( $node ) ) {
+		return false;
+	}
+
+	$tag = isset( $node['tag'] ) ? (string) $node['tag'] : '';
+	if ( 'vc_custom_heading' === $tag ) {
+		nova_wpb_write_heading_node( $node, $title, $title_tag, 'text' );
+		return true;
+	}
+
+	$carrier = nova_wpb_slot_carrier_for_node( $node );
+	if ( is_array( $carrier ) && 'heading' === $carrier['kind'] ) {
+		nova_wpb_write_heading_node( $node, $title, $title_tag, $carrier['field'] );
+		return true;
+	}
+	if ( ! is_array( $carrier ) || 'text' !== $carrier['kind'] ) {
+		return false;
+	}
+
+	if ( ! empty( $node['children'] ) || empty( $node['text'] ) ) {
+		return false;
+	}
+
+	$pattern = '/<h([2-4])\b([^>]*)>[\s\S]*?<\/h\1>/i';
+	$html    = (string) $node['text'];
+	if ( 1 !== preg_match_all( $pattern, $html ) ) {
+		return false;
+	}
+	$outside = preg_replace( $pattern, '', $html, 1 );
+	if ( '' !== trim( wp_strip_all_tags( (string) $outside ) ) ) {
+		return false;
+	}
+
+	$safe_title   = esc_html( wp_strip_all_tags( (string) $title ) );
+	$node['text'] = preg_replace_callback(
+		$pattern,
+		function ( $match ) use ( $safe_title, $title_tag ) {
+			return '<' . $title_tag . $match[2] . '>' . $safe_title . '</' . $title_tag . '>';
+		},
+		$html,
+		1
+	);
+	$node['__nova_keep'] = true;
+
+	return true;
+}
+
+/**
+ * Reuse an adjacent FAQ heading or insert one directly before the accordion.
+ */
+function nova_wpb_ensure_faq_heading_before_path( &$compact, $accordion_path, $title, $title_tag ) {
+	if ( '' === trim( (string) $title ) ) {
+		return false;
+	}
+
+	$parent_path = nova_wpb_path_parent( $accordion_path );
+	$index       = nova_wpb_path_index( $accordion_path );
+	$updated     = false;
+	if ( $index > 0 ) {
+		if ( '' === $parent_path ) {
+			if ( isset( $compact[ $index - 1 ] ) ) {
+				$updated = nova_wpb_update_faq_heading_node( $compact[ $index - 1 ], $title, $title_tag );
+			}
+		} else {
+			nova_wpb_walk_to_path(
+				$compact,
+				$parent_path,
+				function ( &$parent ) use ( $index, $title, $title_tag, &$updated ) {
+					if ( isset( $parent['children'][ $index - 1 ] ) ) {
+						$updated = nova_wpb_update_faq_heading_node( $parent['children'][ $index - 1 ], $title, $title_tag );
+					}
+				}
+			);
+		}
+	}
+
+	if ( $updated ) {
+		return true;
+	}
+
+	return nova_wpb_insert_child_at(
+		$compact,
+		$parent_path,
+		$index,
+		nova_wpb_make_heading_node( $title, $title_tag )
+	);
+}
+
+/**
+ * Collect paths for native accordion placeholders that contain no content.
+ */
+function nova_wpb_collect_empty_accordion_paths( $compact ) {
+	$paths = array();
+	$walk  = function ( $nodes, $prefix = '' ) use ( &$walk, &$paths ) {
+		foreach ( (array) $nodes as $idx => $node ) {
+			if ( ! is_array( $node ) ) {
+				continue;
+			}
+
+			$path     = '' === $prefix ? (string) $idx : $prefix . '.' . $idx;
+			$children = isset( $node['children'] ) && is_array( $node['children'] ) ? $node['children'] : array();
+			$text     = isset( $node['text'] ) ? (string) $node['text'] : '';
+
+			$tag    = isset( $node['tag'] ) ? (string) $node['tag'] : '';
+			$syntax = isset( $node['syntax'] ) ? (string) $node['syntax'] : '';
+			if ( 'vc_tta_accordion' === $tag && 'paired' === $syntax && empty( $children ) && '' === trim( $text ) ) {
+				$paths[] = $path;
+			}
+
+			if ( ! empty( $children ) ) {
+				$walk( $children, $path );
+			}
+		}
+	};
+
+	$walk( $compact );
+	return $paths;
+}
+
+/**
+ * Fill one unambiguous native accordion placeholder without moving its row.
+ */
+function nova_wpb_fill_unique_empty_accordion( &$compact, $accordion_shortcode, $heading_title = '', $heading_tag = 'h2' ) {
+	$paths = nova_wpb_collect_empty_accordion_paths( $compact );
+	if ( 1 !== count( $paths ) || '' === trim( (string) $accordion_shortcode ) ) {
+		return false;
+	}
+
+	$generated = nova_wpb_parse_shortcodes_to_compact( $accordion_shortcode );
+	if (
+		1 !== count( $generated )
+		|| ! isset( $generated[0]['tag'] )
+		|| 'vc_tta_accordion' !== (string) $generated[0]['tag']
+		|| empty( $generated[0]['children'] )
+	) {
+		return false;
+	}
+	foreach ( $generated[0]['children'] as $child ) {
+		if ( ! is_array( $child ) || ! isset( $child['tag'] ) || 'vc_tta_section' !== (string) $child['tag'] ) {
+			return false;
+		}
+	}
+
+	$filled   = false;
+	$children = $generated[0]['children'];
+	nova_wpb_walk_to_path(
+		$compact,
+		$paths[0],
+		function ( &$node ) use ( $children, &$filled ) {
+			$node['children'] = $children;
+			$filled = true;
+		}
+	);
+	if ( $filled && '' !== trim( (string) $heading_title ) ) {
+		nova_wpb_ensure_faq_heading_before_path( $compact, $paths[0], $heading_title, $heading_tag );
+	}
+
+	return $filled;
 }
 
 /**
@@ -253,6 +457,39 @@ function nova_wpb_apply_transformations( $shortcodes, $remove_paths, $text_updat
 		$compact = nova_wpb_remove_paths_from_compact( $compact, $remove_paths );
 	}
 
+	/*
+	 * A cloned template may already reserve the correct row for its FAQ. The create
+	 * flow clears the old vc_tta_section children first, leaving one empty accordion.
+	 * Reuse that unambiguous structural placeholder instead of moving the replacement
+	 * below author, related-post or other template-owned rows.
+	 */
+	if ( ! empty( $append_sections ) && is_array( $append_sections ) ) {
+		$faq_indexes = array();
+		foreach ( $append_sections as $idx => $section ) {
+			$type = isset( $section['type'] ) ? strtolower( (string) $section['type'] ) : '';
+			if ( 'faq' === $type ) {
+				$faq_indexes[] = $idx;
+			}
+		}
+
+		if ( 1 === count( $faq_indexes ) ) {
+			$idx = $faq_indexes[0];
+			list( $faq_title, $faq_title_tag ) = nova_wpb_faq_heading_data( $append_sections[ $idx ] );
+			$faq_accordion = nova_wpb_render_faq_section( $append_sections[ $idx ] );
+			if (
+				nova_wpb_fill_unique_empty_accordion(
+					$compact,
+					$faq_accordion,
+					$faq_title,
+					$faq_title_tag
+				)
+			) {
+				unset( $append_sections[ $idx ] );
+			}
+		}
+		$append_sections = array_values( $append_sections );
+	}
+
 	$shortcodes = nova_wpb_compact_to_shortcodes( $compact );
 
 	// Append HTML as one extra Text Block.
@@ -269,32 +506,18 @@ function nova_wpb_apply_transformations( $shortcodes, $remove_paths, $text_updat
 		foreach ( $append_sections as $section ) {
 			// FAQ section type support.
 			if ( isset( $section['type'] ) && 'faq' === strtolower( (string) $section['type'] ) ) {
-				$faq_title    = isset( $section['title'] ) ? wp_strip_all_tags( (string) $section['title'] ) : '';
-				$faq_body_raw = isset( $section['body'] ) ? wp_kses_post( (string) $section['body'] ) : '';
-
-				/*
-				 * A body shaped as "<h3>Q</h3><p>A</p>..." explodes into one vc_tta_section
-				 * per question inside one vc_tta_accordion (same helper the single-mega-section
-				 * expander uses) -- WPBakery's own accordion element, not a theme shortcode
-				 * (NOVA-268: ot_faqs only renders on themes that happen to register it).
-				 */
-				$faq_accordion = ( '' !== trim( $faq_body_raw ) && function_exists( 'nova_wpb_convert_faq_html_to_vc_tta_accordion' ) )
-					? nova_wpb_convert_faq_html_to_vc_tta_accordion( $faq_body_raw )
-					: $faq_body_raw;
-
-				// No "<h3>Q</h3><p>A</p>" pairs found: one item under the section title.
-				if ( $faq_accordion === $faq_body_raw ) {
-					$faq_accordion = ( '' !== trim( $faq_title ) && '' !== trim( $faq_body_raw ) )
-						? '[vc_tta_accordion style="flat" active_section="1" collapsible_all="true"]'
-							. '[vc_tta_section title="' . esc_attr( $faq_title ) . '" tab_id="' . esc_attr( substr( md5( $faq_title ), 0, 8 ) ) . '"]'
-							. '[vc_column_text]' . $faq_body_raw . '[/vc_column_text]'
-							. '[/vc_tta_section][/vc_tta_accordion]'
-						: '';
-				}
+				list( $faq_title, $faq_title_tag ) = nova_wpb_faq_heading_data( $section );
+				$faq_accordion = nova_wpb_render_faq_section( $section );
 
 				if ( '' !== trim( $faq_accordion ) ) {
 					// vc_tta_accordion is a structural WPBakery element, a row/column sibling.
-					$shortcodes .= '[vc_row][vc_column]' . $faq_accordion . '[/vc_column][/vc_row]';
+					$shortcodes .= '[vc_row][vc_column]';
+					if ( '' !== trim( $faq_title ) ) {
+						$shortcodes .= nova_wpb_compact_to_shortcodes(
+							array( nova_wpb_make_heading_node( $faq_title, $faq_title_tag ) )
+						);
+					}
+					$shortcodes .= $faq_accordion . '[/vc_column][/vc_row]';
 				}
 				continue;
 			}
@@ -1083,6 +1306,43 @@ function nova_wpb_row_is_slot_eligible( $row ) {
 }
 
 /**
+ * A native FAQ placeholder reserves its own column, not every sibling column.
+ */
+function nova_wpb_is_reserved_faq_column( $node ) {
+	if ( ! is_array( $node ) ) {
+		return false;
+	}
+
+	$tag = isset( $node['tag'] ) ? (string) $node['tag'] : '';
+	if ( ! in_array( $tag, array( 'vc_column', 'vc_column_inner' ), true ) ) {
+		return false;
+	}
+
+	$walk = function ( $children ) use ( &$walk ) {
+		foreach ( (array) $children as $child ) {
+			if ( ! is_array( $child ) ) {
+				continue;
+			}
+
+			$child_tag = isset( $child['tag'] ) ? (string) $child['tag'] : '';
+			if ( 'vc_tta_accordion' === $child_tag ) {
+				return true;
+			}
+			if ( in_array( $child_tag, array( 'vc_column', 'vc_column_inner' ), true ) ) {
+				continue;
+			}
+			if ( ! empty( $child['children'] ) && $walk( $child['children'] ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	};
+
+	return $walk( isset( $node['children'] ) ? $node['children'] : array() );
+}
+
+/**
  * Path helpers. Paths are dot-separated child indices into the compact tree,
  * the same scheme layout.outline exposes.
  */
@@ -1323,6 +1583,14 @@ function nova_wpb_collect_slot_candidates( $compact, &$eligible_rows = null, &$i
 				$ctag  = isset( $child['tag'] ) ? (string) $child['tag'] : '';
 				$scope = $column_path;
 
+				// Reserve only the FAQ-bearing column; sibling content columns stay fillable.
+				if ( nova_wpb_is_reserved_faq_column( $child ) ) {
+					continue;
+				}
+				if ( 'vc_tta_accordion' === $ctag ) {
+					continue;
+				}
+
 				if ( 'vc_column' === $ctag || 'vc_column_inner' === $ctag ) {
 					$scope = $cpath;
 				} else {
@@ -1413,6 +1681,43 @@ function nova_wpb_collect_slot_candidates( $compact, &$eligible_rows = null, &$i
 }
 
 /**
+ * Start a create-time slot report before any template transformation can fail.
+ */
+function nova_wpb_new_slot_report( $sections ) {
+	$total = is_array( $sections ) ? count( $sections ) : 0;
+
+	return array(
+		'slots_found'          => 0,
+		'slots_filled'         => 0,
+		'sections_total'       => $total,
+		'sections_appended'    => $total,
+		'headings_injected'    => 0,
+		'text_blocks_injected' => 0,
+		'rows_eligible'        => 0,
+		'rows_ineligible'      => 0,
+		'skipped'              => '',
+		'shell'                => null,
+	);
+}
+
+/**
+ * Preserve an existing WP_Error while exposing the create-time slot report.
+ */
+function nova_wpb_attach_slot_report_to_error( $error, $report ) {
+	if ( ! is_wp_error( $error ) || ! is_array( $report ) ) {
+		return $error;
+	}
+
+	unset( $report['shell'] );
+	$data = $error->get_error_data();
+	$data = is_array( $data ) ? $data : array();
+	$data['nova'] = $report;
+	$error->add_data( $data );
+
+	return $error;
+}
+
+/**
  * Replace template slots with sections while preserving template layout.
  *
  * $report (by reference, optional) receives per-run diagnostics; see
@@ -1422,18 +1727,7 @@ function nova_wpb_replace_template_slots_with_sections( $shortcodes, $sections, 
 	$shortcodes = (string) $shortcodes;
 	$sections   = is_array( $sections ) ? array_values( $sections ) : array();
 
-	$report = array(
-		'slots_found'          => 0,
-		'slots_filled'         => 0,
-		'sections_total'       => count( $sections ),
-		'sections_appended'    => count( $sections ),
-		'headings_injected'    => 0,
-		'text_blocks_injected' => 0,
-		'rows_eligible'        => 0,
-		'rows_ineligible'      => 0,
-		'skipped'              => '',
-		'shell'                => null,
-	);
+	$report = nova_wpb_new_slot_report( $sections );
 
 	if ( '' === $shortcodes || empty( $sections ) ) {
 		return array( $shortcodes, $sections );
@@ -1604,6 +1898,10 @@ function nova_wpb_replace_template_slots_with_sections( $shortcodes, $sections, 
 		$walk_clear = function ( &$nodes ) use ( &$walk_clear ) {
 			foreach ( $nodes as &$node ) {
 				if ( ! is_array( $node ) ) {
+					continue;
+				}
+				$tag = isset( $node['tag'] ) ? (string) $node['tag'] : '';
+				if ( nova_wpb_is_reserved_faq_column( $node ) || 'vc_tta_accordion' === $tag ) {
 					continue;
 				}
 
