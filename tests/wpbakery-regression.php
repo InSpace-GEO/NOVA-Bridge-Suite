@@ -163,4 +163,60 @@ $coverage_error = nova_wpb_validate_roundtrip_coverage( $shortcodes, $incomplete
 nova_wpb_test_assert( is_wp_error( $coverage_error ), 'Incomplete compact data passed the fail-closed coverage check.' );
 nova_wpb_test_assert( 422 === (int) $coverage_error->get_error_data()['status'], 'Coverage failure did not return HTTP 422 metadata.' );
 
-echo 'PASS: lossless WPBakery/Salient parsing, field-qualified edits, and fail-closed URL/coverage checks.' . PHP_EOL;
+nova_wpb_test_assert( function_exists( 'nova_wpb_replace_template_slots_with_sections' ), 'The WPBakery slot replacer is not loaded.' );
+
+/*
+ * NOVA-268: a cloned content-filled template must keep its chrome, pair each section's
+ * title with its own body, and fill slots built from the theme's own text elements
+ * rather than appending everything below the template's copy.
+ */
+$template = '[vc_row el_id="hero"][vc_column width="1/1"]'
+	. '[vc_custom_heading text="Hero titel" font_container="tag:h1"]'
+	. '[vc_column_text]<p>Hero copy</p>[/vc_column_text]'
+	. '[vc_btn title="Vraag offerte aan" link="url:%2Fofferte%2F"]'
+	. '[/vc_column][/vc_row]'
+	. '[vc_row el_id="slot-a" el_class="content"][vc_column width="1/1"]'
+	. '[split_line_heading text_content="Oude Salient kop"]'
+	. '[nectar_responsive_text font_size="18"]<p>Oude Salient tekst</p>[/nectar_responsive_text]'
+	. '[nectar_btn text="Lees meer" url="/meer/"]'
+	. '[/vc_column][/vc_row]'
+	. '[vc_row el_class="content"][vc_column width="1/1"]'
+	. '[vc_custom_heading text="Oude kop B" font_container="tag:h2"]'
+	. '[vc_column_text]<p>Oude tekst B</p>[/vc_column_text]'
+	. '[/vc_column][/vc_row]';
+
+$slot_sections = array(
+	array( 'title' => 'Sectie een', 'body' => '<p>Body een</p>', 'title_tag' => 'h2' ),
+	array( 'title' => 'Sectie twee', 'body' => '<p>Body twee</p>', 'title_tag' => 'h2' ),
+	array( 'title' => 'Sectie drie', 'body' => '<p>Body drie</p>', 'title_tag' => 'h2' ),
+);
+
+$slot_report = null;
+list( $slot_filled, $slot_left ) = nova_wpb_replace_template_slots_with_sections( $template, $slot_sections, 'Pagina titel', true, $slot_report );
+
+nova_wpb_test_assert( 2 === $slot_report['slots_found'], 'Expected two eligible slots, got ' . $slot_report['slots_found'] . '.' );
+nova_wpb_test_assert( 2 === $slot_report['slots_filled'], 'Both content slots should have been filled.' );
+nova_wpb_test_assert( 1 === count( $slot_left ), 'The third section should overflow.' );
+
+nova_wpb_test_assert( false !== strpos( $slot_filled, 'text="Hero titel"' ), 'The hero heading was overwritten.' );
+nova_wpb_test_assert( false !== strpos( $slot_filled, '<p>Hero copy</p>' ), 'The hero copy was overwritten.' );
+nova_wpb_test_assert( false !== strpos( $slot_filled, 'title="Vraag offerte aan"' ), 'The hero button was destroyed.' );
+
+nova_wpb_test_assert( false !== strpos( $slot_filled, 'text_content="Sectie een"' ), 'A Salient heading slot did not receive the section title.' );
+nova_wpb_test_assert( false !== strpos( $slot_filled, '<p>Body een</p>' ), 'A Salient body slot did not receive the section body.' );
+nova_wpb_test_assert( false === strpos( $slot_filled, 'Oude Salient kop' ), 'The Salient template copy survived next to the generated copy.' );
+nova_wpb_test_assert( false === strpos( $slot_filled, 'Oude Salient tekst' ), 'The Salient template body survived next to the generated copy.' );
+nova_wpb_test_assert( false !== strpos( $slot_filled, 'text="Lees meer"' ), 'A button inside a filled row was overwritten.' );
+
+nova_wpb_test_assert( false !== strpos( $slot_filled, 'text="Sectie twee"' ), 'The second section did not fill the second slot.' );
+nova_wpb_test_assert(
+	strpos( $slot_filled, 'Sectie een' ) < strpos( $slot_filled, 'Body een' )
+	&& strpos( $slot_filled, 'Body een' ) < strpos( $slot_filled, 'Sectie twee' )
+	&& strpos( $slot_filled, 'Sectie twee' ) < strpos( $slot_filled, 'Body twee' ),
+	'Section titles and bodies desynced across slots.'
+);
+
+nova_wpb_test_assert( is_array( $slot_report['shell'] ) && ! isset( $slot_report['shell']['row']['el_id'] ), 'The overflow shell would duplicate a DOM id.' );
+nova_wpb_test_assert( '' === $slot_report['skipped'], 'A healthy document reported a skip reason.' );
+
+echo 'PASS: lossless WPBakery/Salient parsing, field-qualified edits, fail-closed URL/coverage checks, and NOVA-268 slot filling.' . PHP_EOL;
