@@ -54,6 +54,29 @@ class WP_REST_Controller
 {
     protected $namespace = '';
     protected $rest_base = '';
+
+    /**
+     * Trimmed stand-in for WP's own: derives endpoint args from the
+     * controller's item schema. Faithful enough that the /posts route's args
+     * are non-empty here, so a regression that empties them is visible rather
+     * than hidden behind a stub that always returned [].
+     *
+     * @return array<string,mixed>
+     */
+    public function get_endpoint_args_for_item_schema($method = 'GET'): array
+    {
+        $schema     = method_exists($this, 'get_item_schema') ? $this->get_item_schema() : [];
+        $properties = isset($schema['properties']) && is_array($schema['properties']) ? $schema['properties'] : [];
+        $required   = isset($schema['required']) && is_array($schema['required']) ? $schema['required'] : [];
+        $args       = [];
+
+        foreach ($properties as $field => $params) {
+            $args[$field]             = is_array($params) ? $params : [];
+            $args[$field]['required'] = in_array($field, $required, true);
+        }
+
+        return $args;
+    }
 }
 
 function is_wp_error($thing): bool
@@ -66,11 +89,28 @@ $GLOBALS['wgtai_test_filters'] = [];
 $GLOBALS['wgtai_test_posts']   = [];
 $GLOBALS['wgtai_test_context'] = [
     'is_admin'    => false,
-    'is_singular' => true,
+    // No 'is_singular' flag on purpose: is_singular() below computes it from
+    // the page-type booleans instead of reading a switch that defaulted to
+    // true regardless of what else the context claimed to be.
+    'is_tax'       => false,
+    'is_category'  => false,
+    'is_tag'       => false,
+    'is_feed'      => false,
+    'queried_object' => null,
     'queried_id'  => 0,
     'current_id'  => 0,
     'current_lang' => '',
 ];
+
+// Second, deliberately separate in-memory store for term meta. Kept apart from
+// wgtai_test_meta (post meta) so a seam wired to the wrong table -- a term read
+// that resolves through get_post_meta(), or vice versa -- reads back empty or
+// wrong data instead of accidentally finding the right value in a table that
+// happens to share the request's numeric id.
+$GLOBALS['wgtai_test_termmeta']          = [];
+$GLOBALS['wgtai_test_terms']             = [];
+$GLOBALS['wgtai_test_taxonomies']        = [];
+$GLOBALS['wgtai_test_registered_routes'] = [];
 
 function add_action($hook, $callback, $priority = 10, $args = 1): void
 {
@@ -84,14 +124,20 @@ function add_filter($hook, $callback, $priority = 10, $args = 1): void
 
 $GLOBALS['wgtai_test_filter_returns'] = [];
 
-function apply_filters($hook, $value)
+function apply_filters($hook, $value, ...$args)
 {
+    // Variadic on purpose: apply_filters($hook, $value) used to drop every
+    // argument after $value, which made a 2+-arg filter (e.g. WooCommerce's
+    // woocommerce_taxonomy_archive_description_raw($desc, $term)) impossible to
+    // exercise here -- a callback registered with more than one declared
+    // parameter would only ever see the first.
+    //
     // Lets a check stand in for a site that hooks one of the module's documented
     // extension points, which the pass-through stub could not express.
     if (array_key_exists($hook, $GLOBALS['wgtai_test_filter_returns'])) {
         $override = $GLOBALS['wgtai_test_filter_returns'][$hook];
 
-        return $override instanceof Closure ? $override($value) : $override;
+        return $override instanceof Closure ? $override($value, ...$args) : $override;
     }
 
     return $value;
@@ -229,10 +275,19 @@ function wp_unslash($value)
     return stripslashes_deep($value);
 }
 
+$GLOBALS['wgtai_test_denied_caps'] = [];
+
 function current_user_can($capability, $object_id = null): bool
 {
     // Force the kses path in the storage service.
-    return 'unfiltered_html' !== $capability;
+    if ('unfiltered_html' === $capability) {
+        return false;
+    }
+
+    // Lets a REST permissions_check() check simulate a user who lacks one
+    // specific capability, without disturbing every other call site (which
+    // still gets the default "yes" the storage/sanitiser checks rely on).
+    return ! in_array($capability, $GLOBALS['wgtai_test_denied_caps'], true);
 }
 
 function trailingslashit($value)
@@ -252,14 +307,247 @@ function get_permalink($post_id)
     return $post ? 'https://example.com/' . $post->post_name . '/' : false;
 }
 
+class WP_Term
+{
+    public int $term_id;
+    public string $name;
+    public string $slug;
+    public string $description;
+    public string $taxonomy;
+    public int $parent;
+
+    public function __construct(array $args)
+    {
+        $this->term_id     = (int) ($args['term_id'] ?? 0);
+        $this->name        = (string) ($args['name'] ?? '');
+        $this->slug        = (string) ($args['slug'] ?? '');
+        $this->description = (string) ($args['description'] ?? '');
+        $this->taxonomy    = (string) ($args['taxonomy'] ?? '');
+        $this->parent      = (int) ($args['parent'] ?? 0);
+    }
+}
+
+/**
+ * @return WP_Term|WP_Error
+ */
+function get_term($term_id, $taxonomy = '')
+{
+    $term = $GLOBALS['wgtai_test_terms'][(int) $term_id] ?? null;
+
+    if (! $term instanceof WP_Term) {
+        return new WP_Error('invalid_term', 'Invalid term ID.');
+    }
+
+    if ('' !== $taxonomy && $term->taxonomy !== $taxonomy) {
+        return new WP_Error('invalid_taxonomy', 'Term does not belong to the given taxonomy.', ['status' => 404]);
+    }
+
+    return $term;
+}
+
+function get_term_meta($term_id, $key = '', $single = false)
+{
+    // Deliberately reads $GLOBALS['wgtai_test_termmeta'], never
+    // wgtai_test_meta: the two are different tables in real WordPress
+    // (wp_termmeta vs wp_postmeta), and a seam wired to the wrong one must
+    // read back empty/wrong data here, not accidentally find the right value
+    // because both stores share the same PHP array.
+    $value = $GLOBALS['wgtai_test_termmeta'][(int) $term_id][$key] ?? null;
+
+    if (null === $value) {
+        return $single ? '' : [];
+    }
+
+    return $single ? $value : [$value];
+}
+
+function update_term_meta($term_id, $key, $value)
+{
+    if (! empty($GLOBALS['wgtai_test_meta_update_fails'])) {
+        return false;
+    }
+
+    $GLOBALS['wgtai_test_termmeta'][(int) $term_id][$key] = wp_unslash($value);
+
+    if (! empty($GLOBALS['wgtai_test_meta_update_returns_false'])) {
+        return false;
+    }
+
+    return true;
+}
+
+function delete_term_meta($term_id, $key)
+{
+    if (! isset($GLOBALS['wgtai_test_termmeta'][(int) $term_id][$key])) {
+        return false;
+    }
+
+    unset($GLOBALS['wgtai_test_termmeta'][(int) $term_id][$key]);
+
+    return true;
+}
+
+function taxonomy_exists($taxonomy): bool
+{
+    return isset($GLOBALS['wgtai_test_taxonomies'][$taxonomy]);
+}
+
+/**
+ * @return object|false
+ */
+function get_taxonomy($taxonomy)
+{
+    return $GLOBALS['wgtai_test_taxonomies'][$taxonomy] ?? false;
+}
+
+/**
+ * @return string|WP_Error
+ */
+function get_term_link($term, $taxonomy = '')
+{
+    if (! $term instanceof WP_Term) {
+        $term = get_term((int) $term, $taxonomy);
+    }
+
+    if (is_wp_error($term) || ! ($term instanceof WP_Term)) {
+        return new WP_Error('invalid_term', 'Invalid term.');
+    }
+
+    return 'https://example.com/' . $term->taxonomy . '/' . $term->slug . '/';
+}
+
+function wgtai_test_seed_term(int $id, string $taxonomy, string $slug, string $name, string $description = ''): void
+{
+    $GLOBALS['wgtai_test_terms'][$id] = new WP_Term([
+        'term_id'     => $id,
+        'name'        => $name,
+        'slug'        => $slug,
+        'description' => $description,
+        'taxonomy'    => $taxonomy,
+    ]);
+
+    if (! isset($GLOBALS['wgtai_test_taxonomies'][$taxonomy])) {
+        $GLOBALS['wgtai_test_taxonomies'][$taxonomy] = (object) [
+            'name' => $taxonomy,
+            'cap'  => (object) ['edit_terms' => 'manage_categories'],
+        ];
+    }
+}
+
+class WP_REST_Server
+{
+    public const CREATABLE = 'POST';
+    public const READABLE  = 'GET';
+    public const EDITABLE  = 'POST, PUT, PATCH';
+    public const DELETABLE = 'DELETE';
+}
+
+class WP_REST_Request
+{
+    private string $method;
+    private string $route;
+    private array $params = [];
+
+    public function __construct(string $method = 'GET', string $route = '')
+    {
+        $this->method = $method;
+        $this->route  = $route;
+    }
+
+    public function set_param($key, $value): void
+    {
+        $this->params[$key] = $value;
+    }
+
+    public function get_param($key)
+    {
+        return $this->params[$key] ?? null;
+    }
+
+    public function get_route(): string
+    {
+        return $this->route;
+    }
+
+    public function get_method(): string
+    {
+        return $this->method;
+    }
+}
+
+class WP_REST_Response
+{
+    private $data;
+    private int $status;
+
+    public function __construct($data, int $status = 200)
+    {
+        $this->data   = $data;
+        $this->status = $status;
+    }
+
+    public function get_data()
+    {
+        return $this->data;
+    }
+
+    public function get_status(): int
+    {
+        return $this->status;
+    }
+}
+
+function register_rest_route($namespace, $route, $args): void
+{
+    $GLOBALS['wgtai_test_registered_routes'][] = [
+        'namespace' => $namespace,
+        'route'     => $route,
+        'args'      => $args,
+    ];
+}
+
 function is_admin(): bool
 {
     return (bool) $GLOBALS['wgtai_test_context']['is_admin'];
 }
 
+function is_tax(): bool
+{
+    return (bool) $GLOBALS['wgtai_test_context']['is_tax'];
+}
+
+function is_category(): bool
+{
+    return (bool) $GLOBALS['wgtai_test_context']['is_category'];
+}
+
+function is_tag(): bool
+{
+    return (bool) $GLOBALS['wgtai_test_context']['is_tag'];
+}
+
+function is_feed(): bool
+{
+    return (bool) $GLOBALS['wgtai_test_context']['is_feed'];
+}
+
+function get_queried_object()
+{
+    return $GLOBALS['wgtai_test_context']['queried_object'] ?? null;
+}
+
+/**
+ * Honest, not a flag: real WordPress never has is_singular() true at the same
+ * time as is_tax()/is_category()/is_tag()/is_feed(), because they describe
+ * mutually exclusive query types. The stub used to read an independent
+ * 'is_singular' switch that defaulted to true regardless of what else the
+ * context claimed to be, which made an archive check vacuous -- the post
+ * render service's is_singular() gate would have let it through even while
+ * is_tax() was also true.
+ */
 function is_singular(): bool
 {
-    return (bool) $GLOBALS['wgtai_test_context']['is_singular'];
+    return ! (is_tax() || is_category() || is_tag() || is_feed());
 }
 
 function get_queried_object_id()
@@ -443,6 +731,7 @@ function weglot_create_url_object($url)
 // ---------------------------------------------------------------------------
 
 require_once __DIR__ . '/../modules/weglot/includes/class-wgtai-language-service.php';
+require_once __DIR__ . '/../modules/weglot/includes/class-wgtai-storage-entity.php';
 require_once __DIR__ . '/../modules/weglot/includes/class-wgtai-storage-service.php';
 require_once __DIR__ . '/../modules/weglot/includes/class-wgtai-render-service.php';
 require_once __DIR__ . '/../modules/weglot/includes/class-wgtai-rest-controller.php';
@@ -483,6 +772,41 @@ function wgtai_test_seed_post(int $id, string $slug, string $title): void
         'post_type'   => 'blog',
     ];
 }
+
+// --- harness self-checks: the three Stage-3-load-bearing harness changes ---
+//
+// These pin the harness capability itself, independent of any render-service
+// behaviour (none is added here): a 2+-arg filter such as WooCommerce's
+// woocommerce_taxonomy_archive_description_raw($desc, $term) would have been
+// impossible to exercise under the old 2-arg apply_filters() stub, and an
+// archive check would have been vacuous under the old is_singular() flag that
+// defaulted to true regardless of page type.
+
+$GLOBALS['wgtai_test_filter_returns']['wgtai_test_variadic_probe'] = static function ($value, $a, $b) {
+    return $value . '|' . $a . '|' . $b;
+};
+wgtai_check(
+    'apply_filters() passes extra arguments through to a closure override',
+    apply_filters('wgtai_test_variadic_probe', 'base', 'lang', 42),
+    'base|lang|42'
+);
+unset($GLOBALS['wgtai_test_filter_returns']['wgtai_test_variadic_probe']);
+
+wgtai_check_true('is_singular() is true by default (no page-type flag set)', is_singular());
+
+$GLOBALS['wgtai_test_context']['is_tax'] = true;
+wgtai_check('is_singular() is false while is_tax() is true', is_singular(), false);
+$GLOBALS['wgtai_test_context']['is_tax'] = false;
+
+$GLOBALS['wgtai_test_context']['is_category'] = true;
+wgtai_check('is_singular() is false while is_category() is true', is_singular(), false);
+$GLOBALS['wgtai_test_context']['is_category'] = false;
+
+wgtai_check_true('is_singular() is true again once every page-type flag clears', is_singular());
+
+$GLOBALS['wgtai_test_context']['queried_object'] = 'probe-object';
+wgtai_check('get_queried_object() reflects the test context', get_queried_object(), 'probe-object');
+$GLOBALS['wgtai_test_context']['queried_object'] = null;
 
 $languages = new WGTAI_Language_Service();
 $storage   = new WGTAI_Storage_Service($languages);
@@ -558,6 +882,15 @@ wgtai_check('script stripped from content', $payload['content'], '<p>Bonjour</p>
 wgtai_check('slug recorded but parked', $payload['requested_slug'], 'chauffage-au-sol');
 wgtai_check('meta stored', $payload['meta']['blog_intro'], 'Intro FR');
 wgtai_check('stored languages index', $storage->get_stored_languages(42), ['fr']);
+
+// --- PREQUEL: pin today's behaviour of the two seams the upcoming refactor
+// changes (fields[] from save(), and the source_post_id key), before any
+// production code moves. If these ever fail after the refactor, the refactor
+// broke behaviour rather than moving it.
+wgtai_check("today's save() fields[] lists title/content/excerpt/meta", $saved['fields'], ['title', 'content', 'excerpt', 'meta']);
+wgtai_check_true("today's save() keys the entity id as source_post_id", array_key_exists('source_post_id', $saved));
+wgtai_check("today's save() source_post_id matches the post", $saved['source_post_id'], 42);
+wgtai_check("today's stored payload itself carries source_post_id", $payload['source_post_id'], 42);
 
 $resaved = $storage->save(42, ['language' => 'fr', 'title' => 'Nouveau titre']);
 wgtai_check('second save is an update', $resaved['created'], false);
@@ -1518,6 +1851,638 @@ foreach ($inventory['languages'] as $entry) {
 
 wgtai_check('the Weglot URL segment is reported as external_code', $fr_entry['external_code'], 'fr-be');
 wgtai_check('locale is empty rather than a duplicate of external_code', $fr_entry['locale'], '');
+
+// ---------------------------------------------------------------------------
+// Stage 1b: term storage (WGTAI_Storage_Service::save_term() and its peers)
+//
+// One class, no subclass: save_term() differs from save() only in which
+// WGTAI_Storage_Entity descriptor it threads through build_payload(). These
+// checks prove that descriptor swap cannot leak between entities and that the
+// term contract matches the post one everywhere it is supposed to.
+// ---------------------------------------------------------------------------
+
+// --- cross-entity isolation: same numeric id, two different meta tables ----
+//
+// term_id and post_id are independent WordPress id spaces, so nothing stops a
+// term and a post from sharing a numeric id. The mutation this guards against:
+// term_entity()'s read_meta/write_meta seams pointed at get_post_meta()/
+// update_post_meta() instead of the term functions, or vice versa for posts.
+// wgtai_test_termmeta and wgtai_test_meta are separate PHP arrays specifically
+// so that mistake reads back wrong (or empty) data here instead of accidentally
+// finding the right value because both stores share one array.
+
+wgtai_test_seed_term(90, 'product_cat', 'vloerverwarming-cat', 'Vloerverwarming');
+wgtai_test_seed_post(90, 'niet-de-term', 'Niet de term');
+
+$term_90 = $storage->save_term(90, ['language' => 'fr', 'name' => 'Chauffage au sol (terme)']);
+$post_90 = $storage->save(90, ['language' => 'fr', 'title' => 'Pas le terme']);
+
+wgtai_check('save_term for id 90 succeeds', is_wp_error($term_90), false);
+wgtai_check('save for the post sharing id 90 succeeds', is_wp_error($post_90), false);
+wgtai_check(
+    'a term payload does not leak into the post service for the same numeric id',
+    $storage->get(90, 'fr')['title'] ?? null,
+    'Pas le terme'
+);
+wgtai_check(
+    'a post payload does not leak into the term service for the same numeric id',
+    $storage->get_term(90, 'fr')['name'] ?? null,
+    'Chauffage au sol (terme)'
+);
+wgtai_check('the post index for id 90 is unaffected by the term of the same id', $storage->get_stored_languages(90), ['fr']);
+wgtai_check('the term index for id 90 is unaffected by the post of the same id', $storage->get_term_stored_languages(90), ['fr']);
+
+// --- the full save_term() contract: fields[], omit/null/value, slug, url ----
+
+wgtai_test_seed_term(91, 'product_cat', 'warmtepompen-91', 'Warmtepompen', 'NL beschrijving');
+
+$term_91 = $storage->save_term(91, [
+    'language'    => 'fr',
+    'name'        => 'Pompes à chaleur',
+    'description' => '<p>FR</p><script>alert(1)</script>',
+]);
+
+wgtai_check('save_term succeeds', is_wp_error($term_91), false);
+wgtai_check('save_term keys the entity id as source_term_id', $term_91['source_term_id'], 91);
+wgtai_check_true('save_term reports stored', $term_91['stored']);
+wgtai_check_true('first save_term is a create', $term_91['created']);
+wgtai_check("save_term's fields[] lists name/description, not meta", $term_91['fields'], ['name', 'description']);
+wgtai_check(
+    "save_term's url is the real archive url",
+    $term_91['url'],
+    'https://example.com/fr-be/product_cat/warmtepompen-91/'
+);
+
+$term_91_payload = $storage->get_term(91, 'fr');
+wgtai_check('term description is sanitised like post content', $term_91_payload['description'], '<p>FR</p>');
+
+// omit/null/value contract, same as posts (:230-240)
+$storage->save_term(91, ['language' => 'fr', 'name' => 'Pompes a chaleur v2']);
+$term_91_partial = $storage->get_term(91, 'fr');
+wgtai_check('a partial term update replaces the supplied field', $term_91_partial['name'], 'Pompes a chaleur v2');
+wgtai_check('a partial term update keeps the description', $term_91_partial['description'], '<p>FR</p>');
+
+$storage->save_term(91, ['language' => 'fr', 'description' => null]);
+wgtai_check('null clears a term field', isset($storage->get_term(91, 'fr')['description']), false);
+wgtai_check('clearing description leaves the name', $storage->get_term(91, 'fr')['name'], 'Pompes a chaleur v2');
+
+// slug: recorded, reported, never routed -- same contract as posts (:266-269)
+$term_91_slug = $storage->save_term(91, ['language' => 'fr', 'slug' => 'Nouvelle Slug']);
+wgtai_check('term slug is sanitised and parked', $storage->get_term(91, 'fr')['requested_slug'], 'nouvelle-slug');
+wgtai_check('the parked term slug never appears in fields[]', in_array('requested_slug', $term_91_slug['fields'], true), false);
+
+// ordinary term meta still merges normally
+$storage->save_term(91, ['language' => 'fr', 'meta' => ['blog_intro' => 'Intro FR term']]);
+wgtai_check('ordinary term meta stores normally', $storage->get_term(91, 'fr')['meta']['blog_intro'], 'Intro FR term');
+
+// review item 3: the term descriptor's empty structured list makes a
+// page-builder meta key a hard rejection, not quiet sanitisation with no
+// notranslate protection.
+$term_structured = $storage->save_term(91, ['language' => 'fr', 'meta' => ['_elementor_data' => '{"ok":true}']]);
+wgtai_check_true('a term payload cannot carry a page-builder document', is_wp_error($term_structured));
+wgtai_check(
+    '...with a code the caller can branch on',
+    is_wp_error($term_structured) ? $term_structured->get_error_code() : null,
+    'wgtai_structured_meta_not_supported'
+);
+wgtai_check(
+    '...naming the offending meta key',
+    is_wp_error($term_structured) ? $term_structured->get_error_data()['meta_key'] : null,
+    '_elementor_data'
+);
+wgtai_check(
+    '...and the term is left exactly as it was before the rejected write',
+    $storage->get_term(91, 'fr')['name'] ?? null,
+    'Pompes a chaleur v2'
+);
+wgtai_check('...and nothing about the rejected key was written', isset($storage->get_term(91, 'fr')['meta']['_elementor_data']), false);
+
+// unknown language -> wgtai_unknown_language, nothing written
+$term_unknown = $storage->save_term(91, ['language' => 'es', 'name' => 'x']);
+wgtai_check_true('save_term rejects an unconfigured language', is_wp_error($term_unknown));
+wgtai_check('...with the unknown-language code', $term_unknown->get_error_code(), 'wgtai_unknown_language');
+wgtai_check('...and nothing was written for es', $storage->get_term(91, 'es'), null);
+
+// missing term -> wgtai_missing_term
+$term_missing = $storage->save_term(999999, ['language' => 'fr', 'name' => 'x']);
+wgtai_check_true('save_term rejects an unknown term', is_wp_error($term_missing));
+wgtai_check('...with the missing-term code', $term_missing->get_error_code(), 'wgtai_missing_term');
+
+// delete_term
+wgtai_check_true('delete_term removes a locale', $storage->delete_term(91, 'fr'));
+wgtai_check('term payload is gone after delete_term', $storage->get_term(91, 'fr'), null);
+wgtai_check('term index shrinks after delete_term', $storage->get_term_stored_languages(91), []);
+
+// ---------------------------------------------------------------------------
+// Stage 2: REST -- retiring the 501 (WGTAI_REST_Controller)
+// ---------------------------------------------------------------------------
+
+$rest = new WGTAI_REST_Controller($storage, $languages);
+
+wgtai_check('the 501 stub is gone', method_exists($rest, 'terms_not_supported'), false);
+
+// --- permissions_check: the term branch must precede the post branch -------
+//
+// Review item 10's mutant: an id that is BOTH a valid term id and an editable
+// post id must still be denied on a /terms route when the caller lacks the
+// term capability. Post 42 already exists (seeded at the top of this file);
+// term 42 is seeded fresh here, in a taxonomy table posts never touch. If the
+// term branch were dropped (or evaluated after the post branch), both
+// requests below fall through to the post branch's id/source_post_id lookup,
+// find no such param, and answer current_user_can('edit_posts') === true --
+// flipping every check below from false to true.
+
+wgtai_test_seed_term(42, 'product_cat', 'bestaande-term', 'Bestaande term');
+
+$GLOBALS['wgtai_test_denied_caps'] = ['edit_term', 'edit_terms', 'manage_categories'];
+
+$collision_request = new WP_REST_Request('POST', '/weglot-translations/v1/terms');
+$collision_request->set_param('source_term_id', 42);
+$collision_request->set_param('taxonomy', 'product_cat');
+$collision_request->set_param('translations', [['language' => 'fr', 'name' => 'x']]);
+
+wgtai_check(
+    'permissions_check denies POST /terms even when the same numeric id is an editable post',
+    $rest->permissions_check($collision_request),
+    false
+);
+
+$collision_get_request = new WP_REST_Request('GET', '/weglot-translations/v1/terms/42/translations');
+$collision_get_request->set_param('id', 42);
+$collision_get_request->set_param('taxonomy', 'product_cat');
+
+wgtai_check(
+    'permissions_check denies GET .../terms/{id} even when the same numeric id is an editable post',
+    $rest->permissions_check($collision_get_request),
+    false
+);
+
+$no_id_term_request = new WP_REST_Request('POST', '/weglot-translations/v1/terms');
+$no_id_term_request->set_param('taxonomy', 'product_cat');
+$no_id_term_request->set_param('translations', [['language' => 'fr', 'name' => 'y']]);
+
+wgtai_check(
+    "permissions_check denies a user without the taxonomy's edit_terms cap",
+    $rest->permissions_check($no_id_term_request),
+    false
+);
+
+$GLOBALS['wgtai_test_denied_caps'] = [];
+
+wgtai_check_true('permissions_check allows a user with the taxonomy cap', $rest->permissions_check($no_id_term_request));
+
+$no_taxonomy_request = new WP_REST_Request('POST', '/weglot-translations/v1/terms');
+$no_taxonomy_request->set_param('translations', [['language' => 'fr', 'name' => 'z']]);
+
+wgtai_check('permissions_check denies a /terms request with no taxonomy', $rest->permissions_check($no_taxonomy_request), false);
+
+$post_permission_request = new WP_REST_Request('POST', '/weglot-translations/v1/posts');
+$post_permission_request->set_param('source_post_id', 42);
+
+wgtai_check_true('permissions_check still allows editing a post (the post branch is not weakened)', $rest->permissions_check($post_permission_request));
+
+// --- create_term_translations: happy path, mixed batch, wrong taxonomy -----
+
+wgtai_test_seed_term(81, 'product_cat', 'cat-81', 'Categorie 81 NL');
+
+$clean_request = new WP_REST_Request('POST', '/weglot-translations/v1/terms');
+$clean_request->set_param('source_term_id', 81);
+$clean_request->set_param('taxonomy', 'product_cat');
+$clean_request->set_param('translations', [['language' => 'fr', 'name' => 'Categorie 81 FR']]);
+
+$clean_response = $rest->create_term_translations($clean_request);
+wgtai_check('an all-good batch answers 200', $clean_response->get_status(), 200);
+wgtai_check('an all-good batch reports no errors', $clean_response->get_data()['errors'], []);
+
+wgtai_test_seed_term(80, 'product_cat', 'cat-80', 'Categorie NL', 'Beschrijving NL');
+
+$create_request = new WP_REST_Request('POST', '/weglot-translations/v1/terms');
+$create_request->set_param('source_term_id', 80);
+$create_request->set_param('taxonomy', 'product_cat');
+$create_request->set_param('translations', [
+    ['language' => 'fr', 'name' => 'Categorie FR', 'description' => '<p>FR</p>'],
+    ['language' => 'zz', 'name' => 'Nope'],
+]);
+
+$create_response = $rest->create_term_translations($create_request);
+
+wgtai_check_true('POST /terms no longer 501s', $create_response instanceof WP_REST_Response);
+wgtai_check('a mixed batch answers 207', $create_response->get_status(), 207);
+wgtai_check('...with exactly the good language in results[]', count($create_response->get_data()['results']), 1);
+wgtai_check('...and the failing language in errors[]', $create_response->get_data()['errors'][0]['language'], 'zz');
+wgtai_check('...naming the right error code', $create_response->get_data()['errors'][0]['code'], 'wgtai_unknown_language');
+
+$good_result = $create_response->get_data()['results'][0];
+wgtai_check('the good result reports source_term_id', $good_result['source_term_id'], 80);
+wgtai_check('the good result normalizes the language', $good_result['language'], 'fr');
+wgtai_check('the good result lists name+description in fields[]', $good_result['fields'], ['name', 'description']);
+wgtai_check('the good result reports the real archive url, not a slug', $good_result['url'], 'https://example.com/fr-be/product_cat/cat-80/');
+wgtai_check_true('the good result reports stored', $good_result['stored']);
+wgtai_check_true('the good result is a create', $good_result['created']);
+wgtai_check('no ignored fields when parent_id is absent', $good_result['ignored_fields'], []);
+
+$wrong_tax_request = new WP_REST_Request('POST', '/weglot-translations/v1/terms');
+$wrong_tax_request->set_param('source_term_id', 80);
+$wrong_tax_request->set_param('taxonomy', 'category');
+$wrong_tax_request->set_param('translations', [['language' => 'fr', 'name' => 'x']]);
+
+$wrong_tax_response = $rest->create_term_translations($wrong_tax_request);
+wgtai_check_true('a term in the wrong taxonomy is rejected', is_wp_error($wrong_tax_response));
+wgtai_check('...with a 404', is_wp_error($wrong_tax_response) ? $wrong_tax_response->get_error_data()['status'] : null, 404);
+wgtai_check('...with a taxonomy-mismatch code', is_wp_error($wrong_tax_response) ? $wrong_tax_response->get_error_code() : null, 'wgtai_taxonomy_mismatch');
+
+$missing_term_request = new WP_REST_Request('POST', '/weglot-translations/v1/terms');
+$missing_term_request->set_param('source_term_id', 987654);
+$missing_term_request->set_param('taxonomy', 'product_cat');
+$missing_term_request->set_param('translations', [['language' => 'fr', 'name' => 'x']]);
+
+$missing_term_response = $rest->create_term_translations($missing_term_request);
+wgtai_check_true('a nonexistent term 404s', is_wp_error($missing_term_response));
+wgtai_check(
+    '...with the missing-term code',
+    is_wp_error($missing_term_response) ? $missing_term_response->get_error_code() : null,
+    'wgtai_missing_term'
+);
+
+// Review item 9: every locale rejected must still answer 207 with zero
+// results, not a bare top-level error that hides which locales failed and why.
+$all_bad_request = new WP_REST_Request('POST', '/weglot-translations/v1/terms');
+$all_bad_request->set_param('source_term_id', 80);
+$all_bad_request->set_param('taxonomy', 'product_cat');
+$all_bad_request->set_param('translations', [
+    ['language' => 'zz', 'name' => 'a'],
+    ['language' => 'yy', 'name' => 'b'],
+]);
+$all_bad_response = $rest->create_term_translations($all_bad_request);
+
+wgtai_check('an all-rejected batch still answers 207, not a bare error', $all_bad_response->get_status(), 207);
+wgtai_check('...with zero results', $all_bad_response->get_data()['results'], []);
+wgtai_check('...and every language accounted for in errors[]', count($all_bad_response->get_data()['errors']), 2);
+
+// --- parent_id: accepted, ignored, and named --------------------------------
+
+$parent_request = new WP_REST_Request('POST', '/weglot-translations/v1/terms');
+$parent_request->set_param('source_term_id', 80);
+$parent_request->set_param('taxonomy', 'product_cat');
+$parent_request->set_param('translations', [
+    ['language' => 'de', 'name' => 'Kategorie DE', 'parent_id' => 99],
+]);
+$parent_response = $rest->create_term_translations($parent_request);
+
+wgtai_check('parent_id is reported in ignored_fields', $parent_response->get_data()['results'][0]['ignored_fields'], ['parent_id']);
+wgtai_check('parent_id is never stored on the term payload', array_key_exists('parent_id', $storage->get_term(80, 'de') ?? []), false);
+
+// --- slug: recorded, reported, never routed; url is the real archive url ---
+
+$slug_request = new WP_REST_Request('POST', '/weglot-translations/v1/terms');
+$slug_request->set_param('source_term_id', 80);
+$slug_request->set_param('taxonomy', 'product_cat');
+$slug_request->set_param('translations', [
+    ['language' => 'de', 'name' => 'Kategorie DE', 'slug' => 'Andere Slug'],
+]);
+$slug_response = $rest->create_term_translations($slug_request);
+
+wgtai_check('the requested term slug is recorded', $storage->get_term(80, 'de')['requested_slug'], 'andere-slug');
+wgtai_check(
+    'the requested term slug never appears in fields[]',
+    in_array('requested_slug', $slug_response->get_data()['results'][0]['fields'], true),
+    false
+);
+wgtai_check(
+    'results[].url is the real archive url, never the requested slug',
+    $slug_response->get_data()['results'][0]['url'],
+    'https://example.com/de/product_cat/cat-80/'
+);
+
+// --- contract_notes(): term-specific line present ---------------------------
+
+wgtai_check_true(
+    'term responses carry a term-specific note about url vs. slug',
+    in_array(
+        'For terms, results[].url is always the real taxonomy archive URL for this term and language, never the requested slug - write that value to public.url, not the slug field.',
+        $create_response->get_data()['notes'],
+        true
+    )
+);
+
+// --- get_term_translations / delete_term_translation ------------------------
+
+$get_request = new WP_REST_Request('GET', '/weglot-translations/v1/terms/80/translations');
+$get_request->set_param('id', 80);
+$get_request->set_param('taxonomy', 'product_cat');
+
+$get_response = $rest->get_term_translations($get_request);
+wgtai_check_true('GET /terms/{id}/translations succeeds', $get_response instanceof WP_REST_Response);
+wgtai_check('GET reports the taxonomy', $get_response->get_data()['taxonomy'], 'product_cat');
+
+$get_listing = $get_response->get_data()['translations'];
+$get_fr      = null;
+
+foreach ($get_listing as $get_item) {
+    if (! empty($get_item['language']) && 'fr' === $get_item['language']) {
+        $get_fr = $get_item;
+    }
+}
+
+wgtai_check_true('GET lists the stored fr translation', null !== $get_fr && ! empty($get_fr['stored']));
+wgtai_check('GET reports the real archive url for fr', $get_fr['url'] ?? null, 'https://example.com/fr-be/product_cat/cat-80/');
+
+$get_mismatch_request = new WP_REST_Request('GET', '/weglot-translations/v1/terms/80/translations');
+$get_mismatch_request->set_param('id', 80);
+$get_mismatch_request->set_param('taxonomy', 'category');
+
+$get_mismatch_response = $rest->get_term_translations($get_mismatch_request);
+wgtai_check_true('GET on the wrong taxonomy 404s', is_wp_error($get_mismatch_response));
+wgtai_check(
+    '...with status 404',
+    is_wp_error($get_mismatch_response) ? $get_mismatch_response->get_error_data()['status'] : null,
+    404
+);
+
+$delete_request = new WP_REST_Request('DELETE', '/weglot-translations/v1/terms/80/translations/fr');
+$delete_request->set_param('id', 80);
+$delete_request->set_param('language', 'fr');
+$delete_request->set_param('taxonomy', 'product_cat');
+
+$delete_response = $rest->delete_term_translation($delete_request);
+wgtai_check('DELETE term translation reports 200', $delete_response->get_status(), 200);
+wgtai_check_true('DELETE term translation reports deleted', $delete_response->get_data()['deleted']);
+wgtai_check('the payload is gone after DELETE', $storage->get_term(80, 'fr'), null);
+
+$GLOBALS['wgtai_test_denied_caps'] = [];
+
+// ---------------------------------------------------------------------------
+// Verification pass (adversarial): the wire contract exactly as n8n sends it,
+// the registered route surface, what a rejection leaves behind in the store,
+// idempotence, and raw cross-store isolation.
+// ---------------------------------------------------------------------------
+
+// --- the registered route surface -------------------------------------------
+//
+// The flow POSTs to https://{domain}/wp-json/weglot-translations/v1/terms, and
+// the bridge is ALREADY installed on both client sites at the 501-stub build,
+// where /terms answers with methods ["GET","POST"] and no args. Namespace, path
+// and method are therefore a live contract, not an internal detail: a typo here
+// is a posting run that 404s on all 14 category rows. The /posts, /languages
+// and /posts/{id}/translations assertions are deliberate regression guards for
+// routes the flow already depends on -- they pass at fd8a14d on purpose,
+// exactly like the prequel checks.
+
+$GLOBALS['wgtai_test_registered_routes'] = [];
+$rest->register_routes();
+
+$wgtai_routes = [];
+
+foreach ($GLOBALS['wgtai_test_registered_routes'] as $wgtai_route_entry) {
+    $wgtai_routes[$wgtai_route_entry['namespace'] . $wgtai_route_entry['route']] = $wgtai_route_entry['args'][0] ?? [];
+}
+
+$terms_route    = 'weglot-translations/v1/terms';
+$term_get_route = 'weglot-translations/v1/terms/(?P<id>\\d+)/translations';
+$term_del_route = 'weglot-translations/v1/terms/(?P<id>\\d+)/translations/(?P<language>[A-Za-z0-9_-]+)';
+
+wgtai_check('POST /terms is registered at exactly the path the flow posts to', isset($wgtai_routes[$terms_route]), true);
+wgtai_check('/terms accepts POST', $wgtai_routes[$terms_route]['methods'] ?? null, 'POST');
+wgtai_check('/terms dispatches to create_term_translations', $wgtai_routes[$terms_route]['callback'][1] ?? null, 'create_term_translations');
+wgtai_check('/terms is still permission-gated', $wgtai_routes[$terms_route]['permission_callback'][1] ?? null, 'permissions_check');
+wgtai_check_true('/terms now declares args (the live 501 stub declares none)', ! empty($wgtai_routes[$terms_route]['args']));
+wgtai_check('GET /terms/{id}/translations is registered', $wgtai_routes[$term_get_route]['methods'] ?? null, 'GET');
+wgtai_check('DELETE /terms/{id}/translations/{language} is registered', $wgtai_routes[$term_del_route]['methods'] ?? null, 'DELETE');
+
+// Regression guards for the routes the flow already uses.
+wgtai_check('POST /posts is still registered', $wgtai_routes['weglot-translations/v1/posts']['methods'] ?? null, 'POST');
+wgtai_check('GET /posts/{id}/translations is still registered', $wgtai_routes['weglot-translations/v1/posts/(?P<id>\\d+)/translations']['methods'] ?? null, 'GET');
+wgtai_check('...and still dispatches to get_post_translations', $wgtai_routes['weglot-translations/v1/posts/(?P<id>\\d+)/translations']['callback'][1] ?? null, 'get_post_translations');
+wgtai_check('GET /languages is still registered', $wgtai_routes['weglot-translations/v1/languages']['methods'] ?? null, 'GET');
+wgtai_check_true('the /posts route still declares source_post_id', isset($wgtai_routes['weglot-translations/v1/posts']['args']['source_post_id']));
+
+$wgtai_namespaces = [];
+
+foreach ($GLOBALS['wgtai_test_registered_routes'] as $wgtai_route_entry) {
+    $wgtai_namespaces[$wgtai_route_entry['namespace']] = true;
+}
+
+wgtai_check('every route lives in the one namespace the flow URL uses', array_keys($wgtai_namespaces), ['weglot-translations/v1']);
+
+// --- get_term_endpoint_args(): the flow must not be 400'd over a key we
+// --- accept but do not store.
+//
+// Parse translations emits content_below_products twice -- once at the top
+// level of each translation and once inside meta. WP only rejects unknown
+// object properties when a schema sets additionalProperties => false, so the
+// absence of that flag anywhere in this tree is the whole reason the flow's
+// request validates. Asserted structurally because the harness has no copy of
+// rest_validate_value_from_schema().
+
+$term_args_reflection = new ReflectionMethod('WGTAI_REST_Controller', 'get_term_endpoint_args');
+$term_args_reflection->setAccessible(true);
+$term_args = $term_args_reflection->invoke($rest);
+
+$wgtai_required_top = [];
+
+foreach ($term_args as $arg_name => $arg_spec) {
+    if (! empty($arg_spec['required'])) {
+        $wgtai_required_top[] = $arg_name;
+    }
+}
+
+wgtai_check('the term endpoint requires exactly what the flow sends', $wgtai_required_top, ['source_term_id', 'taxonomy', 'translations']);
+wgtai_check('trid is accepted but never required (the term branch does not send it)', ! empty($term_args['trid']['required']), false);
+wgtai_check('translations[] requires only language', $term_args['translations']['items']['required'] ?? null, ['language']);
+
+$wgtai_has_closed_object = static function (array $node) use (&$wgtai_has_closed_object): bool {
+    if (array_key_exists('additionalProperties', $node) && false === $node['additionalProperties']) {
+        return true;
+    }
+
+    foreach ($node as $child) {
+        if (is_array($child) && $wgtai_has_closed_object($child)) {
+            return true;
+        }
+    }
+
+    return false;
+};
+
+wgtai_check(
+    'no term-args schema closes its object, so the flow extra content_below_products cannot 400',
+    $wgtai_has_closed_object($term_args),
+    false
+);
+
+// --- the wire contract, byte for byte as Parse translations builds it -------
+
+wgtai_test_seed_term(120, 'product_cat', 'cat-120', 'Category 120 EN', 'EN description');
+
+$flow_request = new WP_REST_Request('POST', '/weglot-translations/v1/terms');
+$flow_request->set_param('source_term_id', 120);
+$flow_request->set_param('taxonomy', 'product_cat');
+$flow_request->set_param('translations', [
+    [
+        'language'               => 'de',
+        'name'                   => 'Kategorie 120',
+        'slug'                   => 'Kategorie 120 Slug',
+        'description'            => '<p>DE Beschreibung</p>',
+        'content_below_products' => '<p>DE unten (top level)</p>',
+        'meta'                   => [
+            '_yoast_wpseo_title'     => 'DE titel',
+            '_yoast_wpseo_metadesc'  => 'DE meta description',
+            'content_below_products' => '<p>DE unten (meta)</p>',
+        ],
+    ],
+]);
+
+$flow_response = $rest->create_term_translations($flow_request);
+
+wgtai_check_true('the flow request shape is accepted, not rejected', $flow_response instanceof WP_REST_Response);
+wgtai_check('the flow request answers 200', $flow_response->get_status(), 200);
+
+$flow_data   = $flow_response->get_data();
+$flow_result = $flow_data['results'][0] ?? [];
+
+// The fields Registered Translations To Status and Collect Live URLs read.
+wgtai_check_true('results[].language is present for the flow to key on', array_key_exists('language', $flow_result));
+wgtai_check_true('results[].stored is present for the flow to key on', array_key_exists('stored', $flow_result));
+wgtai_check_true('results[].url is present for Collect Live URLs', array_key_exists('url', $flow_result));
+wgtai_check('errors[] is always an array, even when empty', $flow_data['errors'], []);
+
+$flow_payload = $storage->get_term(120, 'de');
+
+wgtai_check('the Yoast title from the flow lands in meta', $flow_payload['meta']['_yoast_wpseo_title'] ?? null, 'DE titel');
+wgtai_check('the Yoast meta description from the flow lands in meta', $flow_payload['meta']['_yoast_wpseo_metadesc'] ?? null, 'DE meta description');
+wgtai_check('the meta content_below_products from the flow is stored', $flow_payload['meta']['content_below_products'] ?? null, '<p>DE unten (meta)</p>');
+
+// The top-level spelling is accepted and dropped: it must NOT be stored a
+// second time as a payload field, which would give one region two stored
+// shapes and two contradictory reports in fields[].
+wgtai_check('the top-level content_below_products is not stored as a payload field', array_key_exists('content_below_products', $flow_payload), false);
+wgtai_check('...and does not appear in fields[]', in_array('content_below_products', $flow_result['fields'], true), false);
+
+// results[].url goes straight into public.url, so a requested slug echoed
+// there is a fiction in the database, not a cosmetic defect.
+wgtai_check('results[].url carries no trace of the requested slug', strpos((string) $flow_result['url'], 'kategorie-120-slug'), false);
+wgtai_check('results[].url is the real archive URL for the language', $flow_result['url'], 'https://example.com/de/product_cat/cat-120/');
+
+// --- what a rejection leaves behind, read from the store, not from the
+// --- return value.
+
+wgtai_test_seed_term(121, 'product_cat', 'cat-121', 'Category 121 EN');
+
+$store_before_missing = $GLOBALS['wgtai_test_termmeta'];
+
+$reject_missing = new WP_REST_Request('POST', '/weglot-translations/v1/terms');
+$reject_missing->set_param('source_term_id', 987654);
+$reject_missing->set_param('taxonomy', 'product_cat');
+$reject_missing->set_param('translations', [['language' => 'de', 'name' => 'Nichts']]);
+$rest->create_term_translations($reject_missing);
+
+wgtai_check('a missing term creates no termmeta row at all', isset($GLOBALS['wgtai_test_termmeta'][987654]), false);
+wgtai_check('...and leaves every other stored term untouched', $GLOBALS['wgtai_test_termmeta'], $store_before_missing);
+
+$storage->save_term(121, ['language' => 'de', 'name' => 'Kategorie 121']);
+$store_before_mismatch = $GLOBALS['wgtai_test_termmeta'][121];
+
+$reject_taxonomy = new WP_REST_Request('POST', '/weglot-translations/v1/terms');
+$reject_taxonomy->set_param('source_term_id', 121);
+$reject_taxonomy->set_param('taxonomy', 'category');
+$reject_taxonomy->set_param('translations', [['language' => 'fr', 'name' => 'Wrong taxonomy']]);
+$rest->create_term_translations($reject_taxonomy);
+
+wgtai_check('a wrong-taxonomy request writes nothing to the term meta', $GLOBALS['wgtai_test_termmeta'][121], $store_before_mismatch);
+wgtai_check('...and no payload key exists for the language it named', isset($GLOBALS['wgtai_test_termmeta'][121]['_nova_weglot_i18n_fr']), false);
+
+$reject_language = new WP_REST_Request('POST', '/weglot-translations/v1/terms');
+$reject_language->set_param('source_term_id', 121);
+$reject_language->set_param('taxonomy', 'product_cat');
+$reject_language->set_param('translations', [['language' => 'es', 'name' => 'Nada']]);
+$rest->create_term_translations($reject_language);
+
+wgtai_check('an unknown language writes no payload key', isset($GLOBALS['wgtai_test_termmeta'][121]['_nova_weglot_i18n_es']), false);
+wgtai_check('...and does not enter the stored-language index', $GLOBALS['wgtai_test_termmeta'][121]['_nova_weglot_languages'], ['de']);
+
+$reject_builder = new WP_REST_Request('POST', '/weglot-translations/v1/terms');
+$reject_builder->set_param('source_term_id', 121);
+$reject_builder->set_param('taxonomy', 'product_cat');
+$reject_builder->set_param('translations', [['language' => 'de', 'meta' => ['_elementor_data' => '{"ok":true}']]]);
+$reject_builder_response = $rest->create_term_translations($reject_builder);
+
+wgtai_check('a builder meta key is refused over REST too, as a 207', $reject_builder_response->get_status(), 207);
+wgtai_check('...with the structured-meta code in errors[]', $reject_builder_response->get_data()['errors'][0]['code'] ?? null, 'wgtai_structured_meta_not_supported');
+wgtai_check('...and the stored payload untouched in the store itself', $GLOBALS['wgtai_test_termmeta'][121], $store_before_mismatch);
+
+// --- idempotence: a repeated save changes nothing observable but the clock --
+
+wgtai_test_seed_term(122, 'product_cat', 'cat-122', 'Category 122 EN');
+
+$idem_payload = ['language' => 'de', 'name' => 'Kategorie 122', 'description' => '<p>DE</p>'];
+$idem_first   = $storage->save_term(122, $idem_payload);
+$idem_stored1 = $storage->get_term(122, 'de');
+$idem_second  = $storage->save_term(122, $idem_payload);
+$idem_stored2 = $storage->get_term(122, 'de');
+
+wgtai_check_true('the first save_term of the pair is a create', $idem_first['created']);
+wgtai_check('a repeated identical save is not a create', $idem_second['created'], false);
+wgtai_check_true('a repeated identical save still reports stored', $idem_second['stored']);
+wgtai_check('a repeated identical save reports the same fields[]', $idem_second['fields'], $idem_first['fields']);
+wgtai_check('a repeated identical save reports the same url', $idem_second['url'], $idem_first['url']);
+
+unset($idem_stored1['updated_at'], $idem_stored2['updated_at']);
+wgtai_check('a repeated identical save changes nothing but updated_at', $idem_stored2, $idem_stored1);
+wgtai_check('a repeated identical save adds no second meta row', count($GLOBALS['wgtai_test_termmeta'][122]), 2);
+
+// The reader dedupes the index, so a writer that appended unconditionally would
+// be invisible through get_term_stored_languages(); the stored row itself would
+// still grow by one entry on every re-post. Assert the raw row, not the reader.
+wgtai_check(
+    'a repeated identical save does not duplicate the raw stored-language index',
+    $GLOBALS['wgtai_test_termmeta'][122]['_nova_weglot_languages'],
+    ['de']
+);
+
+// --- raw cross-store isolation ----------------------------------------------
+//
+// The service-level leakage checks above go through get()/get_term(). These
+// read the two stub stores directly, so a seam wired to the wrong table is
+// caught even where the read-back guard would have masked it by returning a
+// WP_Error rather than a wrong value.
+
+wgtai_test_seed_term(123, 'product_cat', 'cat-123', 'Category 123 EN');
+wgtai_test_seed_post(124, 'post-124', 'Post 124 EN');
+
+$storage->save_term(123, ['language' => 'de', 'name' => 'Kategorie 123']);
+wgtai_check('storing a term writes no post meta for that id', isset($GLOBALS['wgtai_test_meta'][123]), false);
+
+$storage->save(124, ['language' => 'de', 'title' => 'Beitrag 124']);
+wgtai_check('storing a post writes no term meta for that id', isset($GLOBALS['wgtai_test_termmeta'][124]), false);
+
+// --- omit / null / value on name, mirroring the description checks ----------
+
+wgtai_test_seed_term(125, 'product_cat', 'cat-125', 'Category 125 EN');
+$storage->save_term(125, ['language' => 'de', 'name' => 'Kategorie 125', 'description' => '<p>DE 125</p>']);
+$storage->save_term(125, ['language' => 'de', 'description' => '<p>DE 125 v2</p>']);
+
+wgtai_check('an omitted name leaves the stored name alone', $storage->get_term(125, 'de')['name'], 'Kategorie 125');
+
+$storage->save_term(125, ['language' => 'de', 'name' => null]);
+wgtai_check('an explicit null clears the name', isset($storage->get_term(125, 'de')['name']), false);
+wgtai_check('clearing the name leaves the description', $storage->get_term(125, 'de')['description'], '<p>DE 125 v2</p>');
+
+// --- a malformed entry must not take the rest of the batch down -------------
+
+wgtai_test_seed_term(126, 'product_cat', 'cat-126', 'Category 126 EN');
+
+$mixed_shape = new WP_REST_Request('POST', '/weglot-translations/v1/terms');
+$mixed_shape->set_param('source_term_id', 126);
+$mixed_shape->set_param('taxonomy', 'product_cat');
+$mixed_shape->set_param('translations', ['not-an-array', ['language' => 'de', 'name' => 'Kategorie 126']]);
+
+$mixed_shape_response = $rest->create_term_translations($mixed_shape);
+$mixed_shape_data     = $mixed_shape_response->get_data();
+
+wgtai_check('a malformed translation entry answers 207, not a bare error', $mixed_shape_response->get_status(), 207);
+wgtai_check_true('every errors[] entry carries the language key the flow reads', array_key_exists('language', $mixed_shape_data['errors'][0]));
+wgtai_check('a malformed entry does not abort the batch', count($mixed_shape_data['results']), 1);
+wgtai_check('the good locale in a malformed batch is really stored', $storage->get_term(126, 'de')['name'], 'Kategorie 126');
 
 // --- report ----------------------------------------------------------------
 

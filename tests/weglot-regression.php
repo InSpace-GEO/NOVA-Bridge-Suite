@@ -38,9 +38,10 @@ function nova_weglot_test_request(string $method, string $route, array $body = [
     return $request;
 }
 
-$marker      = 'nova-weglot-regression-' . wp_generate_uuid4();
-$created_ids = [];
-$admins      = get_users(
+$marker           = 'nova-weglot-regression-' . wp_generate_uuid4();
+$created_ids      = [];
+$created_term_ids = [];
+$admins           = get_users(
     [
         'role'   => 'administrator',
         'number' => 1,
@@ -368,23 +369,128 @@ try {
         'The render service swapped content before resolve_payload() ran.'
     );
 
-    // --- terms are explicitly unsupported -----------------------------------
+    // --- terms: create, read, delete -----------------------------------------
+
+    nova_weglot_test_assert(
+        taxonomy_exists('product_cat'),
+        'The product_cat taxonomy is not registered; activate WooCommerce before running this check.'
+    );
+
+    $term_id = wp_insert_term($marker . '-term', 'product_cat');
+
+    nova_weglot_test_assert(! is_wp_error($term_id), 'Could not create the throwaway product_cat term.');
+    $term_id             = is_array($term_id) ? (int) $term_id['term_id'] : (int) $term_id;
+    $created_term_ids[]  = $term_id;
+
+    $second_target = $destinations[1] ?? $target;
 
     $response = $server->dispatch(
         nova_weglot_test_request(
             'POST',
             '/weglot-translations/v1/terms',
             [
-                'source_term_id' => 1,
-                'taxonomy'       => 'category',
-                'translations'   => [['language' => $target, 'name' => 'x']],
+                'source_term_id' => $term_id,
+                'taxonomy'       => 'product_cat',
+                'translations'   => [
+                    [
+                        'language'    => $target,
+                        'name'        => $marker . '-term-name-' . $target,
+                        'description' => '<p>' . $marker . '-term-description-' . $target . '</p>',
+                    ],
+                    [
+                        'language' => $second_target,
+                        'name'     => $marker . '-term-name-' . $second_target,
+                    ],
+                ],
             ]
         )
     );
 
     nova_weglot_test_assert(
-        501 === $response->get_status(),
-        'POST /terms should return 501, got ' . $response->get_status() . '.'
+        in_array($response->get_status(), [200, 207], true),
+        'POST /terms returned ' . $response->get_status() . ': ' . wp_json_encode($response->get_data())
+    );
+
+    $term_response_data = $response->get_data();
+
+    nova_weglot_test_assert(
+        ! empty($term_response_data['results'][0]['stored']),
+        'POST /terms did not report the first locale as stored.'
+    );
+    nova_weglot_test_assert(
+        ! empty($term_response_data['results'][0]['url']),
+        'POST /terms did not report a translated archive URL; check that Weglot resolves URLs on this site.'
+    );
+
+    // The stored payload lives in termmeta, under the same key convention posts
+    // use in wp_postmeta -- the two tables are what keep a shared numeric id from
+    // colliding, not a second key prefix.
+    nova_weglot_test_assert(
+        metadata_exists('term', $term_id, '_nova_weglot_i18n_' . str_replace('-', '_', $target)),
+        'The term payload was not written to termmeta under the expected key.'
+    );
+
+    $term_payload = $storage_service->get_term($term_id, $target);
+
+    nova_weglot_test_assert(is_array($term_payload), 'The stored term payload could not be read back.');
+    nova_weglot_test_assert(
+        $term_payload['name'] === $marker . '-term-name-' . $target,
+        'The stored term name did not round-trip.'
+    );
+
+    // --- GET /terms/{id}/translations ----------------------------------------
+
+    $response = $server->dispatch(
+        nova_weglot_test_request(
+            'GET',
+            '/weglot-translations/v1/terms/' . $term_id . '/translations',
+            [],
+            ['id' => $term_id, 'taxonomy' => 'product_cat']
+        )
+    );
+
+    nova_weglot_test_assert(200 === $response->get_status(), 'GET /terms/{id}/translations did not return 200.');
+    nova_weglot_test_assert(
+        'product_cat' === ($response->get_data()['taxonomy'] ?? null),
+        'GET /terms/{id}/translations reported the wrong taxonomy.'
+    );
+
+    // --- a term in the wrong taxonomy 404s ------------------------------------
+
+    $response = $server->dispatch(
+        nova_weglot_test_request(
+            'GET',
+            '/weglot-translations/v1/terms/' . $term_id . '/translations',
+            [],
+            ['id' => $term_id, 'taxonomy' => 'category']
+        )
+    );
+
+    nova_weglot_test_assert(
+        404 === $response->get_status(),
+        'A term requested under the wrong taxonomy should 404, got ' . $response->get_status() . '.'
+    );
+
+    // --- DELETE a term translation --------------------------------------------
+
+    $response = $server->dispatch(
+        nova_weglot_test_request(
+            'DELETE',
+            '/weglot-translations/v1/terms/' . $term_id . '/translations/' . $target,
+            [],
+            ['id' => $term_id, 'language' => $target, 'taxonomy' => 'product_cat']
+        )
+    );
+
+    nova_weglot_test_assert(200 === $response->get_status(), 'DELETE term translation did not return 200.');
+    nova_weglot_test_assert(! empty($response->get_data()['deleted']), 'DELETE term translation did not report a deletion.');
+    nova_weglot_test_assert(
+        null === $storage_service->get_term($term_id, $target),
+        'The term payload survived deletion.'
+    );
+    nova_weglot_test_assert(
+        ! metadata_exists('term', $term_id, '_nova_weglot_i18n_' . str_replace('-', '_', $target)),
+        'The term payload row survived deletion in termmeta.'
     );
 
     // --- rejections ---------------------------------------------------------
@@ -457,5 +563,9 @@ try {
 } finally {
     foreach ($created_ids as $created_id) {
         wp_delete_post($created_id, true);
+    }
+
+    foreach ($created_term_ids as $created_term_id) {
+        wp_delete_term($created_term_id, 'product_cat');
     }
 }
