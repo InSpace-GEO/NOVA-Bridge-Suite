@@ -161,13 +161,19 @@ class Layout_Transformer {
         $attribute_string = $this->stringify_attributes($attributes);
 
         $content = '';
+        $has_text_child = false;
         if (!empty($node['children']) && is_array($node['children'])) {
             foreach ($node['children'] as $child) {
+                if (is_array($child) && 'text' === ($child['tag'] ?? '')) {
+                    $has_text_child = true;
+                }
                 $content .= $this->build_shortcode_from_node($child);
             }
         }
 
-        if (!empty($node['text'])) {
+        // Mixed shortcode content keeps its raw text fragments as ordered child nodes.
+        // The parent text is an outline/search summary of those same fragments.
+        if (!empty($node['text']) && !$has_text_child) {
             $content .= (string) $node['text'];
         }
 
@@ -254,11 +260,22 @@ class Layout_Transformer {
             $next_chain = array_merge($ancestors, [$descriptor]);
 
             if (!empty($node['text']) && 'text' !== $tag) {
+                $children = !empty($node['children']) && is_array($node['children'])
+                    ? $node['children']
+                    : [];
                 $entry = [
-                    'path' => isset($node['path']) ? (string) $node['path'] : '',
-                    'tag'  => $tag,
-                    'text' => (string) $node['text'],
+                    'path'         => isset($node['path']) ? (string) $node['path'] : '',
+                    'tag'          => $tag,
+                    'text'         => (string) $node['text'],
+                    'has_children' => !empty($children),
                 ];
+
+                if (!empty($children)) {
+                    $entry['child_tags'] = array_values(array_unique(array_filter(array_map(
+                        static fn($child) => is_array($child) ? (string) ($child['tag'] ?? '') : '',
+                        $children
+                    ))));
+                }
 
                 if (!empty($descriptor['label'])) {
                     $entry['label'] = $descriptor['label'];

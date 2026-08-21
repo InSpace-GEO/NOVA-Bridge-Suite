@@ -48,6 +48,13 @@ Yes. If WooCommerce is active you can enable the rich text field module for cate
 * Never overwrite hero, call-to-action, button or image content when filling a cloned template.
 * Report how many slots were filled and how many sections were appended on create responses.
 
+= 2.8.2 =
+* Reject unsafe nested Avada text updates, preserve mixed shortcode content and post status, append overflow in an independent section, and keep rendered Avada content synchronized with its builder mirrors.
+* Save Elementor documents through Elementor's native lifecycle so hooks, canonical metadata, and caches stay synchronized.
+
+= 2.8.1 =
+* Preserve Auxin/Phlox custom page CSS supplied through meta_all.
+
 = 2.8.0 =
 * Serve NOVA's own per-locale content on Weglot sites, so translated pages use your copy instead of a machine translation.
 * Keep translated page-builder content out of Weglot's translation pass, so it is served verbatim and uses no word quota.

@@ -223,7 +223,11 @@ class REST_Controller extends WP_REST_Controller {
                 return new WP_Error('nova_avada_missing_layout', __('A layout or template must be supplied when applying text updates.', 'nova-bridge-suite'), ['status' => 400]);
             }
 
-            $data['layout'] = $this->page_service->apply_text_updates($data['layout'], $text_updates);
+            $layout = $this->page_service->apply_text_updates($data['layout'], $text_updates);
+            if (is_wp_error($layout)) {
+                return $layout;
+            }
+            $data['layout'] = $layout;
         }
 
         if (!empty($data['remove_paths']) && !empty($data['layout'])) {
@@ -303,7 +307,11 @@ class REST_Controller extends WP_REST_Controller {
                 $data['layout']  = $current_payload['layout'];
             }
 
-            $data['layout'] = $this->page_service->apply_text_updates($data['layout'], $text_updates);
+            $layout = $this->page_service->apply_text_updates($data['layout'], $text_updates);
+            if (is_wp_error($layout)) {
+                return $layout;
+            }
+            $data['layout'] = $layout;
         }
 
         if (!empty($data['remove_paths'])) {
