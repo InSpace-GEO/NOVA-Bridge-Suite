@@ -474,6 +474,15 @@ function nbs_el_types($value)
     return is_array($value) ? $value : [];
 }
 
+/**
+ * Read a key that a regression may have removed entirely, so the assertion
+ * fails with a readable diff instead of a fatal.
+ */
+function nbs_el_at($array, $key, $default = null)
+{
+    return (is_array($array) && array_key_exists($key, $array)) ? $array[$key] : $default;
+}
+
 $page_types = nbs_invoke($controller, 'resolve_slug_lookup_types', ['page', $public_types]);
 
 nbs_check_true('a single post type resolves to an array, not a string', is_array($page_types));
@@ -618,6 +627,115 @@ $healthy_data = $healthy_result->get_error_data();
 nbs_check('the healthy page failed at the Elementor boundary, not the preflight', $healthy_data['reason'], 'elementor_api_unavailable');
 nbs_check_true('a healthy page really was mutated (proving the preflight passed)', $GLOBALS['nbs_el_calls']['wp_update_post'] > 0);
 nbs_check('the healthy page took the new title', get_post(555)->post_title, 'A real page title');
+
+// ---------------------------------------------------------------------------
+// persist_elementor_document() must name the reason it refused
+//
+// Everything above ran with Elementor absent. From here a minimal Elementor
+// surface is defined so the two distinct rejection causes can be exercised.
+// It is eval()'d because the namespaced class has to appear in a file that is
+// otherwise un-namespaced.
+// ---------------------------------------------------------------------------
+
+$GLOBALS['nbs_el_doc_editable'] = true;
+$GLOBALS['nbs_el_doc_save']     = true;
+
+eval(<<<'ELEMENTOR_STUB'
+namespace Elementor;
+
+class NBS_Stub_Document
+{
+    public function is_editable_by_current_user()
+    {
+        return (bool) $GLOBALS['nbs_el_doc_editable'];
+    }
+
+    public function set_is_built_with_elementor($value)
+    {
+    }
+
+    public function save($data)
+    {
+        return (bool) $GLOBALS['nbs_el_doc_save'];
+    }
+}
+
+class NBS_Stub_Documents
+{
+    public function get($post_id, $from_cache = true)
+    {
+        return new NBS_Stub_Document();
+    }
+}
+
+class NBS_Stub_Elements
+{
+    public function get_element($type, $widget = null)
+    {
+        return true;
+    }
+}
+
+class Plugin
+{
+    public $documents;
+    public $elements_manager;
+    private static $instance;
+
+    public function __construct()
+    {
+        $this->documents        = new NBS_Stub_Documents();
+        $this->elements_manager = new NBS_Stub_Elements();
+    }
+
+    public static function instance()
+    {
+        if (null === self::$instance) {
+            self::$instance = new self();
+        }
+
+        return self::$instance;
+    }
+}
+ELEMENTOR_STUB
+);
+
+nbs_check_true('the Elementor stub is now visible to the module', class_exists('\Elementor\Plugin'));
+
+// Cause 1: Elementor refuses the document outright. This is the live incident's
+// inner failure, reached here directly so the preflight does not shadow it.
+$GLOBALS['nbs_el_doc_editable'] = false;
+$rejected = nbs_invoke($service, 'persist_elementor_document', [555, [], []]);
+
+nbs_check_true('an Elementor refusal is an error', is_wp_error($rejected));
+nbs_check('the error code is unchanged', $rejected->get_error_code(), 'seor_eb_elementor_meta_write_failed');
+$rejected_data = $rejected->get_error_data();
+nbs_check('reason is unchanged, callers branch on it', $rejected_data['reason'], 'elementor_save_rejected');
+nbs_check('status is unchanged', $rejected_data['status'], 403);
+nbs_check('post_id is unchanged', $rejected_data['post_id'], 555);
+nbs_check_true('detail is present', array_key_exists('detail', $rejected_data));
+nbs_check_true('detail is non-empty', '' !== nbs_el_at($rejected_data, 'detail', ''));
+nbs_check('detail names the cause instead of hiding it in error_log()', nbs_el_at($rejected_data, 'detail', ''), 'The current user cannot edit this Elementor document.');
+$rejected_checks = nbs_el_types(nbs_el_at($rejected_data, 'checks', null));
+nbs_check_true('a rejection carries the diagnosis checks', !empty($rejected_checks));
+nbs_check('a rejection reports the post type it was aimed at', nbs_el_at($rejected_data, 'post_type', ''), 'page');
+nbs_check_true('the diagnosis now includes Elementor\'s own verdict', array_key_exists('elementor_editable', $rejected_checks));
+nbs_check("Elementor's verdict is reported as false", nbs_el_at($rejected_checks, 'elementor_editable', null), false);
+
+// Cause 2: Elementor accepts the document but its save lifecycle does not
+// complete. Same reason string, different detail -- which is exactly why detail
+// had to be exposed.
+$GLOBALS['nbs_el_doc_editable'] = true;
+$GLOBALS['nbs_el_doc_save']     = false;
+$incomplete                     = nbs_invoke($service, 'persist_elementor_document', [555, [], []]);
+$incomplete_data                = $incomplete->get_error_data();
+
+nbs_check('a lifecycle failure shares the reason string', $incomplete_data['reason'], 'elementor_save_rejected');
+nbs_check_true('a lifecycle failure has a non-empty detail', '' !== nbs_el_at($incomplete_data, 'detail', ''));
+nbs_check('the two causes are distinguishable only by detail', nbs_el_at($incomplete_data, 'detail', ''), 'Elementor did not complete its document save lifecycle.');
+nbs_check_true('the two details really differ', nbs_el_at($incomplete_data, 'detail', '') !== nbs_el_at($rejected_data, 'detail', ''));
+
+$GLOBALS['nbs_el_doc_save'] = true;
 
 // --- report ----------------------------------------------------------------
 

@@ -779,14 +779,26 @@ class Elementor_Service {
 				)
 			);
 
+			// status/post_id/reason keep their exact shape: callers branch on them.
+			// 'detail' used to reach error_log() only, so two unrelated causes both
+			// surfaced as a bare 403 that read like a credentials problem.
+			$error_data = array(
+				'status'  => $failure_status,
+				'post_id' => (int) $post_id,
+				'reason'  => $failure_reason,
+				'detail'  => $failure_detail,
+			);
+
+			if ( 'elementor_save_rejected' === $failure_reason ) {
+				$diagnosis                = $this->diagnose_elementor_editability( $post_id );
+				$error_data['checks']    = $diagnosis['checks'];
+				$error_data['post_type'] = $diagnosis['post_type'];
+			}
+
 			return new WP_Error(
 				'seor_eb_elementor_meta_write_failed',
 				__( 'WordPress did not persist the Elementor document.', 'nova-bridge-suite' ),
-				array(
-					'status'  => $failure_status,
-					'post_id' => (int) $post_id,
-					'reason'  => $failure_reason,
-				)
+				$error_data
 			);
 		}
 
