@@ -247,7 +247,32 @@ class Elementor_Service {
 		}
 
 		if ( ! current_user_can( 'edit_post', $post_id ) ) {
-			return new WP_Error( 'seor_eb_forbidden', __( 'You are not allowed to edit this page.', 'nova-bridge-suite' ) );
+			return new WP_Error(
+				'seor_eb_forbidden',
+				__( 'You are not allowed to edit this page.', 'nova-bridge-suite' ),
+				array( 'status' => 403 )
+			);
+		}
+
+		// Preflight BEFORE any mutation. persist_elementor_document() used to be the
+		// first place that noticed Elementor refuses the target -- by then
+		// wp_update_post() and persist_meta() had already run and were not rolled
+		// back, so a request aimed at, say, an image attachment answered 403 after
+		// having modified that attachment. Fail earlier and louder instead.
+		$diagnosis = $this->diagnose_elementor_editability( $post_id );
+
+		if ( ! $diagnosis['editable'] ) {
+			return new WP_Error(
+				'seor_eb_elementor_not_editable',
+				__( 'Elementor cannot edit this post, so nothing was written.', 'nova-bridge-suite' ),
+				array(
+					'status'    => $diagnosis['status'],
+					'post_id'   => (int) $post_id,
+					'post_type' => $diagnosis['post_type'],
+					'checks'    => $diagnosis['checks'],
+					'failed'    => $diagnosis['failed'],
+				)
+			);
 		}
 
 		$post_fields = $this->prepare_wordpress_fields( $post->post_type, $payload );
@@ -369,6 +394,152 @@ class Elementor_Service {
 			'status'  => get_post_status( $post_id ),
 			'post_type' => get_post_type( $post_id ),
 		);
+	}
+
+	/**
+	 * Report, check by check, whether Elementor will accept a document write.
+	 *
+	 * Mirrors Elementor's own gate (Elementor\User::is_current_user_can_edit() and
+	 * is_current_user_can_edit_post_type(), which both Document::save() and
+	 * Document::is_editable_by_current_user() reach). Every check is guarded so
+	 * this is safe to call when Elementor is not installed at all.
+	 *
+	 * The named booleans are the point: two very different causes -- "you aimed
+	 * at a post type Elementor cannot build" and "your user cannot edit this" --
+	 * used to collapse into one opaque 403.
+	 *
+	 * @param int $post_id Target post.
+	 * @return array {
+	 *     @type string $post_type Post type of the target, '' when missing.
+	 *     @type array  $checks    Named boolean checks.
+	 *     @type array  $failed    Names of the failed checks, in check order.
+	 *     @type bool   $editable  True only when every check passed.
+	 *     @type int    $status    Suggested HTTP status for a failure.
+	 * }
+	 */
+	private function diagnose_elementor_editability( $post_id ) {
+		$post_id = (int) $post_id;
+		$post    = get_post( $post_id );
+		$exists  = $post instanceof WP_Post;
+		$type    = $exists ? (string) $post->post_type : '';
+
+		$supports_elementor = false;
+
+		if ( $exists && function_exists( 'post_type_supports' ) ) {
+			$supports_elementor = (bool) post_type_supports( $type, 'elementor' );
+		}
+
+		$checks = array(
+			'post_exists'                  => $exists,
+			'not_trashed'                  => $exists && 'trash' !== (string) $post->post_status,
+			'post_type_supports_elementor' => $supports_elementor,
+			'role_not_excluded'            => $this->current_user_role_allowed_by_elementor(),
+			'can_edit_post'                => $exists && $this->current_user_can_edit_post_type_object( $type, $post_id ),
+			'not_blog_posts_page'          => $exists && (int) get_option( 'page_for_posts' ) !== $post_id,
+		);
+
+		// Elementor's own verdict, when Elementor is actually loaded. Reported, but
+		// never used to overrule a failed check above.
+		$elementor_verdict = $this->elementor_document_verdict( $post_id );
+
+		if ( null !== $elementor_verdict ) {
+			$checks['elementor_editable'] = $elementor_verdict;
+		}
+
+		$failed = array();
+
+		foreach ( $checks as $name => $passed ) {
+			if ( ! $passed ) {
+				$failed[] = $name;
+			}
+		}
+
+		// A capability or role refusal is a 403. A post type or site-settings
+		// mismatch is a 409: the caller targeted the wrong object, which is exactly
+		// the signal a 403 hides.
+		$capability_failures = array_intersect( array( 'role_not_excluded', 'can_edit_post' ), $failed );
+		$status              = empty( $capability_failures ) ? 409 : 403;
+
+		return array(
+			'post_type' => $type,
+			'checks'    => $checks,
+			'failed'    => $failed,
+			'editable'  => empty( $failed ),
+			'status'    => $status,
+		);
+	}
+
+	/**
+	 * Whether the current user's roles escape Elementor's role exclusion list.
+	 *
+	 * @return bool
+	 */
+	private function current_user_role_allowed_by_elementor() {
+		if ( ! function_exists( 'wp_get_current_user' ) || ! function_exists( 'get_option' ) ) {
+			return true;
+		}
+
+		$excluded = get_option( 'elementor_exclude_user_roles', array() );
+
+		if ( ! is_array( $excluded ) || empty( $excluded ) ) {
+			return true;
+		}
+
+		$user  = wp_get_current_user();
+		$roles = ( is_object( $user ) && isset( $user->roles ) && is_array( $user->roles ) ) ? $user->roles : array();
+
+		return empty( array_intersect( $roles, $excluded ) );
+	}
+
+	/**
+	 * Check the post type's own edit_post capability, not the generic one.
+	 *
+	 * @param string $post_type Post type name.
+	 * @param int    $post_id   Target post.
+	 * @return bool
+	 */
+	private function current_user_can_edit_post_type_object( $post_type, $post_id ) {
+		$capability = 'edit_post';
+
+		if ( function_exists( 'get_post_type_object' ) ) {
+			$object = get_post_type_object( $post_type );
+
+			if ( is_object( $object ) && isset( $object->cap ) && is_object( $object->cap ) && ! empty( $object->cap->edit_post ) ) {
+				$capability = (string) $object->cap->edit_post;
+			}
+		}
+
+		return (bool) current_user_can( $capability, (int) $post_id );
+	}
+
+	/**
+	 * Elementor's own is_editable_by_current_user() verdict, when reachable.
+	 *
+	 * @param int $post_id Target post.
+	 * @return bool|null Null when Elementor cannot be asked.
+	 */
+	private function elementor_document_verdict( $post_id ) {
+		if ( ! class_exists( '\\Elementor\\Plugin' ) ) {
+			return null;
+		}
+
+		try {
+			$plugin = \Elementor\Plugin::instance();
+
+			if ( ! isset( $plugin->documents ) || ! method_exists( $plugin->documents, 'get' ) ) {
+				return null;
+			}
+
+			$document = $plugin->documents->get( (int) $post_id, false );
+
+			if ( ! is_object( $document ) || ! method_exists( $document, 'is_editable_by_current_user' ) ) {
+				return null;
+			}
+
+			return (bool) $document->is_editable_by_current_user();
+		} catch ( \Throwable $e ) {
+			return null;
+		}
 	}
 
 	/**

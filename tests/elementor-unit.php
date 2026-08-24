@@ -345,6 +345,16 @@ function wp_json_encode($value, $flags = 0, $depth = 512)
     return json_encode($value, $flags, $depth);
 }
 
+function wp_rand($min = 0, $max = 0)
+{
+    return $min;
+}
+
+function wp_generate_uuid4()
+{
+    return '00000000-0000-4000-8000-000000000000';
+}
+
 function absint($value)
 {
     return abs((int) $value);
@@ -489,6 +499,125 @@ nbs_check_true("the 'any' lookup is a list, so WP_Query can consume it", array_v
 // asked for something Elementor can never edit.
 $attachment_request = nbs_invoke($controller, 'resolve_slug_lookup_types', ['attachment', $public_types]);
 nbs_check_true('an explicit attachment request is still an array', is_array($attachment_request));
+
+// ---------------------------------------------------------------------------
+// diagnose_elementor_editability() + update_page() preflight
+//
+// Live incident: the slug lookup above returned an image attachment, and
+// update_page() ran wp_update_post() and persist_meta() on it before
+// persist_elementor_document() discovered that
+// post_type_supports('attachment','elementor') is false. The rollback there
+// only restores three _elementor_* meta keys, so the WP field and meta writes
+// stuck. The mutation counters below are the proof that is gone.
+// ---------------------------------------------------------------------------
+
+nbs_el_seed_post(974, 'attachment', 'inherit', ['post_title' => 'magnesium-and-taurine.png']);
+nbs_el_seed_post(555, 'page', 'publish');
+nbs_el_seed_post(556, 'page', 'trash');
+nbs_el_seed_post(557, 'page', 'publish');
+
+$attachment_diagnosis = nbs_invoke($service, 'diagnose_elementor_editability', [974]);
+
+nbs_check('the diagnosis reports the post type it refused', $attachment_diagnosis['post_type'], 'attachment');
+nbs_check('an attachment does not support elementor', $attachment_diagnosis['checks']['post_type_supports_elementor'], false);
+nbs_check_true('the attachment still exists, so post_exists is not the excuse', $attachment_diagnosis['checks']['post_exists']);
+nbs_check_true('the user can still edit it, so this is not a capability failure', $attachment_diagnosis['checks']['can_edit_post']);
+nbs_check('an attachment is not editable overall', $attachment_diagnosis['editable'], false);
+nbs_check('the failed check is named', $attachment_diagnosis['failed'], ['post_type_supports_elementor']);
+nbs_check('a post type mismatch is a 409, not a credentials-looking 403', $attachment_diagnosis['status'], 409);
+
+$healthy_diagnosis = nbs_invoke($service, 'diagnose_elementor_editability', [555]);
+
+nbs_check_true('a healthy page is editable', $healthy_diagnosis['editable']);
+nbs_check('a healthy page has no failed checks', $healthy_diagnosis['failed'], []);
+nbs_check_true('a healthy page supports elementor', $healthy_diagnosis['checks']['post_type_supports_elementor']);
+
+$missing_diagnosis = nbs_invoke($service, 'diagnose_elementor_editability', [999999]);
+nbs_check('a missing post is not editable', $missing_diagnosis['editable'], false);
+nbs_check('a missing post reports no post type', $missing_diagnosis['post_type'], '');
+
+$trashed_diagnosis = nbs_invoke($service, 'diagnose_elementor_editability', [556]);
+nbs_check('a trashed page fails not_trashed', $trashed_diagnosis['checks']['not_trashed'], false);
+nbs_check('a trashed page is not editable', $trashed_diagnosis['editable'], false);
+
+$GLOBALS['nbs_el_options']['page_for_posts'] = 557;
+$blog_diagnosis = nbs_invoke($service, 'diagnose_elementor_editability', [557]);
+nbs_check('the blog posts page fails not_blog_posts_page', $blog_diagnosis['checks']['not_blog_posts_page'], false);
+nbs_check('the blog posts page is a 409', $blog_diagnosis['status'], 409);
+unset($GLOBALS['nbs_el_options']['page_for_posts']);
+
+// A genuine capability failure keeps answering 403.
+$GLOBALS['nbs_el_caps'] = ['edit_page' => false, '*' => true];
+$cap_diagnosis          = nbs_invoke($service, 'diagnose_elementor_editability', [555]);
+nbs_check('a per-type capability failure is caught', $cap_diagnosis['checks']['can_edit_post'], false);
+nbs_check('a capability failure is a 403', $cap_diagnosis['status'], 403);
+$GLOBALS['nbs_el_caps'] = ['*' => true];
+
+// Elementor's role exclusion list is honoured without Elementor being present.
+$GLOBALS['nbs_el_options']['elementor_exclude_user_roles'] = ['administrator'];
+$role_diagnosis                                           = nbs_invoke($service, 'diagnose_elementor_editability', [555]);
+nbs_check('an excluded role fails role_not_excluded', $role_diagnosis['checks']['role_not_excluded'], false);
+nbs_check('an excluded role is a 403', $role_diagnosis['status'], 403);
+unset($GLOBALS['nbs_el_options']['elementor_exclude_user_roles']);
+
+nbs_check(
+    'the diagnosis omits elementor_editable when Elementor is absent',
+    array_key_exists('elementor_editable', $healthy_diagnosis['checks']),
+    false
+);
+
+// --- update_page() must not touch a post Elementor refuses -------------------
+
+$attachment_payload = [
+    'title'   => 'Rewritten by the flow',
+    'slug'    => 'rewritten-by-the-flow',
+    'status'  => 'publish',
+    'excerpt' => 'Should never land.',
+    'meta'    => ['_yoast_wpseo_title' => 'Should never land either'],
+];
+
+nbs_el_reset_calls();
+$attachment_result = $service->update_page(974, $attachment_payload);
+
+nbs_check_true('updating an attachment is an error', is_wp_error($attachment_result));
+nbs_check('the refusal has its own error code', $attachment_result->get_error_code(), 'seor_eb_elementor_not_editable');
+
+$attachment_data = $attachment_result->get_error_data();
+nbs_check('the refusal is a 409', $attachment_data['status'], 409);
+nbs_check('the refusal names the post', $attachment_data['post_id'], 974);
+nbs_check('the refusal names the post type', $attachment_data['post_type'], 'attachment');
+nbs_check_true('the refusal carries the checks array', is_array($attachment_data['checks']) && !empty($attachment_data['checks']));
+nbs_check('the refusal names which check failed', $attachment_data['failed'], ['post_type_supports_elementor']);
+
+nbs_check('no wp_update_post() ran on the refused post', $GLOBALS['nbs_el_calls']['wp_update_post'], 0);
+nbs_check('no update_post_meta() ran on the refused post', $GLOBALS['nbs_el_calls']['update_post_meta'], 0);
+nbs_check('no delete_post_meta() ran on the refused post', $GLOBALS['nbs_el_calls']['delete_post_meta'], 0);
+nbs_check('the refused post kept its title', get_post(974)->post_title, 'magnesium-and-taurine.png');
+nbs_check('the refused post kept its slug', get_post(974)->post_name, 'post-974');
+nbs_check('the refused post gained no meta', get_post_meta(974), []);
+
+// A trashed page is refused just as bluntly, without mutation.
+nbs_el_reset_calls();
+$trashed_result = $service->update_page(556, $attachment_payload);
+nbs_check('updating a trashed page is refused by code', $trashed_result->get_error_code(), 'seor_eb_elementor_not_editable');
+nbs_check('a trashed page is not mutated either', $GLOBALS['nbs_el_calls']['wp_update_post'], 0);
+
+// --- a healthy page still reaches the Elementor document write ---------------
+//
+// Elementor is not loaded in this harness, so the write fails at the Elementor
+// boundary with reason 'elementor_api_unavailable'. That reason is itself the
+// evidence that the preflight let the request through to the document write,
+// and the counters show the WP-side mutations really did run.
+
+nbs_el_reset_calls();
+$healthy_result = $service->update_page(555, ['title' => 'A real page title']);
+
+nbs_check_true('a healthy page is not blocked by the preflight', is_wp_error($healthy_result));
+nbs_check('a healthy page reaches the document write', $healthy_result->get_error_code(), 'seor_eb_elementor_meta_write_failed');
+$healthy_data = $healthy_result->get_error_data();
+nbs_check('the healthy page failed at the Elementor boundary, not the preflight', $healthy_data['reason'], 'elementor_api_unavailable');
+nbs_check_true('a healthy page really was mutated (proving the preflight passed)', $GLOBALS['nbs_el_calls']['wp_update_post'] > 0);
+nbs_check('the healthy page took the new title', get_post(555)->post_title, 'A real page title');
 
 // --- report ----------------------------------------------------------------
 
