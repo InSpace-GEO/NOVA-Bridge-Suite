@@ -737,6 +737,286 @@ nbs_check_true('the two details really differ', nbs_el_at($incomplete_data, 'det
 
 $GLOBALS['nbs_el_doc_save'] = true;
 
+// ---------------------------------------------------------------------------
+// ADVERSARIAL BLOCK (test-adversary pass)
+//
+// Everything above tests resolve_slug_lookup_types() in isolation. Nothing
+// above ever calls get_collection(), which is its only production caller and
+// the exact path the live incident took: reverting the call site to the 2.8.4
+// ternary leaves all 72 original checks green. The stubs below reproduce WP
+// core's get_page_by_path() faithfully -- INCLUDING the string widening and the
+// missing post_status filter -- so the call site is exercised, not described.
+// ---------------------------------------------------------------------------
+
+$GLOBALS['nbs_el_lookup_arg'] = null;
+$GLOBALS['nbs_el_query_arg']  = null;
+
+class WP_REST_Request
+{
+    private $params;
+
+    public function __construct(array $params = [])
+    {
+        $this->params = $params;
+    }
+
+    public function get_param($key)
+    {
+        return array_key_exists($key, $this->params) ? $this->params[$key] : null;
+    }
+}
+
+/**
+ * Faithful port of wp-includes/post.php::get_page_by_path() for the two
+ * behaviours that caused the incident:
+ *   1. a STRING $post_type becomes array( $post_type, 'attachment' );
+ *   2. post_status is never filtered, so 'inherit' attachments match.
+ */
+function get_page_by_path($page_path, $output = OBJECT, $post_type = 'page')
+{
+    $GLOBALS['nbs_el_lookup_arg'] = $post_type;
+
+    $post_types = is_array($post_type) ? $post_type : [$post_type, 'attachment'];
+    $slug       = basename(trim((string) $page_path, '/'));
+
+    foreach ($GLOBALS['nbs_el_posts'] as $candidate) {
+        if ($candidate->post_name === $slug && in_array($candidate->post_type, $post_types, true)) {
+            return $candidate;
+        }
+    }
+
+    return null;
+}
+
+class WP_Query
+{
+    public $posts = [];
+
+    public function __construct(array $args = [])
+    {
+        $GLOBALS['nbs_el_query_arg'] = isset($args['post_type']) ? $args['post_type'] : null;
+
+        $types = is_array($GLOBALS['nbs_el_query_arg']) ? $GLOBALS['nbs_el_query_arg'] : [$GLOBALS['nbs_el_query_arg']];
+        $name  = isset($args['name']) ? $args['name'] : '';
+
+        foreach ($GLOBALS['nbs_el_posts'] as $candidate) {
+            if ($candidate->post_name === $name && in_array($candidate->post_type, $types, true)) {
+                $this->posts[] = (int) $candidate->ID;
+                break;
+            }
+        }
+    }
+
+    public function have_posts()
+    {
+        return !empty($this->posts);
+    }
+}
+
+/** Records which post id the controller decided to hand to the service. */
+class NBS_Fake_Service
+{
+    public function get_page_payload($post_id, array $args = [])
+    {
+        return ['post_id' => (int) $post_id];
+    }
+}
+
+$lookup_controller = new SEOR_Elementor_Bridge\Rest_Controller();
+$service_property  = new ReflectionProperty('SEOR_Elementor_Bridge\Rest_Controller', 'service');
+$service_property->setAccessible(true);
+$service_property->setValue($lookup_controller, new NBS_Fake_Service());
+
+// The live shape: NOVA uploads "gezonde-voeding.png" BEFORE the page exists, so
+// the attachment owns the slug. Seed the attachment FIRST so it wins any lookup
+// that is allowed to see it.
+nbs_el_seed_post(9741, 'attachment', 'inherit', ['post_name' => 'gezonde-voeding', 'post_title' => 'gezonde-voeding.png']);
+nbs_el_seed_post(1200, 'page', 'publish', ['post_name' => 'gezonde-voeding', 'post_title' => 'Gezonde voeding']);
+
+$GLOBALS['nbs_el_lookup_arg'] = null;
+$collection = $lookup_controller->get_collection(new WP_REST_Request(['slug' => 'gezonde-voeding']));
+
+nbs_check_true(
+    'get_collection() hands get_page_by_path() an ARRAY, not a string',
+    is_array($GLOBALS['nbs_el_lookup_arg'])
+);
+nbs_check(
+    'the type list the call site actually passed excludes attachment',
+    in_array('attachment', nbs_el_types($GLOBALS['nbs_el_lookup_arg']), true),
+    false
+);
+nbs_check_true('a slug lookup returns a list of payloads', is_array($collection) && isset($collection[0]));
+nbs_check(
+    'the slug lookup resolves the PAGE, not the attachment sharing its slug',
+    nbs_el_at(is_array($collection) ? $collection[0] : [], 'post_id'),
+    1200
+);
+
+// The first-post case: the image exists, the page does not yet. This is the
+// exact state the incident started from -- the endpoint reported that the page
+// already existed, so the flow took the UPDATE branch.
+unset($GLOBALS['nbs_el_posts'][1200]);
+$GLOBALS['nbs_el_lookup_arg'] = null;
+$GLOBALS['nbs_el_query_arg']  = null;
+$first_post = $lookup_controller->get_collection(new WP_REST_Request(['slug' => 'gezonde-voeding']));
+
+nbs_check_true('an image-only slug is an error, not a match', is_wp_error($first_post));
+nbs_check(
+    'an image-only slug answers 404 instead of reporting the page exists',
+    is_wp_error($first_post) ? $first_post->get_error_code() : $first_post,
+    'seor_eb_not_found'
+);
+nbs_check_true(
+    'the WP_Query fallback receives an array too',
+    is_array($GLOBALS['nbs_el_query_arg'])
+);
+nbs_check(
+    'the WP_Query fallback is not allowed to see attachments either',
+    in_array('attachment', nbs_el_types($GLOBALS['nbs_el_query_arg']), true),
+    false
+);
+
+// post_type=any goes through the other branch of the helper, where
+// get_post_types(['public' => true]) itself contains attachment.
+nbs_el_seed_post(9742, 'attachment', 'inherit', ['post_name' => 'any-branch-slug']);
+nbs_el_seed_post(1201, 'page', 'publish', ['post_name' => 'any-branch-slug']);
+$GLOBALS['nbs_el_lookup_arg'] = null;
+$any_collection = $lookup_controller->get_collection(new WP_REST_Request(['slug' => 'any-branch-slug', 'post_type' => 'any']));
+
+nbs_check(
+    'post_type=any still never offers attachment to the lookup',
+    in_array('attachment', nbs_el_types($GLOBALS['nbs_el_lookup_arg']), true),
+    false
+);
+nbs_check(
+    'post_type=any resolves the page, not the attachment',
+    nbs_el_at(is_array($any_collection) ? $any_collection[0] : [], 'post_id'),
+    1201
+);
+
+// ---------------------------------------------------------------------------
+// seor_eb_forbidden used to carry no data at all, so the REST layer answered
+// 500 for what is a plain permission refusal. Nothing above asserts the status
+// that commit ae568cd added.
+// ---------------------------------------------------------------------------
+
+$GLOBALS['nbs_el_caps'] = ['edit_post' => false, '*' => true];
+nbs_el_reset_calls();
+$forbidden              = $service->update_page(555, ['title' => 'Nope']);
+$GLOBALS['nbs_el_caps'] = ['*' => true];
+
+nbs_check('a capability refusal keeps its error code', $forbidden->get_error_code(), 'seor_eb_forbidden');
+$forbidden_data = $forbidden->get_error_data();
+nbs_check_true('a capability refusal carries error data at all', is_array($forbidden_data));
+nbs_check('a capability refusal is a 403, not an unset status that reads as 500', nbs_el_at($forbidden_data, 'status'), 403);
+nbs_check('a capability refusal mutates nothing', $GLOBALS['nbs_el_calls']['wp_update_post'], 0);
+
+// ---------------------------------------------------------------------------
+// The preflight must sit before persist_wordpress_fields(), not merely before
+// wp_update_post(). featured_media / categories / meta_all are written by
+// persist_wordpress_fields(); the payload used earlier contains none of them,
+// so moving the preflight below that call went unnoticed.
+// ---------------------------------------------------------------------------
+
+$GLOBALS['nbs_el_terms'] = [];
+
+function nbs_el_reset_field_calls()
+{
+    $GLOBALS['nbs_el_calls']['set_post_thumbnail']     = 0;
+    $GLOBALS['nbs_el_calls']['wp_set_post_categories'] = 0;
+    $GLOBALS['nbs_el_calls']['meta_all_write']         = 0;
+}
+
+function wp_get_attachment_image($attachment_id, $size = 'thumbnail')
+{
+    return '<img src="stub.png" />';
+}
+
+function get_post_thumbnail_id($post_id = null)
+{
+    return (int) get_post_meta($post_id, '_thumbnail_id', true);
+}
+
+function set_post_thumbnail($post_id, $thumbnail_id)
+{
+    ++$GLOBALS['nbs_el_calls']['set_post_thumbnail'];
+    update_post_meta($post_id, '_thumbnail_id', (int) $thumbnail_id);
+
+    return true;
+}
+
+function delete_post_thumbnail($post_id)
+{
+    ++$GLOBALS['nbs_el_calls']['set_post_thumbnail'];
+    delete_post_meta($post_id, '_thumbnail_id');
+
+    return true;
+}
+
+function is_object_in_taxonomy($post_type, $taxonomy)
+{
+    return true;
+}
+
+function get_taxonomy($taxonomy)
+{
+    return (object) ['cap' => (object) ['assign_terms' => 'assign_terms']];
+}
+
+function get_term($term_id, $taxonomy = '')
+{
+    return (object) ['term_id' => (int) $term_id, 'taxonomy' => (string) $taxonomy];
+}
+
+function wp_set_post_categories($post_id, $categories = [], $append = false)
+{
+    ++$GLOBALS['nbs_el_calls']['wp_set_post_categories'];
+    $GLOBALS['nbs_el_terms'][(int) $post_id] = $categories;
+
+    return $categories;
+}
+
+function cf_tmrb_update_post_meta_all_payload($payload, $post)
+{
+    ++$GLOBALS['nbs_el_calls']['meta_all_write'];
+
+    foreach ((array) $payload as $key => $value) {
+        update_post_meta(is_object($post) ? $post->ID : 0, $key, $value);
+    }
+
+    return true;
+}
+
+$heavy_payload = [
+    'title'          => 'Rewritten by the flow',
+    'featured_media' => 4242,
+    'categories'     => [7],
+    'meta_all'       => ['_yoast_wpseo_metadesc' => 'must never land'],
+];
+
+nbs_el_reset_calls();
+nbs_el_reset_field_calls();
+$heavy_result = $service->update_page(974, $heavy_payload);
+
+nbs_check('a field-carrying payload is refused too', $heavy_result->get_error_code(), 'seor_eb_elementor_not_editable');
+nbs_check('the refused post got no featured image', $GLOBALS['nbs_el_calls']['set_post_thumbnail'], 0);
+nbs_check('the refused post got no categories', $GLOBALS['nbs_el_calls']['wp_set_post_categories'], 0);
+nbs_check('the refused post got no meta_all write', $GLOBALS['nbs_el_calls']['meta_all_write'], 0);
+nbs_check('the refused post has no stored terms', isset($GLOBALS['nbs_el_terms'][974]), false);
+nbs_check('the refused post has no stored meta of any kind', get_post_meta(974), []);
+
+// The same payload on a HEALTHY page must still reach those writes, so the
+// checks above cannot pass merely because the fields are never written at all.
+nbs_el_reset_calls();
+nbs_el_reset_field_calls();
+$service->update_page(555, $heavy_payload);
+
+nbs_check('a healthy page does get its featured image', $GLOBALS['nbs_el_calls']['set_post_thumbnail'], 1);
+nbs_check('a healthy page does get its categories', $GLOBALS['nbs_el_calls']['wp_set_post_categories'], 1);
+nbs_check('a healthy page does get its meta_all write', $GLOBALS['nbs_el_calls']['meta_all_write'], 1);
+nbs_check('the healthy page really stored the meta_all value', get_post_meta(555, '_yoast_wpseo_metadesc', true), 'must never land');
+nbs_check('the healthy page really stored the thumbnail id', get_post_meta(555, '_thumbnail_id', true), 4242);
+
 // --- report ----------------------------------------------------------------
 
 echo "\n";
