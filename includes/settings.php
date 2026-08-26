@@ -822,7 +822,22 @@ function nova_bridge_suite_render_settings_accordion( string $page, string $sect
 }
 
 function nova_bridge_suite_render_settings_page(): void {
-    $version = defined( 'NOVA_BRIDGE_SUITE_VERSION' ) ? (string) NOVA_BRIDGE_SUITE_VERSION : '';
+    $version     = defined( 'NOVA_BRIDGE_SUITE_VERSION' ) ? (string) NOVA_BRIDGE_SUITE_VERSION : '';
+    $current_tab = isset( $_GET['tab'] ) && is_scalar( $_GET['tab'] )
+        ? sanitize_key( (string) wp_unslash( $_GET['tab'] ) )
+        : 'modules';
+
+    if ( ! in_array( $current_tab, [ 'modules', 'content-context' ], true ) ) {
+        $current_tab = 'modules';
+    }
+
+    $tab_args = [ 'page' => 'nova-settings' ];
+    if ( isset( $_GET['lang'] ) && is_scalar( $_GET['lang'] ) ) {
+        $tab_args['lang'] = sanitize_text_field( (string) wp_unslash( $_GET['lang'] ) );
+    }
+
+    $modules_url = add_query_arg( array_merge( $tab_args, [ 'tab' => 'modules' ] ), admin_url( 'options-general.php' ) );
+    $context_url = add_query_arg( array_merge( $tab_args, [ 'tab' => 'content-context' ] ), admin_url( 'options-general.php' ) );
     ?>
     <div class="wrap">
         <h1>
@@ -831,6 +846,25 @@ function nova_bridge_suite_render_settings_page(): void {
                 <span style="margin-left:8px;font-size:13px;font-weight:500;color:#646970;"><?php echo esc_html( 'v' . $version ); ?></span>
             <?php endif; ?>
         </h1>
+        <nav class="nav-tab-wrapper" aria-label="<?php echo esc_attr__( 'NOVA Settings sections', 'nova-bridge-suite' ); ?>">
+            <a href="<?php echo esc_url( $modules_url ); ?>" class="nav-tab <?php echo 'modules' === $current_tab ? 'nav-tab-active' : ''; ?>">
+                <?php echo esc_html__( 'Modules', 'nova-bridge-suite' ); ?>
+            </a>
+            <a href="<?php echo esc_url( $context_url ); ?>" class="nav-tab <?php echo 'content-context' === $current_tab ? 'nav-tab-active' : ''; ?>">
+                <?php echo esc_html__( 'API Content Context', 'nova-bridge-suite' ); ?>
+            </a>
+        </nav>
+		<?php if ( 'content-context' === $current_tab ) : ?>
+            <?php if ( class_exists( 'Nova_Bridge_Suite_Content_Context' ) ) : ?>
+                <?php Nova_Bridge_Suite_Content_Context::render_settings_tab(); ?>
+            <?php else : ?>
+                <div class="notice notice-error inline"><p><?php echo esc_html__( 'The API content-context runtime could not be loaded.', 'nova-bridge-suite' ); ?></p></div>
+            <?php endif; ?>
+            </div>
+            <?php
+            return;
+        endif;
+        ?>
         <p><?php echo esc_html__( 'Choose which NOVA modules are active. The core bridge and post resolver always remain on.', 'nova-bridge-suite' ); ?></p>
         <?php nova_bridge_suite_render_recommendation_notice(); ?>
         <style>

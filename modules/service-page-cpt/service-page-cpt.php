@@ -385,7 +385,9 @@ final class Plugin {
 			'rest_base'          => $base,
 			'menu_position'      => 22,
 			'menu_icon'          => 'dashicons-screenoptions',
-			'supports'           => [ 'title', 'excerpt', 'thumbnail', 'revisions', 'author', 'page-attributes' ],
+			// WordPress exposes register_post_meta() fields through the native REST
+			// `meta` property only when the post type supports custom fields.
+			'supports'           => [ 'title', 'excerpt', 'thumbnail', 'revisions', 'author', 'page-attributes', 'custom-fields' ],
 			'rewrite'            => [
 				'slug'         => $base,
 				'with_front'   => false,
@@ -8794,22 +8796,6 @@ final class Plugin {
 			return;
 		}
 
-		$meta_description = $this->get_meta_context_note( 'Service page fields for the active layout.', $this->get_selected_template_slug() );
-
-		\register_rest_field(
-			self::CPT,
-			'meta',
-			[
-				'get_callback' => [ $this, 'get_rest_meta_field' ],
-				'schema'       => [
-					'description' => $meta_description,
-					'type'        => 'object',
-					'context'     => [ 'view', 'edit' ],
-					'properties'  => $meta_schema,
-				],
-			]
-		);
-
 		$description_schema = $this->get_rest_meta_description_schema();
 		if ( ! empty( $description_schema ) ) {
 			\register_rest_field(
@@ -8821,6 +8807,7 @@ final class Plugin {
 						'description' => __( 'Descriptions for the active service page meta fields.', 'nova-bridge-suite' ),
 						'type'        => 'object',
 						'context'     => [ 'view', 'edit' ],
+						'readonly'    => true,
 						'properties'  => $description_schema,
 					],
 				]
@@ -8838,6 +8825,7 @@ final class Plugin {
 						'description' => __( 'Usage notes for the active service page meta fields.', 'nova-bridge-suite' ),
 						'type'        => 'string',
 						'context'     => [ 'view', 'edit' ],
+						'readonly'    => true,
 					],
 				]
 			);

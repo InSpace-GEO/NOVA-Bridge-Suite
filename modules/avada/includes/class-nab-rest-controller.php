@@ -541,8 +541,15 @@ class REST_Controller extends WP_REST_Controller {
         ];
     }
 
-    public function get_endpoint_args_for_item_schema($creating = false) {
-        $args = parent::get_endpoint_args_for_item_schema($creating);
+    public function get_endpoint_args_for_item_schema($method = WP_REST_Server::CREATABLE) {
+        // Older NOVA callers used a Boolean while WordPress's controller contract
+        // accepts an HTTP method string. Preserve both without passing a Boolean
+        // into the core schema helper.
+        if (is_bool($method)) {
+            $method = $method ? WP_REST_Server::CREATABLE : WP_REST_Server::EDITABLE;
+        }
+
+        $args = parent::get_endpoint_args_for_item_schema($method);
         $args['template'] = [
             'description' => __('Existing page ID or slug whose layout/meta should be cloned when layout is omitted.', 'nova-bridge-suite'),
             'type'        => 'string',
