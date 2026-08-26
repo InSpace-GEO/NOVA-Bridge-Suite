@@ -2,9 +2,9 @@
 Contributors: jg-inspace
 Tags: seo, automation, content, rest-api, page builder
 Requires at least: 6.0
-Tested up to: 7.0
+Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 2.8.2
+Stable tag: 2.12.1
 License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -21,6 +21,21 @@ Use it to:
 
 Modules are optional and can be toggled from Settings -> NOVA Settings. The core bridge and post resolver are always on; other modules only run when enabled and when the related plugin is active.
 
+The API Content Context tab provides a focused map of NOVA publishing destinations and lets administrators map each discovered field to NOVA content with field-level publishing guidance. Its compact, mapping-first interface keeps field mappings and instructions prominent while placing routes, transports, request paths, and other implementation details in an optional technical-details disclosure.
+
+= API Content Context =
+Open Settings -> NOVA Settings -> API Content Context to inspect Posts, Pages, client-owned editorial custom post types, and one logical WooCommerce Product categories destination when WooCommerce is available. Products and unrelated operational endpoints such as navigation, payments, countries, and plugin configuration are omitted. NOVA's own Service Page CPT and NOVA-managed Blog CPTs are also omitted from this discovery inventory because their dedicated modules already expose the REST context NOVA needs. A relevant client-owned custom post type can still be listed as unavailable when its REST API support is disabled.
+
+Each destination contains only publishing-related fields: native content fields, featured media, taxonomy assignments, relevant registered custom meta, applicable ACF fields, and the active SEO provider's title and description fields. SEO fields are grouped by provider. Fields verified against an available write transport are marked available; useful fields that are hidden from REST or otherwise lack a writer are marked potential with the reason they cannot currently be changed.
+
+Page-builder mappings come from a selected, concrete document rather than a global widget catalogue. The authenticated GET /wp-json/nova-bridge/v1/content-endpoints/bridge-fields?post_id=<id> request loads the actual textual fields returned by the enabled NOVA bridge for that document, including the selector and write contract needed to address them.
+
+Fields use RFC 6901 JSON Pointers, for example /title, /content, /meta/blog_intro, or /meta/sp_faq/*/answer. Nested meta and ACF leaves remain visible for mapping but are marked as requiring the complete parent payload when no safe leaf writer exists. Administrators can save a NOVA mapping and guidance for every field.
+
+For post types with theme templates, administrators choose which templates NOVA uses, may select more than one, and designate one selected template as primary. Each selected template can define its own overall context plus targeted mapping and guidance overrides for real API fields. Template choices and overrides are stored as configuration instead of inflating discovery with an @templates field cross-product. In authenticated edit-context responses, active-template field overrides are merged into the read-only nova_content_mappings and meta_descriptions objects, while the read-only nova_template_contexts object reports the selected, primary, and current template context records.
+
+The live inventory at GET /wp-json/nova-bridge/v1/content-endpoints is restricted to administrators. Builder-field inspection requires permission to edit the selected document, and saved context is not exposed to anonymous visitors.
+
 == Installation ==
 1. Upload the plugin folder to `wp-content/plugins/` or install the ZIP in Plugins -> Add New.
 2. Activate "NOVA Bridge Suite".
@@ -35,12 +50,44 @@ This plugin is designed for NOVA automations. You can activate it without NOVA, 
 No. It works alongside builders like Avada, Elementor, WPBakery, Breakdance, and Beaver Builder so NOVA can update their content safely.
 
 = Does it work on WooCommerce sites? =
-Yes. If WooCommerce is active you can enable the rich text field module for category pages.
+The API Content Context inventory currently supports WooCommerce product categories only; products are intentionally not included yet. If WooCommerce is active you can enable the rich text field module for category pages.
 
 == Screenshots ==
 1. NOVA Settings screen with module toggles.
 
 == Changelog ==
+
+= 2.12.1 =
+* Group WooCommerce category name, description, slug, and display fields as core content; show parent hierarchy and images under the clearer Media & category structure group.
+
+= 2.12.0 =
+* Replace the discovered template-field cross-product with explicit per-destination template selections, including multiple selected templates, required usage context for each multi-selection, and a designated primary choice.
+* Add overall context plus real-field NOVA mapping and guidance overrides for each selected template; merge active overrides into private field context and expose selected/current metadata through read-only nova_template_contexts.
+* Rework API Content Context into a compact mapping-first interface with grouped SEO fields and optional technical details.
+* Keep WooCommerce discovery focused on product categories; products remain outside this publishing inventory.
+
+= 2.11.1 =
+* Omit NOVA's own Service Page CPT and NOVA-managed Blog CPTs from API Content Context discovery because their dedicated modules already expose the required REST context.
+
+= 2.11.0 =
+* Replace the broad REST route inventory with Posts, Pages, relevant editorial custom post types, and one logical WooCommerce Product categories destination.
+* Report only publishing-related native, media, taxonomy, custom-meta, ACF, and active SEO fields, separating verified write paths from useful potential fields with availability reasons.
+* Add a per-field NOVA content mapping alongside administrator-authored publishing guidance in private REST responses.
+* Add template-scoped mapping and guidance overrides for each relevant textual API field.
+* Load actual page-builder text fields on demand from a selected document through its NOVA bridge instead of listing global builder capabilities.
+* Keep endpoint discovery administrator-only and require edit permission for document-level builder inspection.
+
+= 2.10.0 =
+* Focus the default inventory on explicitly enabled, usable editorial endpoints while separating media, commerce, operational CPTs, and arbitrary write routes.
+* Persist per-CPT NOVA endpoint selections even before field guidance is authored.
+* Distinguish schema-verified writable fields from potential post supports, REST-disabled meta, ACF fields, and template or builder capabilities, including exact availability reasons.
+* Add per-template, Gutenberg block attribute, and Elementor text-control guidance targets with lazy UI rendering for large client sites.
+
+= 2.9.0 =
+* Discover REST content endpoints and client custom post types, including post types that are not exposed through the API.
+* Let administrators define per-field publishing context from NOVA Settings and inject it into authenticated REST responses without exposing private guidance publicly.
+* Report opaque page-builder payloads honestly and allow manual JSON Pointer field paths where a route has no registered write schema.
+* Restore native writable post meta for the NOVA Blog and Service CPTs without shadowing WordPress's core meta field.
 
 = 2.8.2 =
 * Reject unsafe nested Avada text updates, preserve mixed shortcode content and post status, append overflow in an independent section, and keep rendered Avada content synchronized with its builder mirrors.

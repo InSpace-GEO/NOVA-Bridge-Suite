@@ -1108,7 +1108,9 @@ final class Plugin {
 				'rest_base'          => $rest_base,
 				'menu_position'      => 22,
 				'menu_icon'          => plugin_dir_url( __FILE__ ) . 'assets/quarantined-cpt-rocket.svg',
-				'supports'           => [ 'title', 'author', 'thumbnail', 'revisions', 'page-attributes' ],
+				// WordPress exposes register_post_meta() fields through the native REST
+				// `meta` property only when the post type supports custom fields.
+				'supports'           => [ 'title', 'author', 'thumbnail', 'revisions', 'page-attributes', 'custom-fields' ],
 				'rewrite'            => [
 					'slug'         => $base_slug,
 					'with_front'   => false,
@@ -5291,26 +5293,11 @@ final class Plugin {
 
 		foreach ( $post_types as $post_type ) {
 			$allowed_meta_keys  = $this->get_blog_ai_editable_meta_keys( $post_type );
-			$meta_schema        = $this->get_blog_rest_meta_schema( $allowed_meta_keys );
 			$description_schema = [];
 
 			foreach ( $allowed_meta_keys as $meta_key ) {
 				$description_schema[ $meta_key ] = [ 'type' => 'string' ];
 			}
-
-			register_rest_field(
-				$post_type,
-				'meta',
-				[
-					'get_callback' => [ $this, 'get_blog_rest_meta_field' ],
-					'schema'       => [
-						'description' => __( 'Blog layout meta fields for this post type.', 'nova-bridge-suite' ),
-						'type'        => 'object',
-						'context'     => [ 'view', 'edit' ],
-						'properties'  => $meta_schema,
-					],
-				]
-			);
 
 			register_rest_field(
 				$post_type,
@@ -5321,6 +5308,7 @@ final class Plugin {
 						'description' => __( 'Descriptions for NOVA Blog layout fields.', 'nova-bridge-suite' ),
 						'type'        => 'object',
 						'context'     => [ 'view', 'edit' ],
+						'readonly'    => true,
 						'properties'  => $description_schema,
 					],
 				]
@@ -5335,6 +5323,7 @@ final class Plugin {
 						'description' => __( 'Usage notes for NOVA Blog layout fields.', 'nova-bridge-suite' ),
 						'type'        => 'string',
 						'context'     => [ 'view', 'edit' ],
+						'readonly'    => true,
 					],
 				]
 			);
