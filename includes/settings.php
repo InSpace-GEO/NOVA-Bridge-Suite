@@ -6,6 +6,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 function nova_bridge_suite_module_definitions(): array {
     return [
+        'api_mapping_context'    => [
+            'path'                 => 'modules/api-mapping-context/api-mapping-context.php',
+            'standalone_filenames' => [ 'api-mapping-context.php' ],
+            'default_enabled'      => true,
+        ],
         'pagebuilder_wpbakery'   => [
             'path'                 => 'modules/wpbakery/wpbakery-bridge.php',
             'standalone_filenames' => [ 'wpbakery-bridge.php' ],
@@ -65,7 +70,7 @@ function nova_bridge_suite_default_settings(): array {
     $defaults = [];
 
     foreach ( nova_bridge_suite_module_definitions() as $key => $module ) {
-        $defaults[ $key ] = 0;
+        $defaults[ $key ] = empty( $module['default_enabled'] ) ? 0 : 1;
     }
 
     return $defaults;
@@ -574,6 +579,26 @@ function nova_bridge_suite_register_settings(): void {
     );
 
     add_settings_section(
+        'nova_bridge_api_mapping',
+        'API Mapping Context',
+        '__return_false',
+        'nova-settings'
+    );
+
+    add_settings_field(
+        'nova_bridge_api_mapping_context_toggle',
+        'API Mapping Context',
+        'nova_bridge_suite_render_checkbox_field',
+        'nova-settings',
+        'nova_bridge_api_mapping',
+        [
+            'key'         => 'api_mapping_context',
+            'label'       => 'Enable API Mapping Context',
+            'description' => 'Discover publishing endpoints and map their API fields to NOVA content with optional authoring guidance.',
+        ]
+    );
+
+    add_settings_section(
         'nova_bridge_pagebuilders',
         'Pagebuilder Bridges',
         '__return_false',
@@ -821,13 +846,90 @@ function nova_bridge_suite_render_settings_accordion( string $page, string $sect
     echo '</details>';
 }
 
+/**
+ * Returns settings tabs registered by enabled modules.
+ *
+ * Modules own their tab label and render callback, keeping feature-specific UI
+ * out of the core settings page.
+ *
+ * @return array<string,array{label:string,render_callback:callable|null,legacy_slugs:array<int,string>}>
+ */
+function nova_bridge_suite_get_settings_tabs(): array {
+    $base_tabs = [
+        'modules' => [
+            'label'           => __( 'Modules', 'nova-bridge-suite' ),
+            'render_callback' => null,
+            'legacy_slugs'    => [],
+        ],
+    ];
+
+    $filtered = apply_filters( 'nova_bridge_suite_settings_tabs', $base_tabs );
+    if ( ! is_array( $filtered ) ) {
+        return $base_tabs;
+    }
+
+    $tabs = [];
+    foreach ( $filtered as $slug => $tab ) {
+        $slug = sanitize_key( (string) $slug );
+        if ( '' === $slug || ! is_array( $tab ) ) {
+            continue;
+        }
+
+        $label = isset( $tab['label'] ) && is_scalar( $tab['label'] )
+            ? sanitize_text_field( (string) $tab['label'] )
+            : '';
+        if ( '' === $label ) {
+            continue;
+        }
+
+        $callback = $tab['render_callback'] ?? null;
+        if ( 'modules' === $slug ) {
+            if ( null !== $callback && ! is_callable( $callback ) ) {
+                continue;
+            }
+        } elseif ( ! is_callable( $callback ) ) {
+            continue;
+        }
+
+        $legacy_slugs = [];
+        foreach ( (array) ( $tab['legacy_slugs'] ?? [] ) as $legacy_slug ) {
+            $legacy_slug = sanitize_key( (string) $legacy_slug );
+            if ( '' !== $legacy_slug && $legacy_slug !== $slug ) {
+                $legacy_slugs[] = $legacy_slug;
+            }
+        }
+
+        $tabs[ $slug ] = [
+            'label'           => $label,
+            'render_callback' => $callback,
+            'legacy_slugs'    => array_values( array_unique( $legacy_slugs ) ),
+        ];
+    }
+
+    if ( ! isset( $tabs['modules'] ) ) {
+        $tabs = [ 'modules' => $base_tabs['modules'] ] + $tabs;
+    }
+
+    return $tabs;
+}
+
 function nova_bridge_suite_render_settings_page(): void {
     $version     = defined( 'NOVA_BRIDGE_SUITE_VERSION' ) ? (string) NOVA_BRIDGE_SUITE_VERSION : '';
+    $tabs        = nova_bridge_suite_get_settings_tabs();
     $current_tab = isset( $_GET['tab'] ) && is_scalar( $_GET['tab'] )
         ? sanitize_key( (string) wp_unslash( $_GET['tab'] ) )
         : 'modules';
 
-    if ( ! in_array( $current_tab, [ 'modules', 'content-context' ], true ) ) {
+    if ( ! isset( $tabs[ $current_tab ] ) ) {
+        foreach ( $tabs as $tab_slug => $tab ) {
+            if ( in_array( $current_tab, $tab['legacy_slugs'], true ) ) {
+                $current_tab = $tab_slug;
+                break;
+            }
+        }
+    }
+
+    if ( ! isset( $tabs[ $current_tab ] ) ) {
         $current_tab = 'modules';
     }
 
@@ -836,8 +938,6 @@ function nova_bridge_suite_render_settings_page(): void {
         $tab_args['lang'] = sanitize_text_field( (string) wp_unslash( $_GET['lang'] ) );
     }
 
-    $modules_url = add_query_arg( array_merge( $tab_args, [ 'tab' => 'modules' ] ), admin_url( 'options-general.php' ) );
-    $context_url = add_query_arg( array_merge( $tab_args, [ 'tab' => 'content-context' ] ), admin_url( 'options-general.php' ) );
     ?>
     <div class="wrap">
         <h1>
@@ -847,19 +947,15 @@ function nova_bridge_suite_render_settings_page(): void {
             <?php endif; ?>
         </h1>
         <nav class="nav-tab-wrapper" aria-label="<?php echo esc_attr__( 'NOVA Settings sections', 'nova-bridge-suite' ); ?>">
-            <a href="<?php echo esc_url( $modules_url ); ?>" class="nav-tab <?php echo 'modules' === $current_tab ? 'nav-tab-active' : ''; ?>">
-                <?php echo esc_html__( 'Modules', 'nova-bridge-suite' ); ?>
-            </a>
-            <a href="<?php echo esc_url( $context_url ); ?>" class="nav-tab <?php echo 'content-context' === $current_tab ? 'nav-tab-active' : ''; ?>">
-                <?php echo esc_html__( 'API Content Context', 'nova-bridge-suite' ); ?>
-            </a>
+            <?php foreach ( $tabs as $tab_slug => $tab ) : ?>
+                <?php $tab_url = add_query_arg( array_merge( $tab_args, [ 'tab' => $tab_slug ] ), admin_url( 'options-general.php' ) ); ?>
+                <a href="<?php echo esc_url( $tab_url ); ?>" class="nav-tab <?php echo $tab_slug === $current_tab ? 'nav-tab-active' : ''; ?>">
+                    <?php echo esc_html( $tab['label'] ); ?>
+                </a>
+            <?php endforeach; ?>
         </nav>
-		<?php if ( 'content-context' === $current_tab ) : ?>
-            <?php if ( class_exists( 'Nova_Bridge_Suite_Content_Context' ) ) : ?>
-                <?php Nova_Bridge_Suite_Content_Context::render_settings_tab(); ?>
-            <?php else : ?>
-                <div class="notice notice-error inline"><p><?php echo esc_html__( 'The API content-context runtime could not be loaded.', 'nova-bridge-suite' ); ?></p></div>
-            <?php endif; ?>
+		<?php if ( 'modules' !== $current_tab ) : ?>
+            <?php call_user_func( $tabs[ $current_tab ]['render_callback'] ); ?>
             </div>
             <?php
             return;
@@ -956,6 +1052,7 @@ function nova_bridge_suite_render_settings_page(): void {
 
             echo '<div class="nova-bridge-accordions">';
             nova_bridge_suite_render_settings_accordion( 'nova-settings', 'nova_bridge_core', 'NOVA Core', true );
+            nova_bridge_suite_render_settings_accordion( 'nova-settings', 'nova_bridge_api_mapping', 'API Mapping Context' );
             nova_bridge_suite_render_settings_accordion( 'nova-settings', 'nova_bridge_pagebuilders', 'Pagebuilder Bridges' );
             nova_bridge_suite_render_settings_accordion( 'nova-settings', 'nova_bridge_multilingual', 'Multilingual Bridges' );
             nova_bridge_suite_render_settings_accordion( 'nova-settings', 'nova_bridge_woocommerce', 'WooCommerce Insertions' );

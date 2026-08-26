@@ -19,12 +19,14 @@ Use it to:
 * Add rich text below WooCommerce category listings.
 * Enable NOVA Blog and Service Page custom post types.
 
-Modules are optional and can be toggled from Settings -> NOVA Settings. The core bridge and post resolver are always on; other modules only run when enabled and when the related plugin is active.
+Modules can be toggled from Settings -> NOVA Settings. The core bridge and post resolver are always on; other modules only run when enabled and when the related plugin is active. The standalone API Mapping Context module is enabled by default so existing endpoint mappings remain available after upgrading.
 
-The API Content Context tab provides a focused map of NOVA publishing destinations and lets administrators map each discovered field to NOVA content with field-level publishing guidance. Its compact, mapping-first interface keeps field mappings and instructions prominent while placing routes, transports, request paths, and other implementation details in an optional technical-details disclosure.
+The API Mapping Context module provides a focused map of NOVA publishing destinations and lets administrators map each discovered field to NOVA content with field-level publishing guidance. Its compact, mapping-first interface keeps field mappings and instructions prominent while placing routes, transports, request paths, and other implementation details in an optional technical-details disclosure.
 
-= API Content Context =
-Open Settings -> NOVA Settings -> API Content Context to inspect Posts, Pages, client-owned editorial custom post types, and one logical WooCommerce Product categories destination when WooCommerce is available. Products and unrelated operational endpoints such as navigation, payments, countries, and plugin configuration are omitted. NOVA's own Service Page CPT and NOVA-managed Blog CPTs are also omitted from this discovery inventory because their dedicated modules already expose the REST context NOVA needs. A relevant client-owned custom post type can still be listed as unavailable when its REST API support is disabled.
+= API Mapping Context =
+Open Settings -> NOVA Settings -> API Mapping Context to inspect Posts, Pages, client-owned editorial custom post types, and one logical WooCommerce Product categories destination when WooCommerce is available. Products and unrelated operational endpoints such as navigation, payments, countries, and plugin configuration are omitted. NOVA's own Service Page CPT and NOVA-managed Blog CPTs are also omitted from this discovery inventory because their dedicated modules already expose the REST context NOVA needs. A relevant client-owned custom post type can still be listed as unavailable when its REST API support is disabled.
+
+API Mapping Context is a standalone module and does not belong to either custom-post-type module. Disabling it stops endpoint discovery and context injection but leaves every saved mapping, template selection, and guidance entry intact for the next time the module is enabled.
 
 Each destination contains only publishing-related fields: native content fields, featured media, taxonomy assignments, relevant registered custom meta, applicable ACF fields, and the active SEO provider's title and description fields. SEO fields are grouped by provider. Fields verified against an available write transport are marked available; useful fields that are hidden from REST or otherwise lack a writer are marked potential with the reason they cannot currently be changed.
 
@@ -50,7 +52,7 @@ This plugin is designed for NOVA automations. You can activate it without NOVA, 
 No. It works alongside builders like Avada, Elementor, WPBakery, Breakdance, and Beaver Builder so NOVA can update their content safely.
 
 = Does it work on WooCommerce sites? =
-The API Content Context inventory currently supports WooCommerce product categories only; products are intentionally not included yet. If WooCommerce is active you can enable the rich text field module for category pages.
+The API Mapping Context inventory currently supports WooCommerce product categories only; products are intentionally not included yet. If WooCommerce is active you can enable the rich text field module for category pages.
 
 == Screenshots ==
 1. NOVA Settings screen with module toggles.
@@ -58,7 +60,8 @@ The API Content Context inventory currently supports WooCommerce product categor
 == Changelog ==
 
 = 3.0.0 =
-* Add a focused API Content Context inventory for Posts, Pages, client-owned editorial custom post types, and WooCommerce product categories.
+* Add the standalone, default-enabled API Mapping Context module with a focused inventory for Posts, Pages, client-owned editorial custom post types, and WooCommerce product categories.
+* Preserve saved mappings, template selections, and guidance when API Mapping Context is disabled.
 * Map discovered native, media, taxonomy, SEO, ACF, custom-meta, and page-builder fields to NOVA content keys with optional field-level authoring guidance.
 * Add explicit per-endpoint template selection with a primary template, required usage context for multi-template setups, and active-template field overrides.
 * Keep private mappings and guidance restricted to authorized REST edit-context responses, with builder fields scoped to their source document.

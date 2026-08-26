@@ -20,9 +20,6 @@ define( 'NOVA_BRIDGE_SUITE_OPTION', 'nova_bridge_settings' );
 define( 'NOVA_BRIDGE_SUITE_VERSION_OPTION', 'nova_bridge_suite_version' );
 
 require_once NOVA_BRIDGE_SUITE_PLUGIN_DIR . 'includes/route-conflicts.php';
-require_once NOVA_BRIDGE_SUITE_PLUGIN_DIR . 'includes/class-nova-bridge-suite-content-context.php';
-
-Nova_Bridge_Suite_Content_Context::bootstrap();
 
 function nova_bridge_suite_normalize_server_globals(): void {
     if ( ! isset( $_SERVER['REQUEST_URI'] ) || ! is_string( $_SERVER['REQUEST_URI'] ) || '' === $_SERVER['REQUEST_URI'] ) {
@@ -581,7 +578,7 @@ function nova_bridge_suite_get_targeted_rest_module_keys( string $route ): ?arra
 
     $module_keys = null;
 
-    if ( nova_bridge_suite_rest_route_matches( $route, 'nova-bridge/v1' ) ) {
+    if ( nova_bridge_suite_rest_route_matches( $route, 'nova-bridge/v1/content-endpoints' ) ) {
         // The inventory must see every enabled NOVA content route. The regular
         // loader still applies module settings and conflict checks, so disabled
         // bridges are not bootstrapped for this request.
@@ -599,6 +596,7 @@ function nova_bridge_suite_get_targeted_rest_module_keys( string $route ): ?arra
             'multilingual_polylang',
             'multilingual_weglot',
             'woocommerce_rich_text',
+            'api_mapping_context',
             'custom_post_types',
             'service_page_cpt',
         ];
@@ -772,6 +770,11 @@ function nova_bridge_suite_maybe_handle_targeted_rest_request(): bool {
 
     return true;
 }
+
+// API Mapping Context also decorates REST requests dispatched internally during
+// non-REST admin/frontend requests. Preserve that cross-cutting behavior while
+// making the runtime independently switchable through the module setting.
+nova_bridge_suite_load_selected_modules( [ 'api_mapping_context' ] );
 
 $nova_bridge_suite_admin_content_write_module_keys = nova_bridge_suite_get_admin_content_write_module_keys();
 if ( null !== $nova_bridge_suite_admin_content_write_module_keys ) {
