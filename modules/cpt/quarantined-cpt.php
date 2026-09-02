@@ -300,7 +300,7 @@ final class Plugin {
 	/**
 	 * Default author archive posts-per-page value.
 	 */
-	private const DEFAULT_AUTHOR_POSTS_PER_PAGE = 3;
+	private const DEFAULT_AUTHOR_POSTS_PER_PAGE = 9;
 
 	/**
 	 * Option key storing the structured data type for CPT items.
@@ -8734,7 +8734,7 @@ final class Plugin {
 							<th scope="row"><label for="quarantined-cpt-bodyclean-author-posts-per-page"><?php esc_html_e( 'Posts per author page', 'nova-bridge-suite' ); ?></label></th>
 							<td>
 								<input type="number" class="small-text" id="quarantined-cpt-bodyclean-author-posts-per-page" name="<?php echo esc_attr( self::OPTION_AUTHOR_POSTS_PER_PAGE ); ?>" value="<?php echo esc_attr( (string) $author_posts_per_page ); ?>" min="1" max="200" />
-								<p class="description"><?php esc_html_e( 'Number of post cards shown on each author archive page. Default: 3.', 'nova-bridge-suite' ); ?></p>
+								<p class="description"><?php esc_html_e( 'Number of post cards shown on each author archive page. Default: 9.', 'nova-bridge-suite' ); ?></p>
 							</td>
 						</tr>
 					</table>
