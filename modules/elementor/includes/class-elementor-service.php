@@ -187,6 +187,13 @@ class Elementor_Service {
 				$append_faqs   = isset( $payload['append_faqs'] ) && is_array( $payload['append_faqs'] ) ? $payload['append_faqs'] : array();
 				$elementor_data = $this->append_html_block( $elementor_data, $append_html, $append_faqs );
 
+				// Apply source-layout omissions only to a new clone, after explicit field edits.
+				if ( ! empty( $payload['source_page_id'] ) && ! isset( $payload['elementor_data'] ) ) {
+					$elementor_data = apply_filters( 'seor_eb_clone_document', $elementor_data, (int) $payload['source_page_id'], $this );
+					if ( is_wp_error( $elementor_data ) ) { return $elementor_data; }
+				}
+
+
 				$persist = $this->persist_elementor_document(
 					$post_id,
 					$elementor_data,

@@ -17,6 +17,7 @@ final class Nova_Bridge_Suite_Strategy {
 
 	public static function bootstrap(): void {
 		add_action( 'rest_api_init', [ __CLASS__, 'register_routes' ], 1001 );
+		add_filter( 'seor_eb_clone_document', [ __CLASS__, 'empty_elementor_clone_fields' ], 10, 3 );
 		add_action( 'init', [ __CLASS__, 'register_prepare_filters' ], 1001 );
 		add_filter( 'nova_bridge_strategy_decorate_record', [ __CLASS__, 'decorate_record' ], 10, 3 );
 	}
@@ -770,6 +771,28 @@ final class Nova_Bridge_Suite_Strategy {
 		self::persist( $option );
 		do_action( 'nova_bridge_strategy_profile_saved', $option['profiles'][ $fp['signature'] ] ?? null, $reference );
 		return self::get_response();
+	}
+
+	/** A new Elementor clone retains every element but blanks explicitly omitted content. */
+	public static function empty_elementor_clone_fields( $document, int $source_id, $service ) {
+		if ( is_wp_error( $document ) ) { return $document; }
+		$entity = self::entity( 'post', $source_id );
+		if ( ! $entity ) { return $document; }
+		$option = self::get_option(); $fp = self::fingerprint( $entity );
+		$profile = $option['profiles'][ $fp['signature'] ] ?? null;
+		if ( ! $profile ) { return $document; }
+		$omitted = array_filter( $profile['fields'], static function ( $field, $path ) { return 'leave_empty' === ( $field['mapping'] ?? '' ) && 0 === strpos( $path, '/@builders/elementor/' ); }, ARRAY_FILTER_USE_BOTH );
+		if ( ! $omitted ) { return $document; }
+		$profile['fields'] = $omitted;
+		$bound = self::profile_fields_for_entity( $profile, $entity );
+		if ( count( $bound ) !== count( $omitted ) ) { return self::error( 'clone_mapping', 'Some Leave empty fields cannot be resolved on the reference. Refresh its mapping before cloning.', 409 ); }
+		$inventory = array_column( self::field_inventory( $entity ), null, 'path' ); $changes = [];
+		foreach ( $bound as $pointer => $mapping ) {
+			$key = $inventory[ $pointer ]['selector_data']['field_key'] ?? '';
+			if ( ! $key ) { return self::error( 'clone_selector', 'A Leave empty field has no verified Elementor selector.', 409 ); }
+			$changes[] = [ 'field_key' => $key, 'value' => '' ];
+		}
+		return $service->apply_field_mutations( $document, $changes );
 	}
 
 	/** Explicit omission overrides authoring guidance; it never means writing an empty string. */
