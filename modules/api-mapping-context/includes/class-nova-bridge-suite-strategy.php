@@ -702,10 +702,35 @@ final class Nova_Bridge_Suite_Strategy {
 			$bridge = Nova_Bridge_Suite_Content_Context::get_bridge_fields_response( $request );
 			if ( ! is_wp_error( $bridge ) ) { foreach ( $bridge->get_data()['fields'] as $field ) { $fields[ $field['path'] ] = $field; } }
 		}
+		if ( 'post' === $entity['reference_type'] ) {
+			self::flat_acf_fields( $fields, $entity );
+			if ( isset( $fields['/title'] ) ) { $fields['/title']['preview_text'] = html_entity_decode( get_post( $entity['reference_id'] )->post_title, ENT_QUOTES | ENT_HTML5, 'UTF-8' ); }
+		}
 		$fields = apply_filters( 'nova_bridge_strategy_fields', $fields, $entity );
 		foreach ( $fields as &$field ) { if ( 'builder' === ( $field['source'] ?? '' ) ) { $field['binding'] = self::builder_binding( $field, $entity ); } }
 		unset( $field );
 		return self::$inventories[ $key ] = array_values( $fields );
+	}
+
+	/** Existing registered meta_all writer can address known scalar ACF storage independently of unsupported siblings. */
+	private static function flat_acf_fields( array &$fields, array $entity ): void {
+		global $wp_rest_additional_fields;
+		$object = get_post_type_object( $entity['post_type'] );
+		if ( empty( $object->show_in_rest ) || ! function_exists( 'acf_get_field' ) || ! is_callable( 'cf_tmrb_update_post_meta_all_payload' ) || ( $wp_rest_additional_fields[ $entity['post_type'] ]['meta_all']['update_callback'] ?? null ) !== 'cf_tmrb_update_post_meta_all_payload' ) { return; }
+		$route = '/' . trim( ( $object->rest_namespace ?? '' ) ?: 'wp/v2', '/' ) . '/' . trim( ( $object->rest_base ?? '' ) ?: $entity['post_type'], '/' );
+		$id = $entity['reference_id']; $meta = get_post_meta( $id );
+		$covered = array_column( array_filter( $fields, static function ( $f ) { return 'nova_content_bridge' === ( $f['transport'] ?? '' ); } ), 'acf_key' );
+		foreach ( $meta as $name => $values ) {
+			if ( ! Nova_Bridge_Suite_Content_Transport::safe_key( $name ) || ! preg_match( '/^[a-zA-Z][a-zA-Z0-9_]*$/', $name ) || count( $values ) !== 1 || ! current_user_can( 'edit_post_meta', $id, $name ) ) { continue; }
+			$key = get_post_meta( $id, '_' . $name, true );
+			if ( in_array( $key, $covered, true ) ) { continue; }
+			$field = is_string( $key ) && 0 === strpos( $key, 'field_' ) ? acf_get_field( $key ) : false;
+			if ( ! is_array( $field ) || ! empty( $field['readonly'] ) || ! empty( $field['disabled'] ) || ! in_array( $field['type'] ?? '', [ 'text', 'textarea', 'wysiwyg', 'url', 'email' ], true ) ) { continue; }
+			$value = get_post_meta( $id, $name, true ); if ( ! is_string( $value ) ) { continue; }
+			$pointer = '/meta_all/' . $name;
+			$fields[ $pointer ] = [ 'path' => $pointer, 'label' => ( $field['label'] ?? $field['name'] ) . ' · ' . $name, 'source' => 'acf', 'type' => $field['type'], 'acf_key' => $key, 'writable' => true, 'availability' => 'available', 'transport' => 'wordpress_meta_all', 'route' => $route . '/{id}', 'methods' => [ 'POST', 'PUT', 'PATCH' ], 'request_path' => $pointer, 'write_mode' => 'existing_leaf', 'current_value' => $value, 'native_description' => 'Update this exact existing meta_all key. Preserve matrix row order, hidden ACF references and all other values. Clone the reference structure before using this key on a new page.' ];
+			if ( in_array( $field['type'], [ 'text', 'textarea', 'wysiwyg' ], true ) ) { $fields[ $pointer ]['preview_text'] = html_entity_decode( wp_strip_all_tags( $value ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ); }
+		}
 	}
 
 	/** Concrete ACF rows use the existing validated whole-parent writer, never a fictional leaf PATCH. */
@@ -884,7 +909,7 @@ final class Nova_Bridge_Suite_Strategy {
 			if ( ! $row['post_id'] && ! $row['term_id'] ) { $row['field_contracts'] = array_values( array_filter( $row['field_contracts'], static function ( $field ) { return 'builder' !== ( $field['source'] ?? '' ); } ) ); }
 			elseif ( $profile && count( $fields ) < count( $profile['fields'] ) ) { $row['ready'] = false; $row['warnings'][] = 'Some saved fields have no unique match on this document. Refresh the layout mapping before posting.'; }
 			$uses_meta_all = false;
-			foreach ( $fields as $pointer => $field ) { if ( 'leave_empty' !== ( $field['mapping'] ?? '' ) && 0 === strpos( $pointer, '/meta_all/' ) ) { $uses_meta_all = true; } }
+			foreach ( $fields as $pointer => $field ) { if ( 'leave_empty' !== ( $field['mapping'] ?? '' ) && 0 === strpos( $pointer, '/meta_all/' ) && 'wordpress_meta_all' !== ( array_column( self::field_inventory( $entity ), null, 'path' )[ $pointer ]['transport'] ?? '' ) ) { $uses_meta_all = true; } }
 			if ( 'post' === $entity['reference_type'] && class_exists( 'Nova_Bridge_Suite_Content_Transport' ) && ( ! $route || $uses_meta_all ) ) {
 				$bridge_route = Nova_Bridge_Suite_Content_Transport::route_for( $entity['post_type'] );
 				if ( $bridge_route ) { $row['write']['available'] = true; $row['write']['route'] = $bridge_route . ( $row['post_id'] ? '/' . $row['post_id'] : '' ); $row['write']['transport'] = 'nova_content_bridge'; }

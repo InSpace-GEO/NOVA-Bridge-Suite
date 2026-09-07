@@ -14,3 +14,5 @@ nodes=[{...leaf,hidden:true}]; assert.equal(context.target(field),null);
 nodes=[{...leaf,closest:()=>({})}]; assert.equal(context.target(field),null,'Navigation and form content must not bind');
 nodes=[leaf]; assert.equal(context.target({...field,preview_text:'Short'}),null);
 console.log('PASS ACF unique text matching, smallest region, ambiguity, hidden and excluded content');
+
+nodes=[{...leaf,textContent:'Home'}]; assert.equal(context.target({source:'native',path:'/title',preview_text:'Home'}).node,nodes[0]);

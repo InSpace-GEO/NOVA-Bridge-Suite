@@ -1031,6 +1031,16 @@ if (!function_exists('cf_tmrb_acf_field_groups_for_context')) {
     }
     if ($acf_touched !== null) $acf_touched = true;
 
+    // A concrete nested storage selector must not become a top-level field-key update.
+    if (is_numeric($acf_post_id) && $selector !== $field['key']
+      && get_post_meta((int) $acf_post_id, '_' . $selector, true) === $field['key']
+      && function_exists('acf_update_value') && !in_array($field['type'] ?? '', ['group', 'repeater', 'flexible_content'], true)) {
+      $field['name'] = $selector;
+      acf_update_value($value, $acf_post_id, $field);
+      if (function_exists('acf_flush_value_cache')) acf_flush_value_cache($acf_post_id, $selector);
+      return $field;
+    }
+
     $raw_storage_field = $field;
     if ((string) ($field['type'] ?? '') === 'flexible_content' && empty($field['ID'])) {
       $resolved_field = cf_tmrb_acf_raw_storage_field_for_selector($selector, $acf_post_id, $context);

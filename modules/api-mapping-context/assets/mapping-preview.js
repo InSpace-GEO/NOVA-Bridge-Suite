@@ -8,10 +8,10 @@
 	function visible( node ) { return !! ( node && node.getClientRects().length && getComputedStyle( node ).visibility !== 'hidden' ); }
 	function unique( selector, scope ) { var nodes = ( scope || document ).querySelectorAll( selector ); return nodes.length === 1 ? nodes[0] : null; }
 	function target( field ) {
-		if ( field.source === 'acf' && typeof field.preview_text === 'string' ) {
+		if ( ( field.source === 'acf' || field.path === '/title' ) && typeof field.preview_text === 'string' ) {
 			var normalize = function ( text ) { return text.replace( /\s+/g, ' ' ).trim(); }, expected = normalize( field.preview_text );
-			if ( expected.length < 12 || expected.length > 20000 ) { return null; }
-			var matches = Array.from( document.querySelectorAll( 'main p,main h1,main h2,main h3,main h4,main li,main div,main section,.entry-content p,.entry-content h2,.entry-content h3,.entry-content div' ) ).filter( function ( node ) { return ! node.closest( 'nav,header,footer,form,[aria-hidden="true"]' ) && visible( node ) && normalize( node.textContent ) === expected; } );
+			if ( expected.length < ( field.path === '/title' ? 1 : 12 ) || expected.length > 20000 ) { return null; }
+			var matches = Array.from( document.querySelectorAll( field.path === '/title' ? 'h1' : 'main a,main button,main p,main h1,main h2,main h3,main h4,main li,main div,main section,.entry-content p,.entry-content h2,.entry-content h3,.entry-content div' ) ).filter( function ( node ) { return ! node.closest( field.path === '/title' ? 'nav,footer,form,[aria-hidden="true"]' : 'nav,header,footer,form,[aria-hidden="true"]' ) && visible( node ) && normalize( node.textContent ) === expected; } );
 			matches = matches.filter( function ( node ) { return ! matches.some( function ( other ) { return other !== node && node.contains( other ); } ); } );
 			return matches.length === 1 ? { node: matches[0], precision: 'text-match' } : null;
 		}

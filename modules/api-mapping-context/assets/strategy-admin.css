@@ -10,3 +10,5 @@
 .ns-reference-member{display:flex;gap:8px;align-items:center;padding:5px 0}.ns-reference-member span{overflow-wrap:anywhere}
 
 .ns-preview-consent{display:flex;align-items:center;gap:8px;margin:12px 0}.ns-preview-consent input{margin:0}
+
+.nova-strategy .ns-preview-consent input[type=checkbox]{width:16px!important;min-width:16px;height:16px;min-height:16px;flex:0 0 16px;padding:0}
