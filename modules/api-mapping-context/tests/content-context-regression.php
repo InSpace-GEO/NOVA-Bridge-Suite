@@ -1018,6 +1018,12 @@ try {
 			$fixture_controller = new $controller_class( $late_post_type->name );
 			$fixture_controller->register_routes();
 		}
+		// Match the transport's rest_api_init pass for CPTs registered after WP-CLI initialized REST.
+		foreach ( [ $visible_result, $hidden_result, $collision_result ] as $late_post_type ) {
+			if ( Nova_Bridge_Suite_Content_Transport::supports_post_type( $late_post_type ) ) {
+				( new Nova_Bridge_Suite_Content_Controller( $late_post_type->name ) )->register_routes();
+			}
+		}
 		Nova_Bridge_Suite_Content_Context::register_post_type_prepare_filters();
 		Nova_Bridge_Suite_Content_Context::register_rest_api();
 	}
@@ -1169,18 +1175,48 @@ try {
 		$simple_acf = $visible['fields']['/acf/nova_acf_simple'] ?? [];
 		$nested_acf = $visible['fields']['/acf/nova_acf_group/heading'] ?? [];
 		$repeater_acf = $visible['fields']['/acf/nova_acf_rows/*/copy'] ?? [];
+		$acf_collection_route = '/nova-bridge/v1/content/' . $visible_post_type;
 		nova_content_context_test_assert(
 			'available' === ( $simple_acf['availability'] ?? '' )
-			&& 'nova_meta_bridge' === ( $simple_acf['transport'] ?? '' )
-			&& '/meta_all/nova_acf_simple' === ( $simple_acf['request_path'] ?? '' ),
-			'A simple top-level ACF field is writable through its deterministic NOVA meta bridge path.'
+			&& 'nova_content_bridge' === ( $simple_acf['transport'] ?? '' )
+			&& '/meta_all/acf/nova_acf_simple' === ( $simple_acf['request_path'] ?? '' )
+			&& $acf_collection_route . '/{id}' === ( $simple_acf['route'] ?? '' )
+			&& isset( $registered_routes[ $acf_collection_route ] ),
+			'A REST-hidden ACF field advertises its registered guarded content route and canonical nested payload path.'
 		);
-		foreach ( [ $nested_acf, $repeater_acf ] as $complex_acf ) {
+		$acf_write_request = new WP_REST_Request( 'PATCH', str_replace( '{id}', (string) $fixture_post_id, $simple_acf['route'] ) );
+		$acf_write_request->set_param( 'meta_all', [ 'acf' => [ 'nova_acf_simple' => 'Guarded discovery write' ] ] );
+		$acf_write_response = rest_do_request( $acf_write_request );
+		nova_content_context_test_assert(
+			200 === $acf_write_response->get_status()
+			&& 'Guarded discovery write' === get_field( 'field_nova_context_simple', $fixture_post_id, false ),
+			'The exact advertised ACF route and payload persist the requested field value.'
+		);
+		$legacy_acf_write = new WP_REST_Request( 'PATCH', '/nova-fixture/v1/articles/' . $fixture_post_id );
+		$legacy_acf_write->set_param( 'meta_all', [ 'nova_acf_simple' => 'Legacy bridge write' ] );
+		$legacy_acf_response = rest_do_request( $legacy_acf_write );
+		nova_content_context_test_assert(
+			200 === $legacy_acf_response->get_status()
+			&& 'Legacy bridge write' === get_field( 'field_nova_context_simple', $fixture_post_id, false ),
+			'The existing native meta_all scalar alias remains writable for earlier integrations.'
+		);
+		$structured_leaves = [ $nested_acf ];
+		if ( function_exists( 'acf_get_field_type' ) && acf_get_field_type( 'repeater' ) ) {
+			$structured_leaves[] = $repeater_acf;
+		} else {
+			nova_content_context_test_assert(
+				empty( $repeater_acf['writable'] ) && 'acf_no_verified_writer_for_screen' === ( $repeater_acf['reason'] ?? '' ),
+				'A repeater definition without an installed repeater provider never advertises a working writer.'
+			);
+		}
+		foreach ( $structured_leaves as $complex_acf ) {
 			nova_content_context_test_assert(
 				'potential' === ( $complex_acf['availability'] ?? '' )
 				&& empty( $complex_acf['writable'] )
 				&& 'acf_nested_payload_required' === ( $complex_acf['reason'] ?? '' )
-				&& 0 === strpos( (string) ( $complex_acf['request_path'] ?? '' ), '/meta_all/acf/' ),
+				&& 0 === strpos( (string) ( $complex_acf['request_path'] ?? '' ), '/meta_all/acf/' )
+				&& 'nova_content_bridge' === ( $complex_acf['transport'] ?? '' )
+				&& $acf_collection_route . '/{id}' === ( $complex_acf['route'] ?? '' ),
 				'A nested ACF leaf requires a deterministic whole-parent payload and is never advertised as directly writable.'
 			);
 		}
@@ -1209,9 +1245,22 @@ try {
 	);
 
 	nova_content_context_test_assert( is_array( $hidden ), 'Discovery includes the REST-disabled fixture post type.' );
-	nova_content_context_test_assert( 'show_in_rest_disabled' === ( $hidden['reason'] ?? '' ), 'The hidden fixture has the exact show_in_rest_disabled reason.' );
-	nova_content_context_test_assert( empty( $hidden['route'] ) && empty( $hidden['write_routes'] ), 'The hidden fixture does not advertise an invented writable route.' );
-	nova_content_context_test_assert( empty( $hidden['usable'] ) && empty( $hidden['writable'] ), 'The hidden fixture is explicitly unavailable for API writes.' );
+	$hidden_collection_route = '/nova-bridge/v1/content/' . $hidden_post_type;
+	nova_content_context_test_assert(
+		'' === ( $hidden['reason'] ?? null ) && ! empty( $hidden['usable'] ) && ! empty( $hidden['writable'] )
+		&& $hidden_collection_route === ( $hidden['route'] ?? '' )
+		&& isset( $registered_routes[ $hidden_collection_route ] )
+		&& in_array( $hidden_collection_route, (array) ( $hidden['write_routes'] ?? [] ), true ),
+		'The public editorial hidden CPT advertises only its verified guarded bridge write route.'
+	);
+	$hidden_read = rest_do_request( new WP_REST_Request( 'GET', $hidden_collection_route . '/' . $hidden_post_id ) );
+	nova_content_context_test_assert( 200 === $hidden_read->get_status() && $hidden_post_id === (int) ( $hidden_read->get_data()['id'] ?? 0 ), 'An editor can read the hidden item through the route advertised by discovery.' );
+	$hidden_native_read = rest_do_request( new WP_REST_Request( 'GET', '/wp/v2/' . $hidden_post_type . '/' . $hidden_post_id ) );
+	nova_content_context_test_assert( ! get_post_type_object( $hidden_post_type )->show_in_rest && 404 === $hidden_native_read->get_status(), 'The hidden CPT keeps show_in_rest disabled and its native route unavailable.' );
+	wp_set_current_user( 0 );
+	$hidden_anonymous_read = rest_do_request( new WP_REST_Request( 'GET', $hidden_collection_route . '/' . $hidden_post_id ) );
+	wp_set_current_user( $admin_id );
+	nova_content_context_test_assert( 401 === $hidden_anonymous_read->get_status(), 'The new hidden-CPT transport never grants anonymous access.' );
 	nova_content_context_test_assert( null === $opaque && null === $editable, 'Arbitrary writable routes are absent from lean endpoint discovery, regardless of schema quality.' );
 	nova_content_context_test_assert( null === $application, 'A title-only country-style CPT is absent from endpoint discovery.' );
 	nova_content_context_test_assert( null === $infrastructure, 'An infrastructure-style payment CPT is absent from endpoint discovery.' );

@@ -1123,10 +1123,13 @@ final class Nova_Bridge_Suite_Content_Context {
 
 		$fields    = [];
 		$providers = [];
+		$settings = function_exists( 'nova_bridge_suite_get_settings' ) ? nova_bridge_suite_get_settings() : [];
 		foreach ( self::detect_actual_builders( $post ) as $builder ) {
+			$module_key = 'gutenberg' === $builder ? 'gutenberg_bridge' : 'pagebuilder_' . $builder;
+			$module_enabled = ! empty( $settings[ $module_key ] );
 			$extracted = self::extract_bridge_fields( $builder, $post );
 			if ( is_wp_error( $extracted ) ) {
-				$providers[] = [ 'id' => $builder, 'label' => self::builder_label( $builder ), 'available' => false, 'reason' => $extracted->get_error_code(), 'message' => $extracted->get_error_message() ];
+				$providers[] = [ 'id' => $builder, 'label' => self::builder_label( $builder ), 'available' => false, 'reason' => $extracted->get_error_code(), 'module_key' => $module_key, 'module_enabled' => $module_enabled, 'message' => $module_enabled ? $extracted->get_error_message() : sprintf( __( 'Enable the NOVA %s bridge in Modules to inspect this builder’s content. Existing native fields remain available.', 'nova-bridge-suite' ), self::builder_label( $builder ) ) ];
 				continue;
 			}
 			$providers[] = [ 'id' => $builder, 'label' => self::builder_label( $builder ), 'available' => true, 'reason' => '', 'field_count' => count( $extracted ) ];
@@ -1966,6 +1969,10 @@ final class Nova_Bridge_Suite_Content_Context {
 		$rest_base     = ! empty( $post_type->rest_base ) ? trim( (string) $post_type->rest_base, '/' ) : $name;
 		$rest_namespace = ! empty( $post_type->rest_namespace ) ? trim( (string) $post_type->rest_namespace, '/' ) : 'wp/v2';
 		$route         = '/' . $rest_namespace . '/' . $rest_base;
+		$bridge_route  = class_exists( 'Nova_Bridge_Suite_Content_Transport' ) ? Nova_Bridge_Suite_Content_Transport::route_for( $name ) : '';
+		$bridge_available = '' !== $bridge_route && isset( $routes[ $bridge_route ] );
+		$uses_bridge   = empty( $post_type->show_in_rest ) && $bridge_available;
+		if ( $uses_bridge ) { $route = $bridge_route; }
 		$matched       = [];
 		$write         = [
 			'methods'     => [],
@@ -1973,7 +1980,7 @@ final class Nova_Bridge_Suite_Content_Context {
 			'controllers' => [],
 		];
 
-		if ( ! empty( $post_type->show_in_rest ) ) {
+		if ( ! empty( $post_type->show_in_rest ) || $uses_bridge ) {
 			foreach ( $routes as $registered_route => $handlers ) {
 				if ( ! self::is_primary_post_type_write_route( (string) $registered_route, $route ) ) {
 					continue;
@@ -1994,7 +2001,7 @@ final class Nova_Bridge_Suite_Content_Context {
 			$status  = 'unavailable';
 			$reason  = 'missing_edit_capability';
 			$message = __( 'The current administrator does not have this post type\'s edit capability.', 'nova-bridge-suite' );
-		} elseif ( empty( $post_type->show_in_rest ) ) {
+		} elseif ( empty( $post_type->show_in_rest ) && ! $uses_bridge ) {
 			$status  = 'unavailable';
 			$reason  = 'show_in_rest_disabled';
 			$message = __( 'This post type is not usable through the REST API because show_in_rest is disabled.', 'nova-bridge-suite' );
@@ -2005,7 +2012,7 @@ final class Nova_Bridge_Suite_Content_Context {
 		} else {
 			$status  = 'available';
 			$reason  = '';
-			$message = __( 'This post type has a verified writable REST route.', 'nova-bridge-suite' );
+			$message = $uses_bridge ? __( 'NOVA provides an authenticated editorial route without changing this post type\'s REST setting.', 'nova-bridge-suite' ) : __( 'This post type has a verified writable REST route.', 'nova-bridge-suite' );
 		}
 
 		$usable         = 'available' === $status;
@@ -2025,6 +2032,35 @@ final class Nova_Bridge_Suite_Content_Context {
 		$template_data = self::discover_template_contexts( $post_type, $write['args'], $usable, $reason, self::resource_saved_templates( $saved, $resource_id ) );
 		$seo_data      = self::discover_seo_fields( $post_type, $routes, $write['args'], $usable, $reason );
 		$fields        = self::merge_field_inventories( $fields, $seo_data['fields'] );
+		if ( $uses_bridge ) {
+			$catalog = Nova_Bridge_Suite_Content_Transport::field_catalog( $name );
+			foreach ( $fields as &$field ) {
+				if ( 'wordpress' === ( $field['transport'] ?? '' ) ) { $field['transport'] = 'nova_content_bridge'; }
+				if ( in_array( $field['source'] ?? '', [ 'core', 'media', 'taxonomy' ], true ) ) { $field['route'] = $route . '/{id}'; }
+				if ( 'meta' === ( $field['source'] ?? '' ) ) {
+					$segments = self::decode_json_pointer( $field['path'] ?? '' );
+					$allowed = isset( $segments[1], $catalog['meta'][ $segments[1] ] );
+					$field['writable'] = $usable && $allowed && 2 === count( $segments );
+					$field['availability'] = $field['writable'] ? 'available' : 'potential';
+					$field['availability_reason'] = ! $allowed ? 'no_verified_editorial_meta_writer' : ( $field['writable'] ? '' : 'meta_nested_payload_required' );
+					$field['reason'] = $field['availability_reason'];
+					$field['route'] = $allowed ? $route . '/{id}' : '';
+					$field['request_path'] = $allowed ? self::segments_to_pointer( [ 'meta_all', $segments[1] ] ) : '';
+					$field['transport'] = 'nova_content_bridge';
+					$field['write_status'] = $field['writable'] ? 'bridge_writable' : 'not_exposed';
+				}
+				if ( 'seo' === ( $field['source'] ?? '' ) && 'nova_meta_bridge' === ( $field['transport'] ?? '' ) ) {
+					$segments = self::decode_json_pointer( $field['request_path'] ?? '' );
+					$allowed = isset( $segments[1], $catalog['meta'][ $segments[1] ] );
+					$field['writable'] = $usable && $allowed;
+					$field['availability'] = $field['writable'] ? 'available' : 'potential';
+					$field['availability_reason'] = $field['writable'] ? '' : 'no_verified_seo_writer';
+					$field['reason'] = $field['availability_reason'];
+					$field['route'] = $field['writable'] ? $route . '/{id}' : '';
+				}
+			}
+			unset( $field );
+		}
 
 		$builder_data = self::discover_builder_contexts( $post_type, $usable, $reason, false );
 		$fields       = self::attach_saved_field_state( $fields, self::resource_saved_fields( $saved, $resource_id ) );
@@ -2036,7 +2072,7 @@ final class Nova_Bridge_Suite_Content_Context {
 
 		$labels = isset( $post_type->labels ) && is_object( $post_type->labels ) ? $post_type->labels : null;
 
-		$registered_base_route = ! empty( $post_type->show_in_rest ) ? $route : '';
+		$registered_base_route = ! empty( $post_type->show_in_rest ) || $uses_bridge ? $route : '';
 
 		return [
 			'id'                 => $resource_id,
@@ -2076,8 +2112,8 @@ final class Nova_Bridge_Suite_Content_Context {
 			],
 			'transports'         => [
 				[
-					'id'         => 'wordpress',
-					'label'      => __( 'WordPress REST API', 'nova-bridge-suite' ),
+					'id'         => $uses_bridge ? 'nova_content_bridge' : 'wordpress',
+					'label'      => $uses_bridge ? __( 'NOVA editorial bridge', 'nova-bridge-suite' ) : __( 'WordPress REST API', 'nova-bridge-suite' ),
 					'route'      => $registered_base_route,
 					'item_route' => $registered_base_route ? $registered_base_route . '/{id}' : '',
 					'methods'    => array_values( $write['methods'] ),
@@ -2085,6 +2121,7 @@ final class Nova_Bridge_Suite_Content_Context {
 				],
 			],
 			'bridge_examples'    => self::discover_bridge_examples( $post_type ),
+			'content_bridge'     => [ 'available' => $bridge_available && $current_user_can_edit, 'route' => $bridge_available ? $bridge_route : '', 'item_route' => $bridge_available ? $bridge_route . '/{id}' : '', 'methods' => $bridge_available ? [ 'POST', 'PUT', 'PATCH' ] : [], 'requires_authentication' => true ],
 			'bridge_fields_url'  => rest_url( self::REST_NAMESPACE . self::REST_BRIDGE_FIELDS_ROUTE ),
 			'templates'          => $template_data['templates'],
 			'fields'             => $fields,
@@ -3200,9 +3237,10 @@ final class Nova_Bridge_Suite_Content_Context {
 			}
 		}
 
-		if ( $usable && isset( $verified_args['meta_all'] ) ) {
-			$rest_base      = ! empty( $post_type->rest_base ) ? trim( (string) $post_type->rest_base, '/' ) : (string) $post_type->name;
-			$rest_namespace = ! empty( $post_type->rest_namespace ) ? trim( (string) $post_type->rest_namespace, '/' ) : 'wp/v2';
+		$acf_bridge_route = class_exists( 'Nova_Bridge_Suite_Content_Transport' ) ? Nova_Bridge_Suite_Content_Transport::route_for( (string) $post_type->name ) : '';
+		$acf_bridge_catalog = '' !== $acf_bridge_route ? Nova_Bridge_Suite_Content_Transport::field_catalog( (string) $post_type->name ) : [ 'acf' => [] ];
+		$acf_bridge_available = $usable && '' !== $acf_bridge_route && isset( self::get_registered_routes()[ $acf_bridge_route ] );
+		if ( $acf_bridge_available ) {
 			foreach ( $result['fields'] as &$field ) {
 				if ( 'available' === ( $field['availability'] ?? '' ) ) {
 					continue;
@@ -3215,15 +3253,20 @@ final class Nova_Bridge_Suite_Content_Context {
 				if ( ! is_array( $segments ) || count( $segments ) < 2 || 'acf' !== (string) $segments[0] ) {
 					continue;
 				}
+				if ( ! isset( $acf_bridge_catalog['acf'][ $segments[1] ] ) ) {
+					$field['availability_reason'] = 'acf_no_verified_writer_for_screen';
+					$field['reason'] = 'acf_no_verified_writer_for_screen';
+					continue;
+				}
 				if ( 2 !== count( $segments ) ) {
 					$field['availability']         = 'potential';
 					$field['availability_reason']  = 'acf_nested_payload_required';
 					$field['reason']               = 'acf_nested_payload_required';
 					$field['writable']             = false;
 					$field['could_be_enabled']     = true;
-					$field['transport']            = 'nova_meta_bridge';
+					$field['transport']            = 'nova_content_bridge';
 					$field['provider']             = 'acf';
-					$field['route']                = '/' . $rest_namespace . '/' . $rest_base . '/{id}';
+					$field['route']                = $acf_bridge_route . '/{id}';
 					$field['request_path']         = isset( $segments[1] ) ? self::segments_to_pointer( [ 'meta_all', 'acf', (string) $segments[1] ] ) : '';
 					$field['methods']              = [ 'POST', 'PUT', 'PATCH' ];
 					$field['write_status']         = 'whole_parent_payload_required';
@@ -3234,10 +3277,10 @@ final class Nova_Bridge_Suite_Content_Context {
 				$field['reason']              = '';
 				$field['writable']            = true;
 				$field['could_be_enabled']    = false;
-				$field['transport']           = 'nova_meta_bridge';
+				$field['transport']           = 'nova_content_bridge';
 				$field['provider']            = 'nova';
-				$field['route']               = '/' . $rest_namespace . '/' . $rest_base . '/{id}';
-				$field['request_path']        = '/meta_all/' . $name;
+				$field['route']               = $acf_bridge_route . '/{id}';
+				$field['request_path']        = self::segments_to_pointer( [ 'meta_all', 'acf', $name ] );
 				$field['methods']             = [ 'POST', 'PUT', 'PATCH' ];
 				$field['write_status']        = 'bridge_writable';
 			}
@@ -3391,6 +3434,15 @@ final class Nova_Bridge_Suite_Content_Context {
 		}
 
 		$segments = array_merge( $parents, [ '' !== $name ? $name : $key ] );
+		if ( in_array( $type, [ 'group', 'repeater', 'flexible_content' ], true ) && 1 === count( $parents ) ) {
+			$pointer = self::segments_to_pointer( $segments );
+			$fields[ $pointer ] = self::make_capability_field( $pointer, $label, 'group' === $type ? 'object' : 'array', 'textual', [
+				'source' => 'acf', 'origin' => 'acf', 'availability' => 'potential', 'availability_reason' => 'acf_structured_writer_required',
+				'writable' => false, 'could_be_enabled' => true, 'transport' => 'acf_rest', 'acf_group' => $group_label,
+				'acf_field_key' => $key, 'applicability' => $applicability,
+				'native_description' => trim( (string) ( $field['instructions'] ?? '' ) . ' Send this complete structured parent value; nested fields use their names, and flexible rows require acf_fc_layout.' ),
+			] );
+		}
 		if ( in_array( $type, [ 'group' ], true ) ) {
 			foreach ( (array) ( $field['sub_fields'] ?? [] ) as $sub_field ) {
 				self::add_acf_field_capabilities( $fields, is_array( $sub_field ) ? $sub_field : [], $segments, $verified_fields, $usable, $resource_reason, $group_rest, $applicability, $group_label );
@@ -4331,7 +4383,10 @@ final class Nova_Bridge_Suite_Content_Context {
 	}
 
 	/** Gutenberg has a document writer, not a truthful per-block writer. */
-	private static function extract_gutenberg_bridge_fields( WP_Post $post ): array {
+	private static function extract_gutenberg_bridge_fields( WP_Post $post ) {
+		if ( ! defined( 'NOVA_GUT_PLUGIN_DIR' ) ) {
+			return new WP_Error( 'gutenberg_bridge_unavailable', __( 'The Gutenberg bridge is not loaded.', 'nova-bridge-suite' ) );
+		}
 		$direct   = in_array( $post->post_type, [ 'post', 'page' ], true );
 		$native   = self::native_post_write_contract( $post );
 		$writable = $direct || ( ! empty( $native['available'] ) && isset( $native['args']['content'] ) && empty( $native['args']['content']['readonly'] ) );
@@ -5221,7 +5276,7 @@ final class Nova_Bridge_Suite_Content_Context {
 		if ( 'content-context' === $current_tab ) {
 			$current_tab = 'api-mapping-context';
 		}
-		if ( 'api-mapping-context' !== $current_tab ) {
+		if ( ! in_array( $current_tab, [ 'api-mapping-context', 'strategy-mapping', 'mapping' ], true ) ) {
 			return;
 		}
 

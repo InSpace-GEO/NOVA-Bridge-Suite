@@ -4,7 +4,7 @@ Tags: seo, automation, content, rest-api, page builder
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.0.0
+Stable tag: 3.2.2
 License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -24,7 +24,7 @@ Modules can be toggled from Settings -> NOVA Settings. The core bridge and post 
 The API Mapping Context module provides a focused map of NOVA publishing destinations and lets administrators map each discovered field to NOVA content with field-level publishing guidance. Its compact, mapping-first interface keeps field mappings and instructions prominent while placing routes, transports, request paths, and other implementation details in an optional technical-details disclosure.
 
 = API Mapping Context =
-Open Settings -> NOVA Settings -> API Mapping Context to inspect Posts, Pages, client-owned editorial custom post types, and one logical WooCommerce Product categories destination when WooCommerce is available. Products and unrelated operational endpoints such as navigation, payments, countries, and plugin configuration are omitted. NOVA's own Service Page CPT and NOVA-managed Blog CPTs are also omitted from this discovery inventory because their dedicated modules already expose the REST context NOVA needs. A relevant client-owned custom post type can still be listed as unavailable when its REST API support is disabled.
+Open Settings -> NOVA Settings -> API Mapping Context to inspect Posts, Pages, client-owned editorial custom post types, and one logical WooCommerce Product categories destination when WooCommerce is available. Products and unrelated operational endpoints such as navigation, payments, countries, and plugin configuration are omitted. NOVA's own Service Page CPT and NOVA-managed Blog CPTs are also omitted from this discovery inventory because their dedicated modules already expose the REST context NOVA needs. Eligible client-owned types with REST disabled use the guarded NOVA content transport; unsupported types remain unavailable.
 
 API Mapping Context is a standalone module and does not belong to either custom-post-type module. Disabling it stops endpoint discovery and context injection but leaves every saved mapping, template selection, and guidance entry intact for the next time the module is enabled.
 
@@ -58,6 +58,28 @@ The API Mapping Context inventory currently supports WooCommerce product categor
 1. NOVA Settings screen with module toggles.
 
 == Changelog ==
+
+= 3.2.2 =
+* Enable supported builder bridges directly in Mapping, with administrator permissions, conflict checks, and refreshed field inventory.
+
+= 3.2.1 =
+* Explain disabled builder bridges when inspecting unmapped content, with a link to Modules.
+* Flag clicked unknown editorial content without adding speculative writable fields or persistent overlays.
+* Report Gutenberg bridge availability accurately and distinguish whole-document mapping from individual blocks.
+
+= 3.2.0 =
+* One Mapping workspace with all-site layout discovery and optional imported-strategy scope.
+* Authenticated page preview with linked Elementor/native region selection and field inspection.
+* Reference selection stays available independently of missing publishing parents; provider failures remain visible.
+* Existing endpoint defaults and layout profiles are preserved.
+
+= 3.1.0 =
+* Add strategy import and hierarchy-based reference selection for unique layouts.
+* Reuse profiles with direct content sources and natural-language guidance.
+* Bind page-builder mappings to verified target selectors and detect layout changes.
+* Add guarded routes for editorial CPTs and ACF/SCF fields hidden from REST.
+* Add authenticated URL readiness contracts with references and creation defaults.
+* Preserve profiles on reimport and enforce object-level permissions.
 
 = 3.0.0 =
 * Add the standalone, default-enabled API Mapping Context module with a focused inventory for Posts, Pages, client-owned editorial custom post types, and WooCommerce product categories.

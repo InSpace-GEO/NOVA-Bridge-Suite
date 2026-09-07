@@ -4,7 +4,7 @@
 - Requires at least: 6.0
 - Tested up to: 7.1
 - Requires PHP: 7.4
-- Stable tag: 3.0.0
+- Stable tag: 3.2.2
 - License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -26,9 +26,23 @@ Modules can be toggled from `Settings -> NOVA Settings`. The core bridge and pos
 
 The `API Mapping Context` module provides a focused map of the content destinations NOVA is expected to publish to and lets administrators map each discovered field to NOVA content with field-level publishing guidance. Its compact, mapping-first interface keeps field mappings and instructions prominent while placing routes, transports, request paths, and other implementation details in an optional technical-details disclosure.
 
+### Mapping workspace (3.2.2)
+
+Open **Settings → NOVA Settings → Mapping**. All unique layouts are shown by default, with an optional imported-strategy scope. A rendered reference sits beside the field inspector. Clicking a field or bound page region selects the other; non-visible fields remain available in the inspector. Unknown editorial regions show a compact notice when clicked. Disabled builder bridges can be enabled directly here; save mapping changes first. Gutenberg exposes whole-document content, not independent block write targets.
+
+Import a NOVA strategy CSV with a `url` column; article content is discarded. The plugin matches existing WordPress content and groups verified layouts using theme templates, actual builder structure and applicable ACF/SCF fields. New URLs require an explicit reference choice. Equivalent unresolved URLs are grouped by hierarchy, page type and locale for a shared reference selection.
+
+Give each layout a name, choose NOVA sources for its fields, and describe how to fill its content sections. Profiles are reused across matching documents and survive strategy reimports. Mappings are private to authenticated editors. Ordinary content and NOVA's self-describing CPTs do not require redundant profiles.
+
+`GET /wp-json/nova-bridge/v1/strategy/context?url=<target-url>` returns readiness, guidance, mappings, current field/write contracts, reference details and create defaults. The publishing flow must check `ready`, respect `write.route`, and execute any field-specific transport separately. Builder mappings bind to verified target selectors. Creating new builder pages requires the posting flow to create/clone the reference layout and then read the new document's bridge.
+
+Hidden editorial CPTs can use authenticated `/wp-json/nova-bridge/v1/content/POST_TYPE` routes. Hidden ACF/SCF fields use `meta_all.acf.FIELD_NAME`; groups, repeaters and flexible content require complete structured values. The plugin calls WordPress and ACF/SCF APIs locally, so XML-RPC does not need to be enabled. Protected keys, unsupported providers and system post types are excluded. Native REST flags are preserved.
+
+The importer accepts UTF-8 CSV/JSON up to 10 MB and 10,000 URL rows. The reference inventory is bounded to 5,000 posts and 5,000 product categories; truncation is reported and disables suggestions. The module stores mappings locally and does not fetch imported URL hosts. See [module documentation](modules/api-mapping-context/README.md) for supported fields and error behavior.
+
 ### API Mapping Context
 
-Open `Settings -> NOVA Settings -> API Mapping Context` to inspect Posts, Pages, client-owned editorial custom post types, and one logical WooCommerce Product categories destination when WooCommerce is available. Products and unrelated operational endpoints such as navigation, payments, countries, and plugin configuration are omitted. NOVA's own Service Page CPT and NOVA-managed Blog CPTs are also omitted from this discovery inventory because their dedicated modules already expose the REST context NOVA needs. A relevant client-owned custom post type can still be listed as unavailable when its REST API support is disabled.
+Open `Settings -> NOVA Settings -> API Mapping Context` to inspect Posts, Pages, client-owned editorial custom post types, and one logical WooCommerce Product categories destination when WooCommerce is available. Products and unrelated operational endpoints such as navigation, payments, countries, and plugin configuration are omitted. NOVA's own Service Page CPT and NOVA-managed Blog CPTs are also omitted from this discovery inventory because their dedicated modules already expose the REST context NOVA needs. Eligible client-owned types with REST disabled use the guarded NOVA content transport; unsupported types remain unavailable.
 
 API Mapping Context is a standalone module and does not belong to either custom-post-type module. Disabling it stops endpoint discovery and context injection but leaves every saved mapping, template selection, and guidance entry intact for the next time the module is enabled.
 

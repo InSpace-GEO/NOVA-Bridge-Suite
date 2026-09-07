@@ -2,7 +2,7 @@
 /**
  * Plugin Name: NOVA Bridge Suite
  * Description: Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
- * Version: 3.0.0
+ * Version: 3.2.2
  * Author: LUNA B.V.
  * Requires PHP: 7.4
  * License: Proprietary
@@ -13,7 +13,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'NOVA_BRIDGE_SUITE_VERSION', '3.0.0' );
+define( 'NOVA_BRIDGE_SUITE_VERSION', '3.2.2' );
 define( 'NOVA_BRIDGE_SUITE_PLUGIN_FILE', __FILE__ );
 define( 'NOVA_BRIDGE_SUITE_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'NOVA_BRIDGE_SUITE_OPTION', 'nova_bridge_settings' );
@@ -578,7 +578,10 @@ function nova_bridge_suite_get_targeted_rest_module_keys( string $route ): ?arra
 
     $module_keys = null;
 
-    if ( nova_bridge_suite_rest_route_matches( $route, 'nova-bridge/v1/content-endpoints' ) ) {
+    if ( nova_bridge_suite_rest_route_matches( $route, 'nova-bridge/v1/content-endpoints' )
+        || nova_bridge_suite_rest_route_matches( $route, 'nova-bridge/v1/strategy' )
+        || nova_bridge_suite_rest_route_matches( $route, 'nova-bridge/v1/mapping' )
+    ) {
         // The inventory must see every enabled NOVA content route. The regular
         // loader still applies module settings and conflict checks, so disabled
         // bridges are not bootstrapped for this request.
