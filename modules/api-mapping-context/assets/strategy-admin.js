@@ -2,7 +2,7 @@
 
 	'use strict';
 
-	var root, config, scopeChosen = false, controlId = 0, state = { importOpen: false, data: null, selected: '', dirty: false, busy: false, filter: 'all', scope: 'all', epoch: 0, layout: null, activeField: '', frame: null, statuses: {}, frameReady: false };
+	var root, config, scopeChosen = false, controlId = 0, state = { hideConsent: true, importOpen: false, data: null, selected: '', dirty: false, busy: false, filter: 'all', scope: 'all', epoch: 0, layout: null, activeField: '', frame: null, statuses: {}, frameReady: false };
 
 	var sources = [ [ '', 'Guidance only / no direct source' ], [ 'leave_empty', 'Leave empty (do not send)' ], [ 'h1', 'Visible heading (H1)', 'Content' ], [ 'content', 'Full content', 'Content' ], [ 'top_content', 'Intro', 'Content' ], [ 'bottom_content', 'Main content', 'Content' ], [ 'title', 'SEO title', 'SEO metadata' ], [ 'meta_description', 'Meta description', 'SEO metadata' ], [ 'primary_keyword', 'Primary keyword', 'SEO metadata' ], [ 'secondary_keywords', 'Secondary keywords', 'SEO metadata' ], [ 'featured_media', 'Uploaded WordPress image ID', 'Image data' ], [ 'image_url', 'Primary image URL', 'Image data' ], [ 'image_urls', 'All image URLs', 'Image data' ], [ 'image_alt', 'Image alternative text', 'Image data' ] ];
 
@@ -235,9 +235,21 @@
 
 			// Block form submission, popups and top navigation while retaining the actual theme render.
 
-			frame.setAttribute( 'sandbox', 'allow-scripts allow-same-origin' ); frame.src = layout.preview_url; state.frame = frame; page.appendChild( frame );
+			frame.setAttribute( 'sandbox', 'allow-scripts allow-same-origin' ); frame.src = layout.preview_url; state.frame = frame;
+			var refreshPreview = button( 'Refresh preview', 'button', async function () {
+				refreshPreview.disabled = true; previewStatus.textContent = 'Requesting a fresh preview link…';
+				try {
+					var fresh = await api( '/layout?reference_type=' + encodeURIComponent( layout.reference_type ) + '&reference_id=' + layout.reference_id + '&signature=' + encodeURIComponent( layout.signature ), undefined, true );
+					if ( state.frame !== frame ) { return; }
+					if ( ! fresh.preview_url ) { throw new Error( 'No preview is available for this reference.' ); }
+					layout.preview_url = fresh.preview_url; state.frameReady = false; state.statuses = {}; frame.src = fresh.preview_url;
+				} catch ( e ) { if ( state.frame === frame ) { previewStatus.textContent = e.message + ' If your login expired, sign in again and reload Mapping. Unsaved mappings have been kept here.'; } }
+				finally { refreshPreview.disabled = false; }
+			} ); page.appendChild( refreshPreview );
+			var consentLabel = el( 'label', 'ns-preview-consent ns-help' ), consent = input( 'checkbox' ); consent.checked = state.hideConsent;
+			consent.addEventListener( 'change', function () { state.hideConsent = consent.checked; postPreview( 'consent', { hidden: state.hideConsent } ); } ); consentLabel.appendChild( consent ); consentLabel.appendChild( el( 'span', '', 'Hide known cookie banners in this preview only' ) ); page.appendChild( consentLabel ); page.appendChild( frame );
 
-			frame.addEventListener( 'load', function () { if ( state.frame === frame && ! state.frameReady ) { previewStatus.textContent = 'Waiting for preview controls. If the page shows an error, refresh the reference. Fields remain available here.'; } } );
+			frame.addEventListener( 'load', function () { if ( state.frame === frame && ! state.frameReady ) { previewStatus.textContent = 'Waiting for preview controls. Use Refresh preview if this page shows an error. Your mappings remain available in the inspector.'; } } );
 
 		} else { previewStatus.textContent = 'No rendered preview is available. Use the field inspector.'; }
 
@@ -313,7 +325,7 @@
 
 		var data = event.data, status = root.querySelector( '.ns-preview-status' );
 
-		if ( data.type === 'ready' ) { state.frameReady = true; status.textContent = 'Click a highlighted region to inspect its fields. Links and forms are disabled.'; postPreview( 'bind', { builders: state.layout.builders, providers: state.layout.providers, fields: arr( state.layout.fields ).map( function ( f ) { return { path: f.path, source: f.source, builder: f.builder, element: f.element, selector_data: f.selector_data }; } ) } ); }
+		if ( data.type === 'ready' ) { state.frameReady = true; status.textContent = 'Click a highlighted region to inspect its fields. Links and forms are disabled.'; postPreview( 'bind', { hideConsent: state.hideConsent, builders: state.layout.builders, providers: state.layout.providers, fields: arr( state.layout.fields ).map( function ( f ) { return { path: f.path, source: f.source, builder: f.builder, element: f.element, selector_data: f.selector_data }; } ) } ); }
 
 		if ( data.type === 'unbound' && typeof data.label === 'string' ) {
 			selectField( '', false );

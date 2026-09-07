@@ -1,7 +1,9 @@
 ( function () {
 	'use strict';
-	var config = window.NovaMappingPreview, fields = [], builders = [], providers = [], issueNode = null, targets = new Map(), selected = '', ready = false;
+	var config = window.NovaMappingPreview, fields = [], builders = [], providers = [], issueNode = null, targets = new Map(), selected = '', ready = false, hideConsent = true;
 	if ( ! config || window.parent === window ) { return; }
+	var consentSelectors = '#onetrust-banner-sdk,.onetrust-pc-dark-filter,#CybotCookiebotDialog,#CybotCookiebotDialogBodyUnderlay,.cmplz-cookiebanner,.cmplz-soft-cookiewall,#cookie-law-info-bar,.cli-popupbar-overlay,#cookie-notice,#moove_gdpr_cookie_info_bar,.gdpr_lightbox,.cky-consent-container,.cky-overlay,#cookiebanner';
+	function updateConsent() { document.documentElement.classList.toggle( 'nova-preview-hide-consent', hideConsent && !! document.querySelector( consentSelectors ) ); }
 	function send( type, data ) { window.parent.postMessage( Object.assign( { source: 'nova-mapping-preview', type: type, referenceId: config.referenceId, referenceType: config.referenceType }, data || {} ), config.parentOrigin ); }
 	function visible( node ) { return !! ( node && node.getClientRects().length && getComputedStyle( node ).visibility !== 'hidden' ); }
 	function unique( selector, scope ) { var nodes = ( scope || document ).querySelectorAll( selector ); return nodes.length === 1 ? nodes[0] : null; }
@@ -39,7 +41,8 @@
 	}
 	window.addEventListener( 'message', function ( event ) {
 		if ( event.source !== window.parent || event.origin !== config.parentOrigin || ! event.data || event.data.source !== 'nova-mapping-admin' || event.data.referenceId !== config.referenceId ) { return; }
-		if ( event.data.type === 'bind' && Array.isArray( event.data.fields ) ) { builders = Array.isArray( event.data.builders ) ? event.data.builders : []; providers = Array.isArray( event.data.providers ) ? event.data.providers : []; fields = event.data.fields.filter( function ( f ) { return f && typeof f.path === 'string'; } ); if ( ready ) { bind(); } }
+		if ( event.data.type === 'consent' ) { hideConsent = !! event.data.hidden; updateConsent(); }
+		if ( event.data.type === 'bind' && Array.isArray( event.data.fields ) ) { hideConsent = event.data.hideConsent !== false; updateConsent(); builders = Array.isArray( event.data.builders ) ? event.data.builders : []; providers = Array.isArray( event.data.providers ) ? event.data.providers : []; fields = event.data.fields.filter( function ( f ) { return f && typeof f.path === 'string'; } ); if ( ready ) { bind(); } }
 		if ( event.data.type === 'select' && typeof event.data.path === 'string' ) { highlight( event.data.path, true ); }
 	} );
 
@@ -85,10 +88,11 @@
 	document.addEventListener( 'auxclick', function ( event ) { event.preventDefault(); }, true );
 	function init() {
 		ready = true;
+		var consentStyle = document.createElement( 'style' ); consentStyle.textContent = consentSelectors.split( ',' ).map( function ( selector ) { return 'html.nova-preview-hide-consent ' + selector; } ).join( ',' ) + '{display:none!important;visibility:hidden!important;pointer-events:none!important}html.nova-preview-hide-consent,html.nova-preview-hide-consent body{overflow:auto!important}'; document.head.appendChild( consentStyle ); updateConsent();
 		var style = document.createElement( 'style' ); style.textContent = '.nova-mapping-issue{outline:2px dashed #b7791f!important;outline-offset:3px}.nova-mapping-target{cursor:crosshair!important}.nova-mapping-target:hover{outline:2px dashed #2563eb!important;outline-offset:3px}.nova-mapping-selected{outline:3px solid #2563eb!important;outline-offset:4px;background-color:rgba(37,99,235,.08)!important}'; document.head.appendChild( style );
 		bind(); send( 'ready' );
-		var timer; new MutationObserver( function ( changes ) { if ( changes.some( function ( m ) { return m.type === 'childList'; } ) ) { clearTimeout( timer ); timer = setTimeout( bind, 150 ); } } ).observe( document.body, { childList: true, subtree: true } );
-		window.addEventListener( 'resize', function () { clearTimeout( timer ); timer = setTimeout( bind, 150 ); } );
+		var timer; new MutationObserver( function ( changes ) { if ( changes.some( function ( m ) { return m.type === 'childList'; } ) ) { clearTimeout( timer ); timer = setTimeout( function () { updateConsent(); bind(); }, 150 ); } } ).observe( document.body, { childList: true, subtree: true } );
+		window.addEventListener( 'resize', function () { clearTimeout( timer ); timer = setTimeout( function () { updateConsent(); bind(); }, 150 ); } );
 	}
 	if ( document.readyState === 'loading' ) { document.addEventListener( 'DOMContentLoaded', init ); } else { init(); }
 }() );

@@ -8,3 +8,5 @@
 .ns-import-file{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #dce3ed}.ns-import-file span{overflow-wrap:anywhere}
 
 .ns-reference-member{display:flex;gap:8px;align-items:center;padding:5px 0}.ns-reference-member span{overflow-wrap:anywhere}
+
+.ns-preview-consent{display:flex;align-items:center;gap:8px;margin:12px 0}.ns-preview-consent input{margin:0}

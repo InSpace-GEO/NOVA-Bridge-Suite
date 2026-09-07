@@ -4,7 +4,7 @@ Tags: seo, automation, content, rest-api, page builder
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.2.8
+Stable tag: 3.2.9
 License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -58,6 +58,11 @@ The API Mapping Context inventory currently supports WooCommerce product categor
 1. NOVA Settings screen with module toggles.
 
 == Changelog ==
+
+= 3.2.9 =
+* Validate previews after custom content types register; distinguish expired links, missing sessions and unavailable references.
+* Refresh preview links without losing unsaved mappings and avoid cached preview URLs.
+* Hide known cookie banners in the authenticated preview only, with a reversible toggle and no consent changes.
 
 = 3.2.8 =
 * Group unresolved sibling strategy URLs with matching hints and candidates; allow selecting which URLs receive a reference.
