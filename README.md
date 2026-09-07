@@ -4,7 +4,7 @@
 - Requires at least: 6.0
 - Tested up to: 7.1
 - Requires PHP: 7.4
-- Stable tag: 3.2.2
+- Stable tag: 3.2.3
 - License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -26,7 +26,7 @@ Modules can be toggled from `Settings -> NOVA Settings`. The core bridge and pos
 
 The `API Mapping Context` module provides a focused map of the content destinations NOVA is expected to publish to and lets administrators map each discovered field to NOVA content with field-level publishing guidance. Its compact, mapping-first interface keeps field mappings and instructions prominent while placing routes, transports, request paths, and other implementation details in an optional technical-details disclosure.
 
-### Mapping workspace (3.2.2)
+### Mapping workspace (3.2.3)
 
 Open **Settings → NOVA Settings → Mapping**. All unique layouts are shown by default, with an optional imported-strategy scope. A rendered reference sits beside the field inspector. Clicking a field or bound page region selects the other; non-visible fields remain available in the inspector. Unknown editorial regions show a compact notice when clicked. Disabled builder bridges can be enabled directly here; save mapping changes first. Gutenberg exposes whole-document content, not independent block write targets.
 

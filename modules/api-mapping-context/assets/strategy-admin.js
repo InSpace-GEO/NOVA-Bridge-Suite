@@ -12,6 +12,14 @@
 
 	function button( text, cls, action ) { var n = el( 'button', cls || 'button', text ); n.type = 'button'; n.addEventListener( 'click', action ); return n; }
 
+	function enableBridgeButton( provider ) {
+		var enable = button( 'Enable ' + ( provider.label || provider.id ) + ' bridge', 'button button-primary', function () {
+			if ( state.dirty ) { notice( 'Save your mapping changes before enabling the bridge so the field inventory can refresh safely.', true ); return; }
+			enable.disabled = true;
+			action( function () { return api( '/enable-bridge', { builder: provider.id }, true ); }, 'Bridge enabled. The field inventory has been refreshed.' ).finally( function () { enable.disabled = false; } );
+		} ); return enable;
+	}
+
 	function control( parent, title, input, help ) { var group = el( 'label', 'ns-control' ), label = el( 'span', 'ns-label', title ), id = 'ns-control-' + ( ++controlId ); label.id = id; input.setAttribute( 'aria-labelledby', id ); group.appendChild( label ); group.appendChild( input ); if ( help ) { var description = el( 'span', 'ns-help', help ); description.id = id + '-help'; input.setAttribute( 'aria-describedby', description.id ); group.appendChild( description ); } parent.appendChild( group ); return input; }
 
 	function input( type, value ) { var n = el( 'input' ); n.type = type; n.value = value || ''; return n; }
@@ -20,7 +28,7 @@
 
 	function select( choices, value ) { var n = el( 'select' ); choices.forEach( function ( item ) { var o = el( 'option', '', item[ 1 ] ); o.value = item[ 0 ]; n.appendChild( o ); } ); n.value = value || ''; return n; }
 
-	function notice( text, error ) { var box = root.querySelector( '.ns-notice' ); if ( box ) { box.remove(); } box = el( 'div', 'ns-notice' + ( error ? ' ns-error' : '' ), text ); box.setAttribute( 'role', error ? 'alert' : 'status' ); root.prepend( box ); }
+	function notice( text, error ) { var box = root.querySelector( '.ns-feedback' ); if ( box ) { box.remove(); } box = el( 'div', 'ns-notice ns-feedback' + ( error ? ' ns-error' : '' ), text ); box.setAttribute( 'role', error ? 'alert' : 'status' ); root.prepend( box ); }
 
 	async function api( suffix, body, mapping ) {
 
@@ -184,7 +192,12 @@
 
 		var failed = arr( layout.providers ).filter( function ( p ) { return ! p.available; } );
 
-		failed.forEach( function ( p ) { parent.appendChild( el( 'p', 'ns-notice ns-error', p.label + ': ' + p.message + ' The field inventory is incomplete.' ) ); } );
+		failed.forEach( function ( p ) {
+			var warning = el( 'div', 'ns-notice ns-error' ); warning.setAttribute( 'role', 'status' );
+			warning.appendChild( el( 'p', '', p.label + ': ' + p.message + ' The field inventory is incomplete.' ) );
+			if ( p.module_enabled === false ) { warning.appendChild( enableBridgeButton( p ) ); }
+			parent.appendChild( warning );
+		} );
 
 		if ( layout.unbound_fields ) { parent.appendChild( el( 'p', 'ns-notice ns-error', layout.unbound_fields + ' saved fields cannot be rebound to this reference. Choose the original mapped reference before saving; existing mappings are preserved.' ) ); }
 
@@ -297,11 +310,7 @@
 			else if ( data.builder ) { message = 'This content has no verified visual binding. Check the existing fields below; a custom or dynamic source may require additional support.'; }
 			panel.appendChild( el( 'p', 'ns-help', message ) );
 			if ( provider && ! provider.available && provider.module_enabled === false ) {
-				var enable = button( 'Enable ' + ( provider.label || provider.id ) + ' bridge', 'button button-primary', function () {
-					if ( state.dirty ) { notice( 'Save your mapping changes before enabling the bridge so the field inventory can refresh safely.', true ); return; }
-					enable.disabled = true;
-					action( function () { return api( '/enable-bridge', { builder: provider.id }, true ); }, 'Bridge enabled. The field inventory has been refreshed.' ).finally( function () { enable.disabled = false; } );
-				} ); panel.appendChild( enable );
+				panel.appendChild( enableBridgeButton( provider ) );
 				var link = el( 'a', 'button', 'Open Modules' ); link.href = config.modulesUrl; panel.appendChild( link );
 			}
 			if ( data.builder === 'gutenberg' && ( ! provider || provider.available ) ) { var docField = arr(state.layout.fields).find(function(f){return f.builder === 'gutenberg' && f.element === 'document';}); if(docField){panel.appendChild(button('Select document content','button',function(){selectField(docField.path,true);}));} }

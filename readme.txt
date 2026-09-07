@@ -4,7 +4,7 @@ Tags: seo, automation, content, rest-api, page builder
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.2.2
+Stable tag: 3.2.3
 License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -58,6 +58,10 @@ The API Mapping Context inventory currently supports WooCommerce product categor
 1. NOVA Settings screen with module toggles.
 
 == Changelog ==
+
+= 3.2.3 =
+* Show Enable bridge directly in the layout warning without requiring a preview click.
+* Keep bridge warnings visible when reporting save or activation feedback.
 
 = 3.2.2 =
 * Enable supported builder bridges directly in Mapping, with administrator permissions, conflict checks, and refreshed field inventory.
