@@ -1,0 +1,16 @@
+const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
+const source = fs.readFileSync(__dirname + '/../assets/mapping-preview.js', 'utf8');
+let nodes = [];
+const context = {document:{querySelectorAll:()=>nodes}, visible:n=>!n.hidden};
+vm.createContext(context);
+vm.runInContext(source.slice(source.indexOf('function target('),source.indexOf('function bind(')),context);
+const field={source:'acf',preview_text:'Distinct article content'};
+const leaf={textContent:field.preview_text,closest:()=>null,contains:()=>false};
+const wrapper={...leaf,contains:n=>n===leaf};
+nodes=[wrapper,leaf]; assert.equal(context.target(field).node,leaf);
+assert.equal(context.target(field).precision,'text-match');
+nodes=[leaf,{...leaf}]; assert.equal(context.target(field),null,'Repeated copy must not guess a location');
+nodes=[{...leaf,hidden:true}]; assert.equal(context.target(field),null);
+nodes=[{...leaf,closest:()=>({})}]; assert.equal(context.target(field),null,'Navigation and form content must not bind');
+nodes=[leaf]; assert.equal(context.target({...field,preview_text:'Short'}),null);
+console.log('PASS ACF unique text matching, smallest region, ambiguity, hidden and excluded content');

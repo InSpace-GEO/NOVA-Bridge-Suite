@@ -681,10 +681,14 @@ final class Nova_Bridge_Suite_Strategy {
 		if ( 'post' === $entity['reference_type'] && class_exists( 'Nova_Bridge_Suite_Content_Transport' ) ) {
 			$catalog = Nova_Bridge_Suite_Content_Transport::field_catalog( $entity['post_type'], $entity['reference_id'] );
 			$route = Nova_Bridge_Suite_Content_Transport::route_for( $entity['post_type'] );
+			$values = Nova_Bridge_Suite_Content_Transport::read_fields( get_post( $entity['reference_id'] ) );
 			foreach ( $catalog['acf'] as $name => $field ) {
 				if ( ! current_user_can( 'edit_post_meta', $entity['reference_id'], $name ) ) { continue; }
 				$pointer = '/meta_all/acf/' . str_replace( [ '~', '/' ], [ '~0', '~1' ], $name );
 				$fields[ $pointer ] = [ 'path' => $pointer, 'label' => $field['label'] ?? $name, 'type' => $field['type'] ?? 'string', 'source' => 'acf', 'writable' => true, 'transport' => 'nova_content_bridge', 'route' => $route . '/{id}', 'request_path' => $pointer, 'methods' => [ 'POST', 'PUT', 'PATCH' ], 'acf_key' => $field['key'], 'native_description' => $field['instructions'] ?? '', 'availability' => 'available', 'description' => '', 'mapping' => '' ];
+				self::acf_instance_fields( $fields, $field, $values['acf'][ $name ] ?? null, $pointer, $fields[ $pointer ], $fields[ $pointer ]['label'] );
+				$native_pointer = '/acf/' . str_replace( [ '~', '/' ], [ '~0', '~1' ], $name );
+				if ( isset( $fields[ $native_pointer ] ) && ! $fields[ $native_pointer ]['writable'] ) { $fields[ $native_pointer ]['alternative_path'] = $pointer; }
 			}
 			foreach ( $catalog['meta'] as $name => $field ) {
 				if ( ! current_user_can( 'edit_post_meta', $entity['reference_id'], $name ) ) { continue; }
@@ -702,6 +706,39 @@ final class Nova_Bridge_Suite_Strategy {
 		foreach ( $fields as &$field ) { if ( 'builder' === ( $field['source'] ?? '' ) ) { $field['binding'] = self::builder_binding( $field, $entity ); } }
 		unset( $field );
 		return self::$inventories[ $key ] = array_values( $fields );
+	}
+
+	/** Concrete ACF rows use the existing validated whole-parent writer, never a fictional leaf PATCH. */
+	private static function acf_instance_fields( array &$fields, array $field, $value, string $pointer, array $parent, string $label, int $depth = 0 ): void {
+		if ( $depth > 20 ) { return; }
+		$type = $field['type'] ?? '';
+		if ( in_array( $type, [ 'group', 'repeater', 'flexible_content' ], true ) ) {
+			$rows = 'group' === $type ? [ $value ] : ( is_array( $value ) ? $value : [] );
+			foreach ( $rows as $index => $row ) {
+				if ( ! is_array( $row ) ) { continue; }
+				$children = $field['sub_fields'] ?? []; $row_label = $label;
+				if ( 'flexible_content' === $type ) {
+					$children = [];
+					foreach ( $field['layouts'] ?? [] as $layout ) { if ( ( $layout['name'] ?? '' ) === ( $row['acf_fc_layout'] ?? null ) ) { $children = $layout['sub_fields'] ?? []; $row_label .= ' · ' . ( $layout['label'] ?? $layout['name'] ); break; } }
+				}
+				$row_pointer = $pointer . ( 'group' === $type ? '' : '/' . $index );
+				if ( 'group' !== $type ) { $row_label .= ' ' . ( $index + 1 ); }
+				foreach ( $children as $child ) {
+					$name = $child['name'] ?? ''; if ( ! $name ) { continue; }
+					self::acf_instance_fields( $fields, $child, $row[ $name ] ?? null, $row_pointer . '/' . str_replace( [ '~', '/' ], [ '~0', '~1' ], $name ), $parent, $row_label . ' / ' . ( $child['label'] ?? $name ), $depth + 1 );
+				}
+			}
+			return;
+		}
+		// Exclude layout controls and decoration from the content inspector.
+		if ( ! in_array( $type, [ 'text', 'textarea', 'wysiwyg', 'url', 'email', 'image', 'file', 'gallery', 'link', 'oembed' ], true ) ) { return; }
+		$entry = array_merge( $parent, [ 'path' => $pointer, 'label' => $label, 'type' => $type, 'acf_key' => $field['key'] ?? '', 'current_value' => is_scalar( $value ) ? (string) $value : wp_json_encode( $value ), 'native_description' => $field['instructions'] ?? '' ] );
+		if ( $pointer !== $parent['path'] ) {
+			$entry['write_mode'] = 'complete_parent'; $entry['parent_path'] = $parent['path'];
+			$entry['native_description'] .= ' Read the current parent at ' . $parent['path'] . ', change this leaf, then send the COMPLETE parent value at request_path. Preserve all other rows, values, ordering and acf_fc_layout markers. A leaf-only payload replaces the parent and is unsafe.';
+		}
+		if ( in_array( $type, [ 'text', 'textarea', 'wysiwyg' ], true ) && is_string( $value ) ) { $entry['preview_text'] = html_entity_decode( wp_strip_all_tags( $value ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ); }
+		$fields[ $pointer ] = $entry;
 	}
 
 	/** Stable selectors come from the live bridge; Elementor IDs are translated to tree positions. */

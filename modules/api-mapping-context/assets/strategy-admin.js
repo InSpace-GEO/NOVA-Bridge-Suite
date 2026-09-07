@@ -152,7 +152,7 @@
 
 		if ( selected.unresolved ) { editor.appendChild( el( 'h2', '', selected.rows.length > 1 ? selected.row.parent_path + '… · ' + selected.rows.length + ' URLs' : selected.row.path ) ); renderReference( selected, editor ); return; }
 
-		loadLayout( selected, editor );
+		loadLayout( selected, editor, state.nextReference ); state.nextReference = null;
 
 	}
 
@@ -203,6 +203,12 @@
 		var affected = el( 'details', 'ns-details' ); affected.appendChild( el( 'summary', '', 'Used by ' + entry.layout.members.length + ' site items · ' + entry.rows.length + ' strategy URLs' ) );
 
 		entry.layout.members.forEach( function ( m ) { affected.appendChild( el( 'p', 'ns-help', m.path || m.title + ' (draft/private reference)' ) ); } ); parent.appendChild( affected );
+		var replaceable = entry.rows.filter( function ( r ) { return ! r.post_id && ! r.term_id; } );
+		if ( replaceable.length ) {
+			var changeReference = el( 'details', 'ns-details' ); changeReference.appendChild( el( 'summary', '', 'Change strategy reference' ) );
+			changeReference.appendChild( el( 'p', 'ns-help', 'Choose a different example for selected future URLs. Existing layout mappings are kept; the new example uses its own layout mapping.' ) );
+			renderReference( { row: { candidates: [] }, rows: replaceable, changing: true }, changeReference ); parent.appendChild( changeReference );
+		}
 
 		entry.rows.filter( function ( r ) { return r.status === 'needs_parent' || r.status === 'needs_layout'; } ).forEach( function ( r ) { parent.appendChild( el( 'p', 'ns-notice', r.path + ': ' + r.basis + ' You can map this reference now.' ) ); } );
 
@@ -273,7 +279,8 @@
 
 			if ( f.current_value !== undefined ) { row.appendChild( el( 'p', 'ns-current-value', f.current_value || '(empty)' ) ); }
 
-			if ( ! f.writable ) { row.appendChild( el( 'span', 'ns-badge', 'No verified writer' ) ); }
+			if ( f.write_mode === 'complete_parent' ) { row.appendChild( el( 'span', 'ns-badge', 'Writable through complete matrix / parent' ) ); }
+			if ( ! f.writable ) { row.appendChild( el( 'span', 'ns-badge', f.alternative_path ? 'Native ACF REST disabled · meta_all writer available' : 'No verified writer' ) ); if ( f.alternative_path ) { row.appendChild( button( 'Select writable meta_all field', 'button', function () { selectField( f.alternative_path, false ); } ) ); } }
 
 			var sourceChoices = sources.slice(); if ( mapping.mapping && ! sourceChoices.some( function ( s ) { return s[0] === mapping.mapping; } ) ) { sourceChoices.push( [ mapping.mapping, mapping.mapping ] ); }
 
@@ -325,7 +332,7 @@
 
 		var data = event.data, status = root.querySelector( '.ns-preview-status' );
 
-		if ( data.type === 'ready' ) { state.frameReady = true; status.textContent = 'Click a highlighted region to inspect its fields. Links and forms are disabled.'; postPreview( 'bind', { hideConsent: state.hideConsent, builders: state.layout.builders, providers: state.layout.providers, fields: arr( state.layout.fields ).map( function ( f ) { return { path: f.path, source: f.source, builder: f.builder, element: f.element, selector_data: f.selector_data }; } ) } ); }
+		if ( data.type === 'ready' ) { state.frameReady = true; status.textContent = 'Click a highlighted region to inspect its fields. Links and forms are disabled.'; postPreview( 'bind', { hideConsent: state.hideConsent, builders: state.layout.builders, providers: state.layout.providers, fields: arr( state.layout.fields ).map( function ( f ) { return { path: f.path, source: f.source, builder: f.builder, element: f.element, selector_data: f.selector_data, preview_text: f.preview_text }; } ) } ); }
 
 		if ( data.type === 'unbound' && typeof data.label === 'string' ) {
 			selectField( '', false );
@@ -350,7 +357,7 @@
 
 			data.fields.forEach( function ( f ) { state.statuses[f.path] = f; } );
 
-			root.querySelectorAll( '.ns-field' ).forEach( function ( row ) { var f = state.statuses[row.dataset.path]; row.querySelector( '.ns-field-visibility' ).textContent = f && f.visible ? ( f.precision === 'document' ? 'Whole document · not an individual block' : ( f.precision === 'widget' ? 'On page · widget region' : 'On page · click to highlight' ) ) : 'Not visible or not bound in this preview · available here'; } );
+			root.querySelectorAll( '.ns-field' ).forEach( function ( row ) { var f = state.statuses[row.dataset.path]; row.querySelector( '.ns-field-visibility' ).textContent = f && f.visible ? ( f.precision === 'text-match' ? 'On page · unique text match (verify visually)' : f.precision === 'document' ? 'Whole document · not an individual block' : ( f.precision === 'widget' ? 'On page · widget region' : 'On page · click to highlight' ) ) : 'Not visible or not bound in this preview · available here'; } );
 
 		}
 
@@ -375,7 +382,7 @@
 		var candidates = arr( entry.row.candidates || [] ), box = el( 'div', 'ns-reference' );
 		var selectedRows = new Set( entry.rows.map( function ( r ) { return r.id; } ) );
 		if ( entry.rows.length > 1 ) {
-			box.appendChild( el( 'p', 'ns-help', 'These URLs share a parent path and reference candidates. Choose which URLs should use this example; map its layout once.' ) );
+			box.appendChild( el( 'p', 'ns-help', entry.changing ? 'Choose which strategy URLs should switch to the new example.' : 'These URLs share a parent path and reference candidates. Choose which URLs should use this example; map its layout once.' ) );
 			var members = el( 'details' ); members.open = true; members.appendChild( el( 'summary', '', entry.rows.length + ' URLs in this reference group' ) );
 			entry.rows.forEach( function ( r ) { var label = el( 'label', 'ns-reference-member' ), check = input( 'checkbox' ); check.checked = true; check.addEventListener( 'change', function () { if ( check.checked ) { selectedRows.add( r.id ); } else { selectedRows.delete( r.id ); } } ); label.appendChild( check ); label.appendChild( el( 'span', '', r.path ) ); members.appendChild( label ); } ); box.appendChild( members );
 		}
@@ -391,7 +398,7 @@
 
 		} );
 
-		if ( ! candidates.length ) { box.appendChild( el( 'p', '', 'No matching layout could be established from the site. Choose a known example below.' ) ); }
+		if ( ! candidates.length && ! entry.changing ) { box.appendChild( el( 'p', '', 'No matching layout could be established from the site. Choose a known example below.' ) ); }
 
 		var finder = el( 'div', 'ns-reference-finder' ), search = control( finder, 'Find an existing page or category', input( 'search' ) ); search.placeholder = 'Search by title, path or WordPress ID…';
 
@@ -409,7 +416,7 @@
 
 		manual.appendChild( button( 'Use reference', 'button', function () { if ( ! /^\d+$/.test( id.value ) || Number( id.value ) < 1 ) { notice( 'Enter a valid WordPress ID.', true ); return; } assign( type.value, Number( id.value ) ); } ) ); box.appendChild( manual ); parent.appendChild( box );
 
-		function assign( refType, refId ) { if ( ! selectedRows.size ) { notice( 'Select at least one URL for this reference.', true ); return; } action( function () { return api( '/assign', { row_ids: Array.from( selectedRows ), reference_type: refType, reference_id: Number( refId ) } ); }, 'Reference selected for this URL group. You can now map its layout.' ); }
+		function assign( refType, refId ) { if ( ! selectedRows.size ) { notice( 'Select at least one URL for this reference.', true ); return; } if ( ! canLeave() ) { return; } action( async function () { var result = await api( '/assign', { row_ids: Array.from( selectedRows ), reference_type: refType, reference_id: Number( refId ) } ); var assigned = arr( result.rows ).find( function ( r ) { return selectedRows.has( r.id ) && r.signature; } ); if ( assigned ) { state.selected = assigned.signature; state.nextReference = { reference_type: refType, reference_id: Number( refId ) }; } }, 'Reference selected for this URL group. You can now map its layout.' ); }
 
 	}
 
