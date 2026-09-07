@@ -2,7 +2,7 @@
 
 	'use strict';
 
-	var root, config, controlId = 0, state = { data: null, selected: '', dirty: false, busy: false, filter: 'all', scope: 'all', epoch: 0, layout: null, activeField: '', frame: null, statuses: {}, frameReady: false };
+	var root, config, controlId = 0, state = { importOpen: false, data: null, selected: '', dirty: false, busy: false, filter: 'all', scope: 'all', epoch: 0, layout: null, activeField: '', frame: null, statuses: {}, frameReady: false };
 
 	var sources = [ [ '', 'Guidance only / no direct source' ], [ 'h1', 'Visible heading (H1)' ], [ 'title', 'SEO title' ], [ 'meta_description', 'Meta description' ], [ 'content', 'Main content' ], [ 'top_content', 'Content above the listing' ], [ 'bottom_content', 'Content below the listing' ], [ 'featured_media', 'Uploaded WordPress image ID' ], [ 'image_url', 'Primary image URL' ], [ 'image_urls', 'All image URLs' ], [ 'image_alt', 'Image alternative text' ], [ 'primary_keyword', 'Primary keyword' ], [ 'secondary_keywords', 'Secondary keywords' ] ];
 
@@ -145,21 +145,25 @@
 	}
 
 	function renderImport() {
-
-		var panel = el( 'details', 'ns-import' ); panel.open = state.scope === 'strategy' && ! state.data.summary.strategy_urls; panel.appendChild( el( 'summary', '', state.data.imported_at ? 'Replace strategy · ' + state.data.summary.strategy_urls + ' URLs imported' : 'Optional: import a strategy' ) );
-
-		var body = el( 'div', 'ns-import-body' ), file = input( 'file' ); file.accept = '.csv,text/csv'; control( body, 'Strategy CSV', file, 'A CSV with a url column, up to 10 MB. Existing layout mappings are kept.' );
-
-		body.appendChild( button( 'Import strategy', 'button button-primary', function () {
-
-			if ( ! file.files.length || file.files[0].size > 10 * 1024 * 1024 ) { notice( 'Choose a CSV up to 10 MB.', true ); return; }
-
-			if ( ! canLeave() ) { return; }
-
-			action( async function () { await api( '/import', { csv: await file.files[0].text() } ); state.scope = 'strategy'; state.selected = ''; }, 'Strategy imported. Showing its relevant layouts.' );
-
-		} ) ); panel.appendChild( body ); root.appendChild( panel );
-
+		var imports = arr( state.data.imports ), panel = el( 'details', 'ns-import' ); panel.open = state.importOpen || ( state.scope === 'strategy' && ! state.data.summary.strategy_urls ); panel.addEventListener( 'toggle', function () { state.importOpen = panel.open; } );
+		panel.appendChild( el( 'summary', '', imports.length ? 'Strategy files · ' + imports.length + ( imports.length === 1 ? ' file · ' : ' files · ' ) + state.data.summary.strategy_urls + ' unique URLs' : 'Optional: import strategies' ) );
+		var body = el( 'div', 'ns-import-body' ), file = input( 'file' ); file.accept = '.csv,text/csv'; file.multiple = true;
+		control( body, 'Strategy CSV files', file, 'Select multiple CSVs with a url column. Up to 10 MB per batch; 50 files and 10,000 rows total. Files must target the same website. Saved layout mappings are kept.' );
+		body.appendChild( button( 'Upload strategy files', 'button button-primary', function () {
+			var files = Array.from( file.files );
+			if ( ! files.length || files.length + imports.length > 50 || files.reduce( function ( total, f ) { return total + f.size; }, 0 ) > 10 * 1024 * 1024 ) { notice( 'Choose CSV files up to 10 MB combined; keep at most 50 imported files.', true ); return; }
+			if ( state.dirty ) { notice( 'Save your mapping changes before changing strategy files.', true ); return; }
+			action( async function () { var batch = await Promise.all( files.map( async function ( f ) { return { name: f.name, csv: await f.text() }; } ) ); await api( '/import', { files: batch } ); state.scope = 'strategy'; state.selected = ''; }, 'Strategy files imported. Showing their combined layouts.' );
+		} ) );
+		imports.forEach( function ( imported ) {
+			var row = el( 'div', 'ns-import-file' ); row.appendChild( el( 'span', '', imported.name + ' · ' + imported.url_count + ' URLs' ) );
+			var remove = button( 'Remove', 'button', function () {
+				if ( state.dirty ) { notice( 'Save your mapping changes before changing strategy files.', true ); return; }
+				action( function () { return api( '/remove-import', { id: imported.id } ); }, 'File removed. Saved layout mappings are kept.' );
+			} ); remove.setAttribute( 'aria-label', 'Remove ' + imported.name ); row.appendChild( remove ); body.appendChild( row );
+		} );
+		if ( imports.length ) { body.appendChild( el( 'p', 'ns-help', 'Shared URLs stay in scope until their last file is removed. For duplicate URLs, the latest imported file supplies the page type and locale. Removing all files leaves the strategy scope empty; All site layouts remains available.' ) ); }
+		panel.appendChild( body ); root.appendChild( panel );
 	}
 
 	async function loadLayout( entry, editor, reference ) {

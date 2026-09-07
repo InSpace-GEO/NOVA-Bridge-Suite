@@ -3,6 +3,7 @@
 if ( ! defined( 'ABSPATH' ) ) {
 	define( 'ABSPATH', __DIR__ . '/' );
 	class WP_Error { public $code; public function __construct( $code, $message, $data = [] ) { $this->code = $code; } public function get_error_code() { return $this->code; } }
+	function wp_generate_uuid4() { return bin2hex( random_bytes( 16 ) ); }
 	function is_wp_error( $value ) { return $value instanceof WP_Error; }
 	function wp_parse_url( $url, $component = -1 ) { return parse_url( $url, $component ); }
 	function wp_json_encode( $value ) { return json_encode( $value ); }
@@ -48,3 +49,20 @@ $b = $flex->invoke( null, $definition, [ [ 'acf_fc_layout' => 'faq', 'text' => '
 $c = $flex->invoke( null, $definition, [ [ 'acf_fc_layout' => 'hero', 'text' => 'After' ] ] );
 $assert( $a !== $b && $a === $c, 'Actual ACF flexible layout choices must differ while editorial values do not.' );
 echo 'PASS ' . $checks . " strategy import, pointer, and layout identity checks.\n";
+
+$base = ['rows'=>[], 'imports'=>[], 'assignments'=>[], 'profiles'=>['keep'=>['label'=>'Saved mapping']]];
+$files = ['files'=>[['name'=>'a.csv','csv'=>"url,page_type\nhttps://example.test/a/,first\nhttps://example.test/shared/,first"],['name'=>'b.csv','csv'=>"url,page_type\nhttps://example.test/shared/,second\nhttps://example.test/b/,second"]]];
+$merged = Nova_Bridge_Suite_Strategy::update_imports($base,$files);
+$assert(!is_wp_error($merged) && count($merged['imports'])===2 && count($merged['rows'])===3,'Two files must produce a deduplicated union.');
+$assert($merged['rows'][1]['page_type']==='second','Latest file metadata wins for shared URLs.');
+$merged['assignments']=array_fill_keys(array_column($merged['rows'],'id'),['reference_id'=>1]);
+$removed=Nova_Bridge_Suite_Strategy::combine_imports($merged,[$merged['imports'][0]]);
+$assert(count($removed['rows'])===2 && $removed['rows'][1]['page_type']==='first' && count($removed['assignments'])===2,'Removing a file restores shared URL metadata and retains shared assignments.');
+$empty=Nova_Bridge_Suite_Strategy::combine_imports($removed,[]);
+$assert($empty['rows']===[] && $empty['assignments']===[] && $empty['profiles']===$base['profiles'],'Removing all files keeps mappings and clears strategy scope.');
+$assert(is_wp_error(Nova_Bridge_Suite_Strategy::update_imports($merged,['files'=>[['name'=>'other.csv','csv'=>"url\nhttps://other.test/a/"]]])),'Different-client files must be rejected.');
+$assert(is_wp_error(Nova_Bridge_Suite_Strategy::update_imports($base,['files'=>[$files['files'][0],['name'=>'bad.csv','csv'=>'invalid']]])) && $base['imports']===[],'One invalid file rejects the batch without mutating its input.');
+$assert(is_wp_error(Nova_Bridge_Suite_Strategy::update_imports($base,['files'=>array_fill(0,51,$files['files'][0])])),'File count is bounded.');
+$legacy=Nova_Bridge_Suite_Strategy::update_imports($merged,['urls'=>['https://example.test/replacement/']]);
+$assert(count($legacy['imports'])===1 && count($legacy['rows'])===1 && $legacy['profiles']===$base['profiles'],'Legacy API replacement remains compatible.');
+echo "PASS 8 multiple-file import and removal checks.\n";

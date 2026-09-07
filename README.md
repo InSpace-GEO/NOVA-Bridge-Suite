@@ -4,7 +4,7 @@
 - Requires at least: 6.0
 - Tested up to: 7.1
 - Requires PHP: 7.4
-- Stable tag: 3.2.3
+- Stable tag: 3.2.4
 - License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -26,11 +26,11 @@ Modules can be toggled from `Settings -> NOVA Settings`. The core bridge and pos
 
 The `API Mapping Context` module provides a focused map of the content destinations NOVA is expected to publish to and lets administrators map each discovered field to NOVA content with field-level publishing guidance. Its compact, mapping-first interface keeps field mappings and instructions prominent while placing routes, transports, request paths, and other implementation details in an optional technical-details disclosure.
 
-### Mapping workspace (3.2.3)
+### Mapping workspace (3.2.4)
 
 Open **Settings → NOVA Settings → Mapping**. All unique layouts are shown by default, with an optional imported-strategy scope. A rendered reference sits beside the field inspector. Clicking a field or bound page region selects the other; non-visible fields remain available in the inspector. Unknown editorial regions show a compact notice when clicked. Disabled builder bridges can be enabled directly here; save mapping changes first. Gutenberg exposes whole-document content, not independent block write targets.
 
-Import a NOVA strategy CSV with a `url` column; article content is discarded. The plugin matches existing WordPress content and groups verified layouts using theme templates, actual builder structure and applicable ACF/SCF fields. New URLs require an explicit reference choice. Equivalent unresolved URLs are grouped by hierarchy, page type and locale for a shared reference selection.
+Upload one or more NOVA strategy CSV files with a `url` column. Files are combined into one scope and can be removed individually. Shared URLs remain until their last file is removed; saved profiles are retained. Existing imports appear as a removable legacy file. All files must target the same host. The legacy single-CSV/URLs API still replaces the strategy; article content is discarded. The plugin matches existing WordPress content and groups verified layouts using theme templates, actual builder structure and applicable ACF/SCF fields. New URLs require an explicit reference choice. Equivalent unresolved URLs are grouped by hierarchy, page type and locale for a shared reference selection.
 
 Give each layout a name, choose NOVA sources for its fields, and describe how to fill its content sections. Profiles are reused across matching documents and survive strategy reimports. Mappings are private to authenticated editors. Ordinary content and NOVA's self-describing CPTs do not require redundant profiles.
 

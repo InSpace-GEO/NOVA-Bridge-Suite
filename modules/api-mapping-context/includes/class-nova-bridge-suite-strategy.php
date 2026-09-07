@@ -28,6 +28,7 @@ final class Nova_Bridge_Suite_Strategy {
 			'/mapping/enable-bridge' => [ 'POST', 'enable_bridge_response', 'can_admin' ],
 			'/strategy' => [ 'GET', 'get_response', 'can_admin' ],
 			'/strategy/import' => [ 'POST', 'import_response', 'can_admin' ],
+			'/strategy/remove-import' => [ 'POST', 'remove_import_response', 'can_admin' ],
 			'/strategy/profiles' => [ 'POST', 'save_profile_response', 'can_admin' ],
 			'/strategy/assign' => [ 'POST', 'assign_response', 'can_admin' ],
 			'/strategy/context' => [ 'GET', 'context_response', 'can_read_context' ],
@@ -83,7 +84,11 @@ final class Nova_Bridge_Suite_Strategy {
 	public static function get_option(): array {
 		$default = [ 'version' => 1, 'imported_at' => '', 'source_host' => '', 'rows' => [], 'profiles' => [], 'assignments' => [] ];
 		$value = get_option( self::OPTION_NAME, $default );
-		return is_array( $value ) ? array_merge( $default, $value ) : $default;
+		$option = is_array( $value ) ? array_merge( $default, $value ) : $default;
+		if ( ! isset( $option['imports'] ) ) {
+			$option['imports'] = $option['rows'] ? [ [ 'id' => 'legacy', 'name' => 'Previously imported strategy', 'imported_at' => $option['imported_at'], 'source_host' => $option['source_host'], 'rows' => $option['rows'] ] ] : [];
+		}
+		return $option;
 	}
 
 	private static function persist( array $value ): void {
@@ -158,15 +163,56 @@ final class Nova_Bridge_Suite_Strategy {
 		if ( strlen( (string) $request->get_body() ) > self::MAX_BYTES + 1048576 ) { return self::error( 'size', 'The import request is too large.' ); }
 		$input = $request->get_json_params();
 		if ( ! is_array( $input ) ) { return self::error( 'input', 'Supply JSON containing csv or urls.' ); }
-		$parsed = self::parse_import( $input );
-		if ( is_wp_error( $parsed ) ) { return $parsed; }
-		$option = self::get_option();
-		$option['rows'] = $parsed['rows'];
-		$option['source_host'] = $parsed['source_host'];
-		$option['imported_at'] = gmdate( 'c' );
-		$option['assignments'] = array_intersect_key( $option['assignments'], array_fill_keys( array_column( $parsed['rows'], 'id' ), true ) );
+		$option = self::update_imports( self::get_option(), $input );
+		if ( is_wp_error( $option ) ) { return $option; }
 		self::persist( $option );
 		return self::get_response();
+	}
+
+	/** Validate the complete batch before persisting anything. Legacy API inputs still replace. */
+	public static function update_imports( array $option, array $input ) {
+		$files = $input['files'] ?? null;
+		$imports = $option['imports'] ?? [];
+		if ( null === $files ) { $files = [ array_merge( $input, [ 'name' => 'Imported strategy' ] ) ]; $imports = []; }
+		if ( ! is_array( $files ) || ! $files || count( $files ) + count( $imports ) > 50 ) { return self::error( 'files', 'Keep between 1 and 50 strategy files.' ); }
+		$bytes = 0;
+		foreach ( $files as $file ) {
+			if ( ! is_array( $file ) || ! is_string( $file['name'] ?? null ) ) { return self::error( 'file', 'Each file needs a name and CSV content.' ); }
+			$bytes += strlen( (string) wp_json_encode( $file ) );
+			if ( $bytes > self::MAX_BYTES ) { return self::error( 'size', 'Upload at most 10 MB per batch.' ); }
+			$parsed = self::parse_import( $file );
+			if ( is_wp_error( $parsed ) ) { return $parsed; }
+			$imports[] = [ 'id' => wp_generate_uuid4(), 'name' => sanitize_text_field( substr( basename( $file['name'] ), 0, 160 ) ), 'imported_at' => gmdate( 'c' ), 'source_host' => $parsed['source_host'], 'rows' => $parsed['rows'] ];
+		}
+		return self::combine_imports( $option, $imports );
+	}
+
+	public static function combine_imports( array $option, array $imports ) {
+		$rows = []; $host = ''; $count = 0;
+		foreach ( $imports as $import ) {
+			if ( $host && $host !== $import['source_host'] ) { return self::error( 'host', 'All strategy files must target the same website. Remove other-client imports first.' ); }
+			$host = $import['source_host']; $count += count( $import['rows'] );
+			foreach ( $import['rows'] as $row ) { $rows[ $row['id'] ] = $row; }
+		}
+		if ( $count > self::MAX_ROWS || strlen( (string) wp_json_encode( $imports ) ) > self::MAX_BYTES ) { return self::error( 'size', 'Keep at most 10,000 URL rows and 10 MB across all imported files.' ); }
+		$option['imports'] = array_values( $imports ); $option['rows'] = array_values( $rows ); $option['source_host'] = $host;
+		$option['imported_at'] = $imports ? gmdate( 'c' ) : '';
+		$option['assignments'] = array_intersect_key( $option['assignments'], $rows );
+		return $option;
+	}
+
+	public static function remove_import_response( $request ) {
+		$id = $request->get_param( 'id' ); $option = self::get_option();
+		if ( ! is_string( $id ) || ! in_array( $id, array_column( $option['imports'], 'id' ), true ) ) { return self::error( 'import', 'This imported file no longer exists.', 404 ); }
+		$imports = array_values( array_filter( $option['imports'], static function ( $file ) use ( $id ) { return $file['id'] !== $id; } ) );
+		$updated = self::combine_imports( $option, $imports );
+		if ( is_wp_error( $updated ) ) { return $updated; }
+		self::persist( $updated );
+		return self::get_response();
+	}
+
+	private static function import_summaries( array $option ): array {
+		return array_map( static function ( $file ) { return [ 'id' => $file['id'], 'name' => $file['name'], 'imported_at' => $file['imported_at'], 'url_count' => count( $file['rows'] ) ]; }, $option['imports'] );
 	}
 
 	/** Editorial objects only; a public builder library is still infrastructure. */
@@ -519,7 +565,7 @@ final class Nova_Bridge_Suite_Strategy {
 		}
 		usort( $rows, static function ( $a, $b ) { return strnatcasecmp( $a['path'], $b['path'] ); } );
 		$summary['unique_layouts'] = count( $layouts );
-		return rest_ensure_response( [ 'version' => 1, 'imported_at' => $option['imported_at'], 'source_host' => $option['source_host'], 'site_host' => self::host( (string) wp_parse_url( home_url(), PHP_URL_HOST ) ), 'rows' => $rows, 'layouts' => array_values( $layouts ), 'profiles' => array_values( $option['profiles'] ), 'summary' => $summary, 'inventory_truncated' => self::catalog()['truncated'], 'references' => self::catalog()['entities'] ] );
+		return rest_ensure_response( [ 'version' => 1, 'imports' => self::import_summaries( $option ), 'imported_at' => $option['imported_at'], 'source_host' => $option['source_host'], 'site_host' => self::host( (string) wp_parse_url( home_url(), PHP_URL_HOST ) ), 'rows' => $rows, 'layouts' => array_values( $layouts ), 'profiles' => array_values( $option['profiles'] ), 'summary' => $summary, 'inventory_truncated' => self::catalog()['truncated'], 'references' => self::catalog()['entities'] ] );
 	}
 
 	/** One inventory, two scopes. Detailed field extraction is deferred until selection. */
@@ -558,7 +604,7 @@ final class Nova_Bridge_Suite_Strategy {
 		}
 		unset( $group );
 		usort( $groups, static function ( $a, $b ) { return strnatcasecmp( $a['label'], $b['label'] ); } );
-		$response = rest_ensure_response( [ 'scope' => $scope, 'layouts' => array_values( $groups ), 'unresolved' => $unresolved, 'rows' => $rows, 'references' => self::catalog()['entities'], 'imported_at' => $option['imported_at'], 'source_host' => $option['source_host'], 'site_host' => self::host( (string) wp_parse_url( home_url(), PHP_URL_HOST ) ), 'summary' => [ 'site_layouts' => $total, 'visible_layouts' => count( $groups ), 'site_items' => count( self::catalog()['entities'] ), 'strategy_urls' => count( $rows ), 'unresolved' => count( $unresolved ) ] ] );
+		$response = rest_ensure_response( [ 'scope' => $scope, 'layouts' => array_values( $groups ), 'unresolved' => $unresolved, 'rows' => $rows, 'references' => self::catalog()['entities'], 'imports' => self::import_summaries( $option ), 'imported_at' => $option['imported_at'], 'source_host' => $option['source_host'], 'site_host' => self::host( (string) wp_parse_url( home_url(), PHP_URL_HOST ) ), 'summary' => [ 'site_layouts' => $total, 'visible_layouts' => count( $groups ), 'site_items' => count( self::catalog()['entities'] ), 'strategy_urls' => count( $rows ), 'unresolved' => count( $unresolved ) ] ] );
 		$response->header( 'Cache-Control', 'private, no-store' );
 		return $response;
 	}
