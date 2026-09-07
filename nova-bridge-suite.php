@@ -2,7 +2,7 @@
 /**
  * Plugin Name: NOVA Bridge Suite
  * Description: Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
- * Version: 3.2.5
+ * Version: 3.2.6
  * Author: LUNA B.V.
  * Requires PHP: 7.4
  * License: Proprietary
@@ -13,7 +13,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'NOVA_BRIDGE_SUITE_VERSION', '3.2.5' );
+define( 'NOVA_BRIDGE_SUITE_VERSION', '3.2.6' );
 define( 'NOVA_BRIDGE_SUITE_PLUGIN_FILE', __FILE__ );
 define( 'NOVA_BRIDGE_SUITE_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'NOVA_BRIDGE_SUITE_OPTION', 'nova_bridge_settings' );
@@ -794,6 +794,17 @@ if ( null !== $nova_bridge_suite_admin_content_screen_module_keys ) {
         nova_bridge_suite_load_selected_modules( $nova_bridge_suite_admin_content_screen_module_keys );
     }
 
+    return;
+}
+
+// Edit responses need the same builder runtimes as Mapping to rebind saved fields.
+// Permissions and context checks in the response decorators still protect private mappings.
+$nova_edit_route = nova_bridge_suite_get_rest_route_path();
+if ( 'edit' === nova_bridge_suite_get_query_or_post_request_value( 'context' )
+    && ( nova_bridge_suite_rest_route_matches( $nova_edit_route, 'wp/v2' )
+        || nova_bridge_suite_is_woocommerce_product_category_rest_route( $nova_edit_route ) )
+) {
+    nova_bridge_suite_load_selected_modules( nova_bridge_suite_get_targeted_rest_module_keys( 'nova-bridge/v1/mapping' ) );
     return;
 }
 
