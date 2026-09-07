@@ -2,7 +2,7 @@
 
 	'use strict';
 
-	var root, config, controlId = 0, state = { importOpen: false, data: null, selected: '', dirty: false, busy: false, filter: 'all', scope: 'all', epoch: 0, layout: null, activeField: '', frame: null, statuses: {}, frameReady: false };
+	var root, config, scopeChosen = false, controlId = 0, state = { importOpen: false, data: null, selected: '', dirty: false, busy: false, filter: 'all', scope: 'all', epoch: 0, layout: null, activeField: '', frame: null, statuses: {}, frameReady: false };
 
 	var sources = [ [ '', 'Guidance only / no direct source' ], [ 'leave_empty', 'Leave empty (do not send)' ], [ 'h1', 'Visible heading (H1)', 'Content' ], [ 'content', 'Full content', 'Content' ], [ 'top_content', 'Intro', 'Content' ], [ 'bottom_content', 'Main content', 'Content' ], [ 'title', 'SEO title', 'SEO metadata' ], [ 'meta_description', 'Meta description', 'SEO metadata' ], [ 'primary_keyword', 'Primary keyword', 'SEO metadata' ], [ 'secondary_keywords', 'Secondary keywords', 'SEO metadata' ], [ 'featured_media', 'Uploaded WordPress image ID', 'Image data' ], [ 'image_url', 'Primary image URL', 'Image data' ], [ 'image_urls', 'All image URLs', 'Image data' ], [ 'image_alt', 'Image alternative text', 'Image data' ] ];
 
@@ -52,13 +52,15 @@
 
 	function markDirty() { state.dirty = true; var n = root.querySelector( '.ns-save-state' ); if ( n ) { n.textContent = 'Unsaved changes'; } }
 
+	function setScope( scope ) { state.scope = scope; scopeChosen = true; try { localStorage.setItem( 'nova-mapping-scope:' + config.mappingUrl, scope ); } catch ( e ) {} }
+
 	async function refresh( message ) {
 
 		var epoch = ++state.epoch;
 
 		root.setAttribute( 'aria-busy', 'true' ); root.inert = true;
 
-		try { var data = await api( '?scope=' + state.scope, undefined, true ); if ( epoch !== state.epoch ) { return; } state.data = data; state.dirty = false; render(); if ( message ) { notice( message ); } }
+		try { var data = await api( '?scope=' + state.scope, undefined, true ); if ( epoch !== state.epoch ) { return; } if ( ! scopeChosen ) { scopeChosen = true; if ( data.summary.strategy_urls > 0 && state.scope !== 'strategy' ) { setScope( 'strategy' ); return await refresh( message ); } } state.data = data; state.dirty = false; render(); if ( message ) { notice( message ); } }
 
 		finally { root.removeAttribute( 'aria-busy' ); root.inert = false; }
 
@@ -70,7 +72,17 @@
 
 		var out = arr( state.data.layouts ).map( function ( l ) { return { key: l.signature, layout: l, rows: arr( l.rows ), unresolved: false }; } );
 
-		if ( state.scope === 'strategy' ) { arr( state.data.unresolved ).forEach( function ( r ) { out.push( { key: 'row:' + r.id, row: r, rows: [ r ], unresolved: true } ); } ); }
+		if ( state.scope === 'strategy' ) {
+			var groups = new Map();
+			arr( state.data.unresolved ).forEach( function ( r ) {
+				var candidates = arr( r.candidates ).map( function ( c ) { return c.signature || ( c.reference_type + ':' + c.reference_id ); } ).sort();
+				// Group only unresolved siblings with the same hints and candidate layouts. No inferred assignment.
+				var key = ! r.reference_id && r.parent_path && r.parent_path !== '/' && [ 'needs_reference', 'suggested' ].includes( r.status ) ? JSON.stringify( [ r.parent_path, r.page_type || '', r.locale || '', r.status, r.basis || '', candidates ] ) : r.id;
+				if ( ! groups.has( key ) ) { var group = { key: 'row:' + r.id, row: r, rows: [], unresolved: true }; groups.set( key, group ); out.push( group ); }
+				groups.get( key ).rows.push( r );
+			} );
+		}
+
 
 		return out;
 
@@ -90,9 +102,9 @@
 
 		var scope = control( scopeBar, 'Mapping scope', select( [ [ 'all', 'All site layouts' ], [ 'strategy', 'Imported strategy' ] ], state.scope ) );
 
-		scope.addEventListener( 'change', function () { if ( ! canLeave() ) { scope.value = state.scope; return; } state.scope = scope.value; state.selected = ''; refresh().catch( function ( e ) { notice( e.message, true ); } ); } );
+		scope.addEventListener( 'change', function () { if ( ! canLeave() ) { scope.value = state.scope; return; } setScope( scope.value ); state.selected = ''; refresh().catch( function ( e ) { notice( e.message, true ); } ); } );
 
-		scopeBar.appendChild( el( 'p', 'ns-help', 'All layouts are included by default. A strategy limits this queue without deleting mappings outside its scope.' ) ); root.appendChild( scopeBar );
+		scopeBar.appendChild( el( 'p', 'ns-help', 'Without a strategy, all layouts are shown. Your scope choice is remembered in this browser; mappings outside the scope are kept.' ) ); root.appendChild( scopeBar );
 
 		renderImport();
 
@@ -100,7 +112,7 @@
 
 		var summary = state.data.summary, stats = el( 'div', 'ns-stats' );
 
-		[ [ summary.site_layouts, 'Site layouts' ], [ summary.visible_layouts, 'In this scope' ], [ summary.strategy_urls, 'Strategy URLs' ], [ summary.unresolved, 'References to choose' ] ].forEach( function ( item ) { var card = el( 'div' ); card.appendChild( el( 'strong', '', item[0] ) ); card.appendChild( el( 'span', '', item[1] ) ); stats.appendChild( card ); } ); root.appendChild( stats );
+		[ [ summary.site_layouts, 'Site layouts' ], [ summary.visible_layouts, 'In this scope' ], [ summary.strategy_urls, 'Strategy URLs' ], [ summary.unresolved, 'URLs needing references' ] ].forEach( function ( item ) { var card = el( 'div' ); card.appendChild( el( 'strong', '', item[0] ) ); card.appendChild( el( 'span', '', item[1] ) ); stats.appendChild( card ); } ); root.appendChild( stats );
 
 		root.appendChild( el( 'p', 'ns-help', summary.site_items + ' eligible content items, including drafts. Native layouts remain visible; unsupported builder fields are flagged when inspected.' ) );
 
@@ -118,11 +130,11 @@
 
 		all.forEach( function ( entry ) {
 
-			var label = entry.unresolved ? entry.row.path : ( entry.layout.label || entry.layout.title || 'Untitled layout' );
+			var label = entry.unresolved ? ( entry.rows.length > 1 ? entry.row.parent_path + '… · ' + entry.rows.length + ' URLs' : entry.row.path ) : ( entry.layout.label || entry.layout.title || 'Untitled layout' );
 
 			var item = button( '', 'ns-queue-item' + ( entry.key === state.selected ? ' is-selected' : '' ), function () { if ( entry.key === state.selected || ! canLeave() ) { return; } state.selected = entry.key; state.dirty = false; render(); } );
 
-			item.dataset.search = ( label + ' ' + ( entry.layout ? entry.layout.post_type + ' ' + entry.layout.builders.join( ' ' ) + ' ' + entry.layout.path : '' ) ).toLowerCase(); item.setAttribute( 'aria-pressed', String( entry.key === state.selected ) ); item.appendChild( el( 'span', 'ns-queue-path', label ) );
+			item.dataset.search = ( label + ' ' + ( entry.unresolved ? entry.rows.map( function ( r ) { return r.path; } ).join( ' ' ) : '' ) + ' ' + ( entry.layout ? entry.layout.post_type + ' ' + entry.layout.builders.join( ' ' ) + ' ' + entry.layout.path : '' ) ).toLowerCase(); item.setAttribute( 'aria-pressed', String( entry.key === state.selected ) ); item.appendChild( el( 'span', 'ns-queue-path', label ) );
 
 			var meta = el( 'span', 'ns-queue-meta' ); meta.appendChild( el( 'span', 'ns-badge', statusText( entry ) ) ); if ( entry.layout ) { meta.appendChild( el( 'span', '', entry.layout.members.length + ' items' ) ); } item.appendChild( meta );
 
@@ -138,7 +150,7 @@
 
 		if ( ! selected ) { editor.appendChild( el( 'h2', '', state.scope === 'strategy' && ! summary.strategy_urls ? 'Import a strategy to narrow the queue' : 'No layouts in this view' ) ); return; }
 
-		if ( selected.unresolved ) { editor.appendChild( el( 'h2', '', selected.row.path ) ); renderReference( selected, editor ); return; }
+		if ( selected.unresolved ) { editor.appendChild( el( 'h2', '', selected.rows.length > 1 ? selected.row.parent_path + '… · ' + selected.rows.length + ' URLs' : selected.row.path ) ); renderReference( selected, editor ); return; }
 
 		loadLayout( selected, editor );
 
@@ -153,7 +165,7 @@
 			var files = Array.from( file.files );
 			if ( ! files.length || files.length + imports.length > 50 || files.reduce( function ( total, f ) { return total + f.size; }, 0 ) > 10 * 1024 * 1024 ) { notice( 'Choose CSV files up to 10 MB combined; keep at most 50 imported files.', true ); return; }
 			if ( state.dirty ) { notice( 'Save your mapping changes before changing strategy files.', true ); return; }
-			action( async function () { var batch = await Promise.all( files.map( async function ( f ) { return { name: f.name, csv: await f.text() }; } ) ); await api( '/import', { files: batch } ); state.scope = 'strategy'; state.selected = ''; }, 'Strategy files imported. Showing their combined layouts.' );
+			action( async function () { var batch = await Promise.all( files.map( async function ( f ) { return { name: f.name, csv: await f.text() }; } ) ); await api( '/import', { files: batch } ); setScope( 'strategy' ); state.selected = ''; }, 'Strategy files imported. Showing their combined layouts.' );
 		} ) );
 		imports.forEach( function ( imported ) {
 			var row = el( 'div', 'ns-import-file' ); row.appendChild( el( 'span', '', imported.name + ' · ' + imported.url_count + ' URLs' ) );
@@ -349,6 +361,13 @@
 	function renderReference( entry, parent ) {
 
 		var candidates = arr( entry.row.candidates || [] ), box = el( 'div', 'ns-reference' );
+		var selectedRows = new Set( entry.rows.map( function ( r ) { return r.id; } ) );
+		if ( entry.rows.length > 1 ) {
+			box.appendChild( el( 'p', 'ns-help', 'These URLs share a parent path and reference candidates. Choose which URLs should use this example; map its layout once.' ) );
+			var members = el( 'details' ); members.open = true; members.appendChild( el( 'summary', '', entry.rows.length + ' URLs in this reference group' ) );
+			entry.rows.forEach( function ( r ) { var label = el( 'label', 'ns-reference-member' ), check = input( 'checkbox' ); check.checked = true; check.addEventListener( 'change', function () { if ( check.checked ) { selectedRows.add( r.id ); } else { selectedRows.delete( r.id ); } } ); label.appendChild( check ); label.appendChild( el( 'span', '', r.path ) ); members.appendChild( label ); } ); box.appendChild( members );
+		}
+
 
 		if ( entry.row.basis ) { box.appendChild( el( 'p', 'ns-help', String( entry.row.basis ).replace( /_/g, ' ' ) ) ); }
 
@@ -378,13 +397,13 @@
 
 		manual.appendChild( button( 'Use reference', 'button', function () { if ( ! /^\d+$/.test( id.value ) || Number( id.value ) < 1 ) { notice( 'Enter a valid WordPress ID.', true ); return; } assign( type.value, Number( id.value ) ); } ) ); box.appendChild( manual ); parent.appendChild( box );
 
-		function assign( refType, refId ) { action( function () { return api( '/assign', { row_ids: entry.rows.map( function ( r ) { return r.id; } ), reference_type: refType, reference_id: Number( refId ) } ); }, 'Reference selected for this URL group. You can now map its layout.' ); }
+		function assign( refType, refId ) { if ( ! selectedRows.size ) { notice( 'Select at least one URL for this reference.', true ); return; } action( function () { return api( '/assign', { row_ids: Array.from( selectedRows ), reference_type: refType, reference_id: Number( refId ) } ); }, 'Reference selected for this URL group. You can now map its layout.' ); }
 
 	}
 
 
 
-	function init() { root = document.getElementById( 'nova-strategy-app' ); config = window.NovaStrategyAdmin; if ( ! root || ! config ) { return; } refresh().catch( function ( e ) { notice( e.message, true ); root.appendChild( button( 'Retry', 'button', init ) ); } ); }
+	function init() { root = document.getElementById( 'nova-strategy-app' ); config = window.NovaStrategyAdmin; if ( ! root || ! config ) { return; } try { var savedScope = localStorage.getItem( 'nova-mapping-scope:' + config.mappingUrl ); if ( savedScope === 'all' || savedScope === 'strategy' ) { state.scope = savedScope; scopeChosen = true; } } catch ( e ) {} refresh().catch( function ( e ) { notice( e.message, true ); root.appendChild( button( 'Retry', 'button', init ) ); } ); }
 
 	window.addEventListener( 'message', previewMessage );
 
