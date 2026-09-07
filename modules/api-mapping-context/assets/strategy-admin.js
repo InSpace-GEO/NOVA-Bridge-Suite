@@ -4,7 +4,7 @@
 
 	var root, config, controlId = 0, state = { importOpen: false, data: null, selected: '', dirty: false, busy: false, filter: 'all', scope: 'all', epoch: 0, layout: null, activeField: '', frame: null, statuses: {}, frameReady: false };
 
-	var sources = [ [ '', 'Guidance only / no direct source' ], [ 'h1', 'Visible heading (H1)' ], [ 'title', 'SEO title' ], [ 'meta_description', 'Meta description' ], [ 'content', 'Main content' ], [ 'top_content', 'Content above the listing' ], [ 'bottom_content', 'Content below the listing' ], [ 'featured_media', 'Uploaded WordPress image ID' ], [ 'image_url', 'Primary image URL' ], [ 'image_urls', 'All image URLs' ], [ 'image_alt', 'Image alternative text' ], [ 'primary_keyword', 'Primary keyword' ], [ 'secondary_keywords', 'Secondary keywords' ] ];
+	var sources = [ [ '', 'Guidance only / no direct source' ], [ 'leave_empty', 'Leave empty (do not send)' ], [ 'h1', 'Visible heading (H1)', 'Content' ], [ 'content', 'Full content', 'Content' ], [ 'top_content', 'Intro', 'Content' ], [ 'bottom_content', 'Main content', 'Content' ], [ 'title', 'SEO title', 'SEO metadata' ], [ 'meta_description', 'Meta description', 'SEO metadata' ], [ 'primary_keyword', 'Primary keyword', 'SEO metadata' ], [ 'secondary_keywords', 'Secondary keywords', 'SEO metadata' ], [ 'featured_media', 'Uploaded WordPress image ID', 'Image data' ], [ 'image_url', 'Primary image URL', 'Image data' ], [ 'image_urls', 'All image URLs', 'Image data' ], [ 'image_alt', 'Image alternative text', 'Image data' ] ];
 
 	function el( tag, cls, text ) { var n = document.createElement( tag ); if ( cls ) { n.className = cls; } if ( text !== undefined ) { n.textContent = String( text ); } return n; }
 
@@ -26,7 +26,7 @@
 
 	function textarea( value, rows ) { var n = el( 'textarea' ); n.value = value || ''; n.rows = rows || 3; return n; }
 
-	function select( choices, value ) { var n = el( 'select' ); choices.forEach( function ( item ) { var o = el( 'option', '', item[ 1 ] ); o.value = item[ 0 ]; n.appendChild( o ); } ); n.value = value || ''; return n; }
+	function select( choices, value ) { var n = el( 'select' ), groups = new Map(); choices.forEach( function ( item ) { var parent = n; if ( item[2] ) { if ( ! groups.has( item[2] ) ) { var group = el( 'optgroup' ); group.label = item[2]; n.appendChild( group ); groups.set( item[2], group ); } parent = groups.get( item[2] ); } var o = el( 'option', '', item[1] ); o.value = item[0]; parent.appendChild( o ); } ); n.value = value || ''; return n; }
 
 	function notice( text, error ) { var box = root.querySelector( '.ns-feedback' ); if ( box ) { box.remove(); } box = el( 'div', 'ns-notice ns-feedback' + ( error ? ' ns-error' : '' ), text ); box.setAttribute( 'role', error ? 'alert' : 'status' ); root.prepend( box ); }
 
@@ -229,7 +229,7 @@
 
 		} else { previewStatus.textContent = 'No rendered preview is available. Use the field inspector.'; }
 
-		inspector.appendChild( el( 'h3', '', 'Field inspector' ) ); var fieldSearch = input( 'search' ); fieldSearch.placeholder = 'Find a field…'; fieldSearch.setAttribute( 'aria-label', 'Find a field' ); inspector.appendChild( fieldSearch );
+		inspector.appendChild( el( 'h3', '', 'Field inspector' ) ); var fieldSearch = input( 'search' ); fieldSearch.placeholder = 'Find a field…'; fieldSearch.setAttribute( 'aria-label', 'Find a field' ); inspector.appendChild( fieldSearch ); inspector.appendChild( el( 'p', 'ns-help', 'Full content includes intro and main content. Choose either part to map it separately. Leave empty omits this field; existing site content is not cleared.' ) );
 
 		var choices = el( 'div', 'ns-region-choices' ); inspector.appendChild( choices );
 
@@ -253,7 +253,7 @@
 
 			var sourceChoices = sources.slice(); if ( mapping.mapping && ! sourceChoices.some( function ( s ) { return s[0] === mapping.mapping; } ) ) { sourceChoices.push( [ mapping.mapping, mapping.mapping ] ); }
 
-			var source = control( row, 'NOVA source', select( sourceChoices, mapping.mapping ) ); source.disabled = ! f.writable; source.addEventListener( 'change', function () { mapping.mapping = source.value; markDirty(); } );
+			var source = control( row, 'NOVA source', select( f.writable ? sourceChoices : sources.filter( function ( choice ) { return choice[0] === '' || choice[0] === 'leave_empty' || choice[0] === mapping.mapping; } ), mapping.mapping ) ); source.addEventListener( 'change', function () { mapping.mapping = source.value; markDirty(); } );
 
 			var notes = control( row, 'Field instructions', textarea( mapping.description, 2 ) ); notes.placeholder = 'Explain how to fill or preserve this field…'; notes.addEventListener( 'input', function () { mapping.description = notes.value; markDirty(); } );
 

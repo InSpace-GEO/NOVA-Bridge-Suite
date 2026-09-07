@@ -66,3 +66,10 @@ $assert(is_wp_error(Nova_Bridge_Suite_Strategy::update_imports($base,['files'=>a
 $legacy=Nova_Bridge_Suite_Strategy::update_imports($merged,['urls'=>['https://example.test/replacement/']]);
 $assert(count($legacy['imports'])===1 && count($legacy['rows'])===1 && $legacy['profiles']===$base['profiles'],'Legacy API replacement remains compatible.');
 echo "PASS 8 multiple-file import and removal checks.\n";
+
+$metadata=Nova_Bridge_Suite_Strategy::mapping_metadata(['/content'=>['mapping'=>'leave_empty','description'=>'Fill this field'], '/intro'=>['mapping'=>'top_content','description'=>'Intro'], '/body'=>['mapping'=>'bottom_content','description'=>''], '/full'=>['mapping'=>'content','description'=>''], '/other'=>['mapping'=>'','description'=>'Guidance']]);
+$assert($metadata['nova_omit_fields']===['/content'],'Only explicit leave-empty mappings are omitted.');
+$assert($metadata['nova_content_mappings']['/content']==='leave_empty' && strpos($metadata['meta_descriptions']['/content'],'Omit the key entirely')!==false && strpos($metadata['meta_descriptions']['/content'],'Fill this field')===false,'Omission overrides conflicting guidance without clearing content.');
+$assert($metadata['nova_content_mappings']['/intro']==='top_content' && $metadata['nova_content_mappings']['/body']==='bottom_content' && $metadata['nova_content_mappings']['/full']==='content','Content parts preserve existing NOVA source keys.');
+$assert(!isset($metadata['nova_content_mappings']['/other']) && $metadata['meta_descriptions']['/other']==='Guidance','Guidance-only remains distinct from explicit omission.');
+echo "PASS 4 omission and content-source checks.\n";

@@ -748,7 +748,7 @@ final class Nova_Bridge_Suite_Strategy {
 		$raw_fields = $input['fields'] ?? [];
 		if ( ! is_array( $raw_fields ) || count( $raw_fields ) > 500 ) { return self::error( 'fields', 'Supply at most 500 mapped fields.' ); }
 		$allowed = array_column( self::field_inventory( $reference ), null, 'path' );
-		$sources = [ '', 'title', 'meta_title', 'h1', 'meta_description', 'content', 'content_html', 'top_content', 'bottom_content', 'image_url', 'image_urls', 'image_alt', 'featured_media', 'url', 'slug', 'locale', 'publish_date', 'primary_keyword', 'secondary_keywords' ];
+		$sources = [ '', 'leave_empty', 'title', 'meta_title', 'h1', 'meta_description', 'content', 'content_html', 'top_content', 'bottom_content', 'image_url', 'image_urls', 'image_alt', 'featured_media', 'url', 'slug', 'locale', 'publish_date', 'primary_keyword', 'secondary_keywords' ];
 		$fields = [];
 		foreach ( $raw_fields as $pointer => $field ) {
 			if ( ! self::valid_pointer( $pointer ) || ! isset( $allowed[ $pointer ] ) || ! is_array( $field ) ) { return self::error( 'pointer', 'A mapping points to a field that is not present on this reference.' ); }
@@ -772,6 +772,20 @@ final class Nova_Bridge_Suite_Strategy {
 		return self::get_response();
 	}
 
+	/** Explicit omission overrides authoring guidance; it never means writing an empty string. */
+	public static function mapping_metadata( array $fields ): array {
+		$result = [ 'meta_descriptions' => [], 'nova_content_mappings' => [], 'nova_omit_fields' => [] ];
+		foreach ( $fields as $pointer => $field ) {
+			if ( ! empty( $field['description'] ) ) { $result['meta_descriptions'][ $pointer ] = $field['description']; }
+			if ( ! empty( $field['mapping'] ) ) { $result['nova_content_mappings'][ $pointer ] = $field['mapping']; }
+			if ( 'leave_empty' === ( $field['mapping'] ?? '' ) ) {
+				$result['nova_omit_fields'][] = $pointer;
+				$result['meta_descriptions'][ $pointer ] = 'Do not send this field in any publishing payload. Omit the key entirely; do not send an empty string or null and do not clear existing content. This overrides other guidance for this field.';
+			}
+		}
+		return $result;
+	}
+
 	public static function context_response( $request ) { return rest_ensure_response( self::contract_for_url( (string) $request->get_param( 'url' ) ) ); }
 
 	public static function contract_for_url( string $url ) {
@@ -787,6 +801,7 @@ final class Nova_Bridge_Suite_Strategy {
 			$row['ready'] = in_array( $row['status'], [ 'ready', 'native' ], true );
 			$row['meta_descriptions'] = [];
 			$row['nova_content_mappings'] = [];
+			$row['nova_omit_fields'] = [];
 			$row['guidance'] = '';
 			$row['write'] = null;
 			$row['warnings'] = [];
@@ -796,19 +811,20 @@ final class Nova_Bridge_Suite_Strategy {
 			$row['reference_url'] = $entity['url'];
 			$row['guidance'] = $profile['guidance'] ?? '';
 			$fields = self::profile_fields_for_entity( $profile ?: [], $entity );
-			foreach ( $fields as $pointer => $field ) { if ( $field['description'] ) { $row['meta_descriptions'][ $pointer ] = $field['description']; } if ( $field['mapping'] ) { $row['nova_content_mappings'][ $pointer ] = $field['mapping']; } }
+			$row = array_merge( $row, self::mapping_metadata( $fields ) );
 			if ( ! $row['post_id'] && ! $row['term_id'] ) {
 				foreach ( array_keys( $row['meta_descriptions'] + $row['nova_content_mappings'] ) as $pointer ) { if ( 0 === strpos( $pointer, '/@builders/' ) ) { unset( $row['meta_descriptions'][ $pointer ], $row['nova_content_mappings'][ $pointer ] ); } }
+				$row['nova_omit_fields'] = array_values( array_filter( $row['nova_omit_fields'], static function ( $pointer ) { return 0 !== strpos( $pointer, '/@builders/' ); } ) );
 				if ( $row['builders'] ) { $row['ready'] = false; $row['warnings'][] = 'Creating builder content requires cloning/creating the selected layout and reading the new document bridge before using its selectors. Reference document selectors are intentionally omitted.'; }
 			}
 			$object = 'term' === $entity['reference_type'] ? get_taxonomy( $entity['post_type'] ) : get_post_type_object( $entity['post_type'] );
 			$route = ! empty( $object->show_in_rest ) ? '/' . trim( ( $object->rest_namespace ?? '' ) ?: 'wp/v2', '/' ) . '/' . trim( ( $object->rest_base ?? '' ) ?: $entity['post_type'], '/' ) : '';
 			$row['write'] = [ 'available' => (bool) $route, 'route' => $route . ( $row['post_id'] || $row['term_id'] ? '/' . ( $row['post_id'] ?: $row['term_id'] ) : '' ), 'method' => $row['post_id'] || $row['term_id'] ? 'PATCH' : 'POST', 'post_type' => $entity['post_type'], 'transport' => 'wordpress' ];
-			$row['field_contracts'] = array_values( array_filter( self::field_inventory( $entity ), static function ( $field ) use ( $fields ) { return isset( $fields[ $field['path'] ] ); } ) );
+			$row['field_contracts'] = array_values( array_filter( self::field_inventory( $entity ), static function ( $field ) use ( $fields ) { return isset( $fields[ $field['path'] ] ) && 'leave_empty' !== ( $fields[ $field['path'] ]['mapping'] ?? '' ); } ) );
 			if ( ! $row['post_id'] && ! $row['term_id'] ) { $row['field_contracts'] = array_values( array_filter( $row['field_contracts'], static function ( $field ) { return 'builder' !== ( $field['source'] ?? '' ); } ) ); }
 			elseif ( $profile && count( $fields ) < count( $profile['fields'] ) ) { $row['ready'] = false; $row['warnings'][] = 'Some saved fields have no unique match on this document. Refresh the layout mapping before posting.'; }
 			$uses_meta_all = false;
-			foreach ( $fields as $pointer => $field ) { if ( 0 === strpos( $pointer, '/meta_all/' ) ) { $uses_meta_all = true; } }
+			foreach ( $fields as $pointer => $field ) { if ( 'leave_empty' !== ( $field['mapping'] ?? '' ) && 0 === strpos( $pointer, '/meta_all/' ) ) { $uses_meta_all = true; } }
 			if ( 'post' === $entity['reference_type'] && class_exists( 'Nova_Bridge_Suite_Content_Transport' ) && ( ! $route || $uses_meta_all ) ) {
 				$bridge_route = Nova_Bridge_Suite_Content_Transport::route_for( $entity['post_type'] );
 				if ( $bridge_route ) { $row['write']['available'] = true; $row['write']['route'] = $bridge_route . ( $row['post_id'] ? '/' . $row['post_id'] : '' ); $row['write']['transport'] = 'nova_content_bridge'; }
@@ -876,9 +892,10 @@ final class Nova_Bridge_Suite_Strategy {
 		$profile = $option['profiles'][ $fp['signature'] ] ?? null;
 		if ( ! $profile ) { return $data; }
 		$fields = self::profile_fields_for_entity( $profile, $entity );
-		$descriptions = [];
-		$mappings = [];
-		foreach ( $fields as $pointer => $field ) { if ( $field['description'] ) { $descriptions[ $pointer ] = $field['description']; } if ( $field['mapping'] ) { $mappings[ $pointer ] = $field['mapping']; } }
+		$metadata = self::mapping_metadata( $fields );
+		$descriptions = $metadata['meta_descriptions'];
+		$mappings = $metadata['nova_content_mappings'];
+		$data['nova_omit_fields'] = $metadata['nova_omit_fields'];
 		if ( $profile['guidance'] ) { $descriptions['/@nova/layout'] = $profile['guidance']; }
 		foreach ( [ 'meta_descriptions' => $descriptions, 'nova_content_mappings' => $mappings ] as $key => $values ) {
 			if ( ! isset( $data[ $key ] ) || ( is_array( $data[ $key ] ) && ( [] === $data[ $key ] || array_keys( $data[ $key ] ) !== range( 0, count( $data[ $key ] ) - 1 ) ) ) ) { $data[ $key ] = array_merge( $data[ $key ] ?? [], $values ); }
