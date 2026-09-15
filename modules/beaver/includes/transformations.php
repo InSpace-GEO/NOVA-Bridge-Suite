@@ -556,7 +556,10 @@ function nova_bb_remove_paths_from_tree( $tree, $paths ) {
                         $keep[] = $item;
                     }
                 }
-                nova_bb_setting_set( $node['settings'], 'items', $keep );
+                $schema = nova_bb_item_schema( nova_bb_module_slug( $node['settings'] ) );
+                if ( null !== $schema ) {
+                    nova_bb_setting_set( $node['settings'], $schema['collection'], $keep );
+                }
             }
 
             if ( ! empty( $node['children'] ) && is_array( $node['children'] ) ) {
@@ -603,9 +606,9 @@ function nova_bb_apply_text_updates_to_tree( $tree, $updates ) {
         );
 
         if ( null === $item ) {
-            $node_map[ $node_path ] = $entry;
+            $node_map[ $node_path ][] = $entry;
         } else {
-            $item_map[ $node_path ][ $item ] = $entry;
+            $item_map[ $node_path ][ $item ][] = $entry;
         }
     }
 
@@ -651,26 +654,37 @@ function nova_bb_apply_text_updates_to_tree( $tree, $updates ) {
             return;
         }
 
+        $schema = nova_bb_item_schema( nova_bb_module_slug( $node['settings'] ) );
+        if ( null === $schema ) {
+            return;
+        }
         $items = nova_bb_get_module_items( $node['settings'] );
 
-        foreach ( $updates_by_index as $i => $entry ) {
+        foreach ( $updates_by_index as $i => $entries ) {
             if ( ! isset( $items[ $i ] ) ) {
                 continue;
             }
 
-            if ( 'body' === $entry['field'] || 'content' === $entry['field'] ) {
-                nova_bb_setting_set( $items[ $i ], 'content', wp_kses_post( $entry['text'] ) );
-            } elseif ( '' !== $entry['field'] ) {
-                $key = sanitize_key( $entry['field'] );
-                if ( '' !== $key ) {
-                    nova_bb_setting_set( $items[ $i ], $key, wp_strip_all_tags( $entry['text'] ) );
+            foreach ( $entries as $entry ) {
+                if ( null === $schema['label'] ) {
+                    if ( in_array( $entry['field'], array( '', 'text', 'label' ), true ) ) {
+                        $items[ $i ] = wp_strip_all_tags( $entry['text'] );
+                    }
+                    continue;
                 }
-            } else {
-                nova_bb_setting_set( $items[ $i ], 'label', wp_strip_all_tags( $entry['text'] ) );
+                if ( 'body' === $entry['field'] || 'content' === $entry['field'] ) {
+                    $key = $schema['body'];
+                } else {
+                    $key = '' === $entry['field'] ? $schema['label'] : sanitize_key( $entry['field'] );
+                }
+                if ( null !== $key && '' !== $key && 'type' !== $key ) {
+                    $value = $key === $schema['body'] ? wp_kses_post( $entry['text'] ) : wp_strip_all_tags( $entry['text'] );
+                    nova_bb_setting_set( $items[ $i ], $key, $value );
+                }
             }
         }
 
-        nova_bb_setting_set( $node['settings'], 'items', $items );
+        nova_bb_setting_set( $node['settings'], $schema['collection'], $items );
     };
 
     $walk = function ( $nodes, $prefix = '' ) use ( &$walk, $node_map, $item_map, $apply_to_node, $apply_to_items ) {
@@ -678,7 +692,9 @@ function nova_bb_apply_text_updates_to_tree( $tree, $updates ) {
             $path = ( '' === $prefix ) ? (string) $idx : $prefix . '.' . $idx;
 
             if ( array_key_exists( $path, $node_map ) ) {
-                $apply_to_node( $node, $node_map[ $path ] );
+                foreach ( $node_map[ $path ] as $entry ) {
+                    $apply_to_node( $node, $entry );
+                }
             }
             if ( isset( $item_map[ $path ] ) ) {
                 $apply_to_items( $node, $item_map[ $path ] );

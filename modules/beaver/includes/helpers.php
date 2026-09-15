@@ -375,6 +375,12 @@ function nova_bb_guess_label_for_module( $module, $settings = null ) {
             return 'Accordion';
         case 'tabs':
             return 'Tabs';
+        case 'faq':
+            return 'FAQ';
+        case 'pp-iconlist':
+            return 'Icon List';
+        case 'content-slider':
+            return 'Content Slider';
         case 'photo':
             return 'Photo';
         case 'html':

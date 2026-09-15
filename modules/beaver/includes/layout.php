@@ -250,24 +250,43 @@ function nova_bb_normalize_incoming_nodes( $nodes ) {
     return $out;
 }
 
-/**
- * The `items` array of an accordion/tabs module, always as a PHP list.
- */
+/** Native storage for supported repeater modules. Null label means string items. */
+function nova_bb_item_schema( $module ) {
+    switch ( (string) $module ) {
+        case 'accordion':
+        case 'tabs':
+            return array( 'collection' => 'items', 'label' => 'label', 'body' => 'content' );
+        case 'faq':
+            return array( 'collection' => 'faqs', 'label' => 'question', 'body' => 'answer' );
+        case 'pp-iconlist':
+            return array( 'collection' => 'list_items', 'label' => null, 'body' => null );
+        case 'content-slider':
+            return array( 'collection' => 'slides', 'label' => 'title', 'body' => 'text' );
+        default:
+            return null;
+    }
+}
+
+/** A module's native repeater entries, always as a PHP list. */
 function nova_bb_get_module_items( $settings ) {
-    $items = nova_bb_setting_get( $settings, 'items', array() );
+    $schema = nova_bb_item_schema( nova_bb_module_slug( $settings ) );
+    if ( null === $schema ) {
+        return array();
+    }
+    $items = nova_bb_setting_get( $settings, $schema['collection'], array() );
     return is_array( $items ) ? array_values( $items ) : array();
 }
 
 /**
- * Whether a module keeps its text in an `items` array (accordion, tabs).
+ * Whether the module has a supported native repeater collection.
  */
 function nova_bb_is_items_module( $module ) {
-    return in_array( (string) $module, array( 'accordion', 'tabs' ), true );
+    return null !== nova_bb_item_schema( $module );
 }
 
 /**
  * Build outline from a tree: a flat list of text-bearing modules,
- * `{path, tag, label, context, text}`.
+ * `{path, tag, label, context, text, content?}`.
  *
  * Paths are child-index strings ("0.2.1"). Accordion/tab ITEMS are settings
  * entries, not child nodes, so they get a virtual segment: "0.2.1@0" is the
@@ -301,14 +320,19 @@ function nova_bb_build_outline_from_tree( $tree ) {
 
                 if ( nova_bb_is_items_module( $module ) ) {
                     $item_tag = $module . '-item';
+                    $schema   = nova_bb_item_schema( $module );
                     foreach ( nova_bb_get_module_items( $settings ) as $i => $item ) {
-                        $outline[] = array(
+                        $entry = array(
                             'path'    => $path_str . '@' . $i,
                             'tag'     => $item_tag,
-                            'label'   => 'accordion' === $module ? 'Accordion Item' : 'Tab',
+                            'label'   => 'accordion' === $module ? 'Accordion Item' : ( 'tabs' === $module ? 'Tab' : nova_bb_guess_label_for_module( $module, $settings ) . ' Item' ),
                             'context' => $context . ' > ' . nova_bb_guess_label_for_module( $module, $settings ),
-                            'text'    => wp_strip_all_tags( (string) nova_bb_setting_get( $item, 'label', '' ) ),
+                            'text'    => wp_strip_all_tags( (string) ( null === $schema['label'] ? $item : nova_bb_setting_get( $item, $schema['label'], '' ) ) ),
                         );
+                        if ( null !== $schema['body'] ) {
+                            $entry['content'] = (string) nova_bb_setting_get( $item, $schema['body'], '' );
+                        }
+                        $outline[] = $entry;
                     }
                 } else {
                     $field = nova_bb_default_text_field_for_module( $module );
@@ -353,17 +377,21 @@ function nova_bb_build_outline_from_tree( $tree ) {
 }
 
 /**
- * Build text_map = [{path, text}] from a tree.
+ * Build text_map = [{path, text, content?}] from a tree.
  */
 function nova_bb_build_text_map_from_tree( $tree ) {
     $outline = nova_bb_build_outline_from_tree( $tree );
     $map     = array();
 
     foreach ( $outline as $node ) {
-        $map[] = array(
+        $entry = array(
             'path' => $node['path'],
             'text' => $node['text'],
         );
+        if ( array_key_exists( 'content', $node ) ) {
+            $entry['content'] = $node['content'];
+        }
+        $map[] = $entry;
     }
 
     return $map;
@@ -417,15 +445,30 @@ function nova_bb_tree_to_fallback_html( $tree ) {
 
                     case 'accordion':
                     case 'tabs':
+                    case 'faq':
+                    case 'content-slider':
+                        $schema = nova_bb_item_schema( $module );
                         foreach ( nova_bb_get_module_items( $settings ) as $item ) {
-                            $label   = trim( wp_strip_all_tags( (string) nova_bb_setting_get( $item, 'label', '' ) ) );
-                            $content = trim( (string) nova_bb_setting_get( $item, 'content', '' ) );
+                            $label   = trim( wp_strip_all_tags( (string) nova_bb_setting_get( $item, $schema['label'], '' ) ) );
+                            $content = trim( (string) nova_bb_setting_get( $item, $schema['body'], '' ) );
                             if ( '' !== $label ) {
-                                $parts[] = '<h3>' . esc_html( $label ) . '</h3>';
+                                $tag = 'content-slider' === $module ? strtolower( (string) nova_bb_setting_get( $item, 'title_tag', 'h3' ) ) : 'h3';
+                                $tag = preg_match( '/^h[1-6]$/', $tag ) ? $tag : 'h3';
+                                $parts[] = '<' . $tag . '>' . esc_html( $label ) . '</' . $tag . '>';
                             }
                             if ( '' !== $content ) {
                                 $parts[] = $content;
                             }
+                        }
+                        break;
+                    case 'pp-iconlist':
+                        $items = nova_bb_get_module_items( $settings );
+                        if ( ! empty( $items ) ) {
+                            $list = array();
+                            foreach ( $items as $item ) {
+                                $list[] = '<li>' . esc_html( wp_strip_all_tags( (string) $item ) ) . '</li>';
+                            }
+                            $parts[] = '<ul>' . implode( '', $list ) . '</ul>';
                         }
                         break;
                 }
