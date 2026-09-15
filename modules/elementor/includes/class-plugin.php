@@ -81,6 +81,8 @@ class Plugin {
 			'tab_title',
 			'item_title',
 			'tab_content',
+			'question',
+			'answer',
 			'label',
 			'value',
 		);
