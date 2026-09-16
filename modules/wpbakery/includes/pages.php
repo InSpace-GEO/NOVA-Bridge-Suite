@@ -699,8 +699,9 @@ function nova_wpb_resolve_page( $id_or_slug, $post_types = array( 'page', 'post'
 
 	// 1) Try hierarchical page path, e.g. "parent/child".
 	if ( in_array( 'page', $post_types, true ) ) {
-		$post = get_page_by_path( $path, OBJECT, 'page' );
-		if ( $post && 'trash' !== $post->post_status ) {
+		// A string post type also searches attachments in WordPress core.
+		$post = get_page_by_path( $path, OBJECT, array( 'page' ) );
+		if ( $post && 'trash' !== $post->post_status && in_array( $post->post_type, $post_types, true ) ) {
 			return $post;
 		}
 	}
@@ -717,7 +718,7 @@ function nova_wpb_resolve_page( $id_or_slug, $post_types = array( 'page', 'post'
 	$query = new WP_Query( $args );
 	if ( $query->have_posts() ) {
 		$post = $query->posts[0];
-		if ( 'trash' !== $post->post_status ) {
+		if ( 'trash' !== $post->post_status && in_array( $post->post_type, $post_types, true ) ) {
 			return $post;
 		}
 	}
@@ -1109,6 +1110,7 @@ function nova_wpb_create_page( $request ) {
 		$text_updates = $validated_updates;
 	}
 
+	$edited_compact = null;
 	// If template: allow path-based cleanup first (optional).
 	if ( $using_template && ( ! empty( $remove_paths ) || ! empty( $text_updates ) ) ) {
 		if ( ! function_exists( 'nova_wpb_apply_transformations' ) ) {
@@ -1119,7 +1121,7 @@ function nova_wpb_create_page( $request ) {
 			);
 		}
 
-		$base_shortcodes = nova_wpb_apply_transformations( $base_shortcodes, $remove_paths, $text_updates, '', array() );
+		$base_shortcodes = nova_wpb_apply_transformations( $base_shortcodes, $remove_paths, $text_updates, '', array(), $edited_compact );
 		if ( is_wp_error( $base_shortcodes ) ) {
 			if (
 				'nova_wpb_unsafe_roundtrip' === $base_shortcodes->get_error_code()
@@ -1156,7 +1158,8 @@ function nova_wpb_create_page( $request ) {
 			$append_sections,
 			$postarr['post_title'],
 			true,
-			$nova_slot_report
+			$nova_slot_report,
+			$edited_compact
 		);
 	}
 

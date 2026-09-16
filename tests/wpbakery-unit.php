@@ -21,6 +21,12 @@ define( 'ABSPATH', __DIR__ . '/' );
 
 $GLOBALS['shortcode_tags'] = array();
 
+function shortcode_exists( $tag ) {
+	return isset( $GLOBALS['shortcode_tags'][ $tag ] );
+}
+$GLOBALS['shortcode_tags']['vc_tta_accordion'] = '__return_empty_string';
+$GLOBALS['shortcode_tags']['vc_tta_section'] = '__return_empty_string';
+
 // ---------------------------------------------------------------------------
 // WordPress stubs
 // ---------------------------------------------------------------------------
@@ -1053,4 +1059,93 @@ nova_wpb_check(
 	'A FAQ subsection found inside a single mega-section did not become a native accordion.'
 );
 
+// Salient does not register the standard WPBakery accordion family.
+$core_faq = '[vc_row][vc_column][vc_tta_accordion style="flat"][vc_tta_section title="Question &amp; answer" tab_id="abc"][vc_column_text]<p>Answer with <a href="https://example.com">link</a>.</p>[/vc_column_text][/vc_tta_section][/vc_tta_accordion][/vc_column][/vc_row]';
+nova_wpb_check( $core_faq === nova_wpb_compatible_accordions( $core_faq ), 'Supported core accordion changed.' );
+unset( $GLOBALS['shortcode_tags']['vc_tta_accordion'], $GLOBALS['shortcode_tags']['vc_tta_section'] );
+$GLOBALS['shortcode_tags']['toggles'] = '__return_empty_string';
+$GLOBALS['shortcode_tags']['toggle'] = '__return_empty_string';
+$salient_faq = nova_wpb_compatible_accordions( $core_faq );
+nova_wpb_check( ! is_wp_error( $salient_faq ) && false !== strpos( $salient_faq, '[toggles style="default" accordion="true"]' ), 'Salient accordion not selected.' );
+nova_wpb_check( false === strpos( $salient_faq, '[vc_tta_' ), 'Unsupported core tags leaked on Salient.' );
+nova_wpb_check( false !== strpos( $salient_faq, '<p>Answer with <a href="https://example.com">link</a>.</p>' ), 'Conversion lost answer HTML.' );
+nova_wpb_check( $salient_faq === nova_wpb_compatible_accordions( $salient_faq ), 'Supported Salient accordion changed on repeat.' );
+$native_output = nova_wpb_apply_transformations( '', array(), array(), '', array( array( 'type' => 'faq', 'title' => 'FAQ', 'body' => '<h3>Question</h3><p>Answer</p>' ) ) );
+nova_wpb_check( false !== strpos( $native_output, '[toggles' ) && false === strpos( $native_output, '[vc_tta_' ), 'New FAQ did not use Salient.' );
+$GLOBALS['shortcode_tags']['vc_tta_accordion'] = '__return_empty_string';
+$GLOBALS['shortcode_tags']['vc_tta_section'] = '__return_empty_string';
+nova_wpb_check( $salient_faq === nova_wpb_compatible_accordions( $salient_faq ), 'Both families available: changed supported Salient.' );
+unset( $GLOBALS['shortcode_tags']['toggles'], $GLOBALS['shortcode_tags']['toggle'] );
+$back_to_core = nova_wpb_compatible_accordions( $salient_faq );
+nova_wpb_check( false !== strpos( $back_to_core, '[vc_tta_accordion' ) && false === strpos( $back_to_core, '[toggles' ), 'Salient layout did not adapt to core.' );
+unset( $GLOBALS['shortcode_tags']['vc_tta_accordion'], $GLOBALS['shortcode_tags']['vc_tta_section'] );
+$static_faq = nova_wpb_compatible_accordions( $core_faq );
+nova_wpb_check( false === strpos( $static_faq, '[vc_tta_' ) && false !== strpos( $static_faq, '<h3>Question &amp; answer</h3>' ), 'Static fallback lost title or leaked tags.' );
+nova_wpb_check( false !== strpos( $static_faq, '<p>Answer with <a href="https://example.com">link</a>.</p>' ), 'Static fallback lost answer HTML.' );
+nova_wpb_check( $static_faq === nova_wpb_compatible_accordions( $static_faq ), 'Static fallback is not idempotent.' );
+// Mixed path edits and appended sections must not erase freshly supplied article copy.
+$GLOBALS['shortcode_tags']['vc_tta_accordion'] = '__return_empty_string';
+$GLOBALS['shortcode_tags']['vc_tta_section'] = '__return_empty_string';
+$mixed_source = '[vc_row][vc_column][vc_column_text]<p>Remove this row</p>[/vc_column_text][/vc_column][/vc_row]'
+	. '[vc_row][vc_column][vc_custom_heading text="Old heading"][/vc_custom_heading][vc_column_text]<p>Old intro</p>[/vc_column_text][/vc_column][/vc_row]'
+	. '[vc_row][vc_column][vc_custom_heading text="FAQ"][/vc_custom_heading][vc_tta_accordion][/vc_tta_accordion][/vc_column][/vc_row]'
+	. '[vc_row][vc_column][vc_custom_heading text="Stale heading"][/vc_custom_heading][vc_column_text]<p>Stale copy</p>[/vc_column_text][/vc_column][/vc_row]'
+	. '[vc_row][vc_column][vso_auteur_block author="7"][/vc_column][/vc_row]';
+$mixed_updates = array( array( 'path'=>'1.0.0', 'text'=>'New intro' ), array( 'path'=>'1.0.1', 'text'=>'<p>Complete new introduction with <a href="https://example.com/kept">link</a>.</p>' ) );
+foreach ( array( false, true ) as $with_prose ) {
+	$sections = array( array( 'type'=>'faq', 'title'=>'New FAQ', 'body'=>'<h3>New question?</h3><p>New answer.</p>' ) );
+	if ( $with_prose ) $sections[] = array( 'title'=>'New closing section', 'body'=>'<p>Appended prose.</p>' );
+	$edited = null;
+	$first = nova_wpb_apply_transformations( $mixed_source, array( '0' ), $mixed_updates, '', array(), $edited );
+	$r = null;
+	list( $filled, $remaining ) = nova_wpb_replace_template_slots_with_sections( $first, $sections, 'New page', true, $r, $edited );
+	$out = nova_wpb_apply_transformations( $filled, array(), array(), '', $remaining );
+	nova_wpb_check( false !== strpos( $out, $mixed_updates[1]['text'] ), 'Mixed payload erased explicitly updated prose after path reindexing.' );
+	nova_wpb_check( false !== strpos( $out, 'text="New intro"' ), 'Mixed payload erased explicitly updated heading.' );
+	nova_wpb_check( false === strpos( $out, 'Stale copy' ) && false === strpos( $out, 'Old intro' ), 'Mixed payload preserved stale template text.' );
+	nova_wpb_check( false !== strpos( $out, 'New answer.' ) && 1 === substr_count( $out, '[vc_tta_accordion ' ) + substr_count( $out, '[vc_tta_accordion]' ), 'Mixed payload lost or duplicated FAQ.' );
+	nova_wpb_check( strpos( $out, 'New answer.' ) < strpos( $out, 'vso_auteur_block' ), 'FAQ moved below template author.' );
+	if ( $with_prose ) nova_wpb_check( strpos( $out, 'Appended prose.' ) < strpos( $out, 'New FAQ' ), 'FAQ remained before appended prose.' );
+}
+// With no unused prose slot, overflow also belongs before FAQ and template chrome.
+$edited = null;
+$first = nova_wpb_apply_transformations( $mixed_source, array( '0', '3' ), $mixed_updates, '', array(), $edited );
+$r = null;
+list( $filled, $remaining ) = nova_wpb_replace_template_slots_with_sections( $first, $sections, 'New page', true, $r, $edited );
+$out = nova_wpb_apply_transformations( $filled, array(), array(), '', $remaining );
+nova_wpb_check( strpos( $out, 'Appended prose.' ) < strpos( $out, 'New FAQ' ) && strpos( $out, 'New answer.' ) < strpos( $out, 'vso_auteur_block' ), 'Overflow ordering broke article/FAQ/author order.' );
+nova_wpb_check( 1 === substr_count( $out, 'Complete new introduction' ), 'Explicit prose duplicated.' );
+
+// Salient FAQ placeholders must be reserved and reused just like core placeholders.
+$non_faq_row = '[vc_row][vc_column][vc_custom_heading text="Specifications"][/vc_custom_heading][vc_tta_accordion][vc_tta_section title="Size"][vc_column_text]Large[/vc_column_text][/vc_tta_section][/vc_tta_accordion][/vc_column][/vc_row]';
+$non_faq_tree = nova_wpb_parse_shortcodes_to_compact( $non_faq_row );
+nova_wpb_check( ! nova_wpb_is_article_faq_row( $non_faq_tree[0] ), 'Non-FAQ accordion treated as movable FAQ.' );
+$order_input = $non_faq_row . '[vc_row][vc_column][vc_column_text]<p>Later prose</p>[/vc_column_text][/vc_column][/vc_row]';
+$order_output = nova_wpb_apply_transformations( $order_input, array(), array(), '', array( array('type'=>'faq','title'=>'FAQ','body'=>'<h3>Question?</h3><p>Answer.</p>') ) );
+nova_wpb_check( strpos( $order_output, 'Specifications' ) < strpos( $order_output, 'Later prose' ), 'Existing non-FAQ accordion moved.' );
+$GLOBALS['shortcode_tags']['toggles'] = '__return_empty_string';
+$GLOBALS['shortcode_tags']['toggle'] = '__return_empty_string';
+$salient_slot = '[vc_row][vc_column][vc_custom_heading text="FAQ" font_container="tag:h2"][/vc_custom_heading][toggles style="minimal"][/toggles][/vc_column][/vc_row]';
+$r = null;
+list( $salient_preserved, $salient_remaining ) = nova_wpb_replace_template_slots_with_sections( $salient_slot, array( $nova_wpb_sections[0] ), '', true, $r );
+nova_wpb_check( $salient_preserved === $salient_slot && 1 === count( $salient_remaining ), 'Content was inserted into a Salient FAQ column.' );
+$salient_filled = nova_wpb_apply_transformations( $salient_slot, array(), array(), '', array( array( 'type'=>'faq', 'title'=>'New FAQ', 'body'=>'<h3>New question?</h3><p>New answer.</p>' ) ) );
+nova_wpb_check( 1 === substr_count( $salient_filled, '[toggles' ) && false !== strpos( $salient_filled, '[toggles style="minimal"]' ), 'Salient placeholder was duplicated or lost its style.' );
+nova_wpb_check( false !== strpos( $salient_filled, '[toggle title="New question?"' ) && false !== strpos( $salient_filled, 'New answer.' ), 'Salient placeholder was not filled with native question and answer.' );
+nova_wpb_check( false === strpos( $salient_filled, '[vc_tta_' ), 'Core section nested in Salient accordion.' );
+$GLOBALS['shortcode_tags']['vc_tta_accordion'] = '__return_empty_string';
+$GLOBALS['shortcode_tags']['vc_tta_section'] = '__return_empty_string';
+nova_wpb_check( $core_faq . $salient_faq === nova_wpb_compatible_accordions( $core_faq . $salient_faq ), 'Mixed supported families changed.' );
+
+// WPBakery registers its mapped shortcodes on template_redirect, absent in REST.
+if ( ! class_exists( 'WPBMap' ) ) {
+	class WPBMap {
+		public static function addAllMappedShortcodes() {
+			$GLOBALS['shortcode_tags']['vc_tta_accordion'] = '__return_empty_string';
+			$GLOBALS['shortcode_tags']['vc_tta_section'] = '__return_empty_string';
+		}
+	}
+}
+unset( $GLOBALS['shortcode_tags']['vc_tta_accordion'], $GLOBALS['shortcode_tags']['vc_tta_section'] );
+nova_wpb_check( $core_faq === nova_wpb_compatible_accordions( $core_faq ), 'Lazy core mappings mistaken for missing accordion support.' );
 nova_wpb_report();
