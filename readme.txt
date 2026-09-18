@@ -4,7 +4,7 @@ Tags: seo, automation, content, rest-api, page builder
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.2.11
+Stable tag: 3.0.0
 License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -24,9 +24,13 @@ Modules can be toggled from Settings -> NOVA Settings. The core bridge and post 
 The API Mapping Context module provides a focused map of NOVA publishing destinations and lets administrators map each discovered field to NOVA content with field-level publishing guidance. Its compact, mapping-first interface keeps field mappings and instructions prominent while placing routes, transports, request paths, and other implementation details in an optional technical-details disclosure.
 
 = API Mapping Context =
+Version 3.0.0 adds canonical NOVA mapping drafts, direct writing-API synchronization, sealed configuration activation, signed delivery and durable publishing/recovery. Generic mapping instructions are never inserted into ordinary REST content responses; NOVA's own CPT context remains separate. Leave empty skips updates and blanks selected supported clone fields; Protected preserves native content and structure. Repeats use existing fixed slots.
+
+Publishing requires the proposed backend contract in docs/nova-backend-integration-handoff.md. Backend implementation is not included in this plugin release. Initial execution supports verified native/ACF scalar fields and the inspected Elementor 4.1.4 implementation; term publishing, typed image/link/list values and repeat restructuring remain unsupported. See docs/publishing-integration-validation.md for test results and limitations.
+
 Open Settings -> NOVA Settings -> API Mapping Context to inspect Posts, Pages, client-owned editorial custom post types, and one logical WooCommerce Product categories destination when WooCommerce is available. Products and unrelated operational endpoints such as navigation, payments, countries, and plugin configuration are omitted. NOVA's own Service Page CPT and NOVA-managed Blog CPTs are also omitted from this discovery inventory because their dedicated modules already expose the REST context NOVA needs. Eligible client-owned types with REST disabled use the guarded NOVA content transport; unsupported types remain unavailable.
 
-API Mapping Context is a standalone module and does not belong to either custom-post-type module. Disabling it stops endpoint discovery and context injection but leaves every saved mapping, template selection, and guidance entry intact for the next time the module is enabled.
+API Mapping Context is a standalone module and does not belong to either custom-post-type module. Disabling it stops discovery, synchronization and delivery processing while retaining saved configuration. Generic REST context injection remains disabled even when an old guidance preference is saved.
 
 Each destination contains only publishing-related fields: native content fields, featured media, taxonomy assignments, relevant registered custom meta, applicable ACF fields, and the active SEO provider's title and description fields. SEO fields are grouped by provider. Fields verified against an available write transport are marked available; useful fields that are hidden from REST or otherwise lack a writer are marked potential with the reason they cannot currently be changed.
 
@@ -34,7 +38,7 @@ Page-builder mappings come from a selected, concrete document rather than a glob
 
 Fields use RFC 6901 JSON Pointers, for example /title, /content, /meta/blog_intro, or /meta/sp_faq/*/answer. Nested meta and ACF leaves remain visible for mapping but are marked as requiring the complete parent payload when no safe leaf writer exists. Administrators can save a NOVA mapping and guidance for every field.
 
-For post types with theme templates, administrators choose which templates NOVA uses, may select more than one, and designate one selected template as primary. Each selected template can define its own overall context plus targeted mapping and guidance overrides for real API fields. Template choices and overrides are stored as configuration instead of inflating discovery with an @templates field cross-product. In authenticated edit-context responses, active-template field overrides are merged into the read-only nova_content_mappings and meta_descriptions objects, while the read-only nova_template_contexts object reports the selected, primary, and current template context records.
+Retained endpoint defaults support theme-template selections, a primary template and template-specific instructions. These remain saved configuration; generic REST responses no longer receive nova_content_mappings, meta_descriptions or nova_template_contexts from this module. New canonical drafts synchronize mappings and instructions directly to NOVA.
 
 The live inventory at GET /wp-json/nova-bridge/v1/content-endpoints is restricted to administrators. Builder-field inspection requires permission to edit the selected document, and saved context is not exposed to anonymous visitors.
 
@@ -58,6 +62,17 @@ The API Mapping Context inventory currently supports WooCommerce product categor
 1. NOVA Settings screen with module toggles.
 
 == Changelog ==
+
+= 3.0.0 (mapping module branch) =
+* Synchronize canonical NOVA fields, author instructions, mappings and concrete assignments; seal and activate exact configurations.
+* Add Protected, explicit source skips and fixed repeat slots; retain Leave empty update/clone semantics.
+* Add signed delivery, a durable job journal, verified native/ACF/Elementor execution and recovery of interrupted commits and receipts.
+* Remove generic mapping REST decoration while retaining dedicated NOVA CPT context.
+* Include the backend requirements handover and local/isolated staging validation record. Backend changes are proposals, not part of this plugin release.
+
+== Earlier development history ==
+
+The following version labels are retained historical snapshots. This mapping branch is deliberately versioned 3.0.0; replacing an installed 3.1.x/3.2.x snapshot requires an explicit package replacement.
 
 = 3.2.11 =
 * Discover verified flat ACF content fields through the native meta_all writer when unsupported matrix siblings prevent whole-parent writes.

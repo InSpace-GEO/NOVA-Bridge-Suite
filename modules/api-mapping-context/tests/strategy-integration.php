@@ -28,8 +28,11 @@ final class Nova_Strategy_Staging_Canary {
 		$this->prefix = 'nova-map-' . strtolower( wp_generate_password( 10, false, false ) );
 		$this->group_key = 'group_' . str_replace( '-', '_', $this->prefix );
 		$this->old_user = get_current_user_id();
+		$rest_guidance_override = static function () { return true; };
 		try {
 			$this->require_environment();
+			// A legacy opt-in value cannot restore generic REST response decoration.
+			add_filter( 'pre_option_' . Nova_Bridge_Suite_Content_Context::GUIDANCE_OPTION, $rest_guidance_override );
 			$this->snapshot_options();
 			$this->create_fixtures();
 			$this->test_catalog_eligibility();
@@ -39,6 +42,7 @@ final class Nova_Strategy_Staging_Canary {
 		} catch ( Throwable $error ) {
 			$this->failures[] = 'Test setup or prerequisite: ' . $error->getMessage();
 		} finally {
+			remove_filter( 'pre_option_nova_bridge_mapping_rest_guidance', $rest_guidance_override );
 			$this->cleanup();
 		}
 		WP_CLI::line( 'Canary assertions passed: ' . $this->passed );
@@ -373,8 +377,8 @@ final class Nova_Strategy_Staging_Canary {
 		$this->check( 200 === $existing_context->get_status() && 'PATCH' === ( $existing_context->get_data()['write']['method'] ?? '' ), 'Existing target contract selects its own update operation.' );
 		$edit_page = $this->request( 'GET', '/wp/v2/pages/' . $this->fixtures['second'], [ 'context' => 'edit' ], $this->users['editor'] );
 		$edit_data = $edit_page->get_data();
-		$this->check( 200 === $edit_page->get_status() && 'h1' === ( $edit_data['nova_content_mappings']['/title'] ?? null ), 'Native authenticated page response carries its shared profile mapping.' );
-		$this->check( $guidance === ( $edit_data['meta_descriptions']['/@nova/layout'] ?? null ), 'Native authenticated response embeds layout guidance in meta_descriptions.' );
+		$this->check( 200 === $edit_page->get_status() && ! isset( $edit_data['nova_content_mappings'] ), 'Native authenticated page response omits generic NOVA mappings.' );
+		$this->check( ! isset( $edit_data['meta_descriptions']['/@nova/layout'] ), 'Native authenticated response omits generic layout guidance.' );
 		foreach ( [ 0, $this->users['editor'] ] as $viewer ) {
 			$public = $this->request( 'GET', '/wp/v2/pages/' . $this->fixtures['second'], [ 'context' => 'view' ], $viewer );
 			$this->check( 200 === $public->get_status() && false === strpos( wp_json_encode( $public->get_data() ), $guidance ) && ! isset( $public->get_data()['nova_strategy_context'] ), 'View-context response never exposes private mapping guidance (actor ' . $viewer . ').' );
@@ -414,8 +418,8 @@ final class Nova_Strategy_Staging_Canary {
 		$hidden_contract = $hidden_context->get_data();
 		$this->check( 200 === $hidden_context->get_status() && true === ( $hidden_contract['ready'] ?? false ) && ( '/nova-bridge/v1/content/' . $this->post_type ) === ( $hidden_contract['write']['route'] ?? '' ), 'Hidden CPT strategy contract resolves an available private bridge create route.' );
 		$hidden_read = $this->request( 'GET', '/nova-bridge/v1/content/' . $this->post_type . '/' . $this->fixtures['hidden'], [], $this->users['editor'] );
-		$this->check( 200 === $hidden_read->get_status() && ( $guidance . ' Hidden CPT.' ) === ( $hidden_read->get_data()['meta_descriptions']['/@nova/layout'] ?? null ), 'Hidden endpoint response preserves strategy profile guidance.' );
-		$this->check( 'top_content' === ( $hidden_read->get_data()['nova_content_mappings']['/meta_all/acf/nova_map_intro'] ?? null ), 'Hidden endpoint uses the established nova_content_mappings response name.' );
+		$this->check( 200 === $hidden_read->get_status() && ! isset( $hidden_read->get_data()['meta_descriptions']['/@nova/layout'] ), 'Hidden content endpoint omits generic profile guidance.' );
+		$this->check( ! isset( $hidden_read->get_data()['nova_content_mappings'] ), 'Hidden content endpoint omits generic mapping response fields.' );
 		$this->fixtures['guidance'] = $guidance;
 	}
 
@@ -449,7 +453,7 @@ final class Nova_Strategy_Staging_Canary {
 			$this->check( 200 === $saved->get_status(), 'Administrator saves a heading mapping once for the shared Elementor layout.' );
 			$target_response = $this->request( 'GET', '/wp/v2/pages/' . $this->fixtures['builder_mirror'], [ 'context' => 'edit' ], $this->users['editor'] );
 			$target_data = $target_response->get_data();
-			$this->check( 200 === $target_response->get_status() && 'h1' === ( $target_data['nova_content_mappings'][ $target_field['path'] ] ?? null ), 'Shared Elementor mapping is rebound to the target document-qualified pointer.' );
+			$this->check( 200 === $target_response->get_status() && ! isset( $target_data['nova_content_mappings'] ), 'Elementor native REST response omits shared generic mapping decoration.' );
 			$this->check( ! isset( $target_data['nova_content_mappings'][ $source_field['path'] ] ), 'Target response does not reuse the reference document pointer.' );
 			$this->check( 0 === strpos( $target_field['write']['payload_item']['field_key'] ?? '', 'mirrorheading|' ) && false === strpos( wp_json_encode( $target_field['write'] ?? [] ), 'canaryheading' ), 'Resolved target write payload uses its own Elementor element ID.' );
 		}

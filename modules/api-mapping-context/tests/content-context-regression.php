@@ -165,6 +165,7 @@ $service_post_id   = 0;
 $blog_post_ids      = [];
 $managed_blog_types = [];
 $failure           = null;
+$rest_guidance_override = static function () { return true; };
 $old_user_id       = get_current_user_id();
 $suite_settings_existed = false !== get_option( NOVA_BRIDGE_SUITE_OPTION, false );
 $old_suite_settings     = $suite_settings_existed ? get_option( NOVA_BRIDGE_SUITE_OPTION ) : null;
@@ -192,6 +193,8 @@ wp_set_current_user( $admin_id );
 
 try {
 	nova_content_context_test_assert( class_exists( 'Nova_Bridge_Suite_Content_Context' ), 'The API Mapping Context class is loaded.' );
+	// A stale opt-in value must not restore generic REST guidance; do not persist it.
+	add_filter( 'pre_option_' . Nova_Bridge_Suite_Content_Context::GUIDANCE_OPTION, $rest_guidance_override );
 	$module_definitions = nova_bridge_suite_module_definitions();
 	$module_definition  = $module_definitions['api_mapping_context'] ?? [];
 	nova_content_context_test_assert(
@@ -253,10 +256,11 @@ try {
 	);
 	$settings_tabs = nova_bridge_suite_get_settings_tabs();
 	nova_content_context_test_assert(
-		'API Mapping Context' === ( $settings_tabs['api-mapping-context']['label'] ?? '' )
-		&& is_callable( $settings_tabs['api-mapping-context']['render_callback'] ?? null )
-		&& in_array( 'content-context', $settings_tabs['api-mapping-context']['legacy_slugs'] ?? [], true ),
-		'The enabled module owns its API Mapping Context tab and legacy tab alias.'
+		'Mapping' === ( $settings_tabs['strategy-mapping']['label'] ?? '' )
+		&& is_callable( $settings_tabs['strategy-mapping']['render_callback'] ?? null )
+		&& in_array( 'content-context', $settings_tabs['strategy-mapping']['legacy_slugs'] ?? [], true )
+		&& in_array( 'api-mapping-context', $settings_tabs['strategy-mapping']['legacy_slugs'] ?? [], true ),
+		'The enabled module owns the Mapping tab and retains both earlier tab aliases.'
 	);
 
 	$old_tab = $_GET['tab'] ?? null;
@@ -265,18 +269,21 @@ try {
 	nova_bridge_suite_render_settings_page();
 	$legacy_tab_markup = (string) ob_get_clean();
 	nova_content_context_test_assert(
-		false !== strpos( $legacy_tab_markup, 'API Mapping Context' )
+		false !== strpos( $legacy_tab_markup, 'id="nova-strategy-app"' )
+		&& false !== strpos( $legacy_tab_markup, 'Existing endpoint defaults' )
 		&& false !== strpos( $legacy_tab_markup, 'id="nova-content-context-form"' )
 		&& false !== strpos( $legacy_tab_markup, 'name="nova_bridge_suite_content_contexts[payload]"' ),
-		'The legacy settings URL renders the module-owned API Mapping Context form.'
+		'The legacy settings URL renders the mapping workspace and retained advanced endpoint-default form.'
 	);
 	$_GET['tab'] = 'api-mapping-context';
 	wp_dequeue_script( 'nova-bridge-suite-content-context' );
 	wp_dequeue_style( 'nova-bridge-suite-content-context' );
 	Nova_Bridge_Suite_Content_Context::enqueue_admin_assets( 'settings_page_nova-settings' );
+	Nova_Bridge_Suite_Strategy_Admin::assets( 'settings_page_nova-settings' );
 	$context_script = wp_scripts()->registered['nova-bridge-suite-content-context'] ?? null;
 	$context_style  = wp_styles()->registered['nova-bridge-suite-content-context'] ?? null;
 	$localized_data = $context_script ? (string) wp_scripts()->get_data( 'nova-bridge-suite-content-context', 'data' ) : '';
+	$localized_data = str_replace( '\\/', '/', $localized_data );
 	nova_content_context_test_assert(
 		wp_script_is( 'nova-bridge-suite-content-context', 'enqueued' )
 		&& $context_script
@@ -286,8 +293,26 @@ try {
 		&& false !== strpos( (string) $context_style->src, '/modules/api-mapping-context/assets/content-context-admin.css' )
 		&& false !== strpos( $localized_data, 'NovaContentContextAdmin' )
 		&& false !== strpos( $localized_data, '/nova-bridge/v1/content-endpoints' ),
-		'The mapping tab loads and localizes only module-owned admin assets.'
+		'The mapping tab retains module-owned assets and discovery localization for advanced endpoint defaults.'
 	);
+	$strategy_script = wp_scripts()->registered['nova-strategy-mapping'] ?? null;
+	$strategy_data = $strategy_script ? (string) wp_scripts()->get_data( 'nova-strategy-mapping', 'data' ) : '';
+	$strategy_data = str_replace( '\\/', '/', $strategy_data );
+	nova_content_context_test_assert(
+		wp_script_is( 'nova-strategy-mapping', 'enqueued' )
+		&& wp_script_is( 'nova-mapping-drafts', 'enqueued' )
+		&& wp_script_is( 'nova-posting-admin', 'enqueued' )
+		&& wp_style_is( 'nova-strategy-mapping', 'enqueued' )
+		&& wp_style_is( 'nova-mapping-drafts', 'enqueued' )
+		&& $strategy_script
+		&& false !== strpos( (string) $strategy_script->src, '/modules/api-mapping-context/assets/strategy-admin.js' )
+		&& false !== strpos( $strategy_data, 'NovaStrategyAdmin' )
+		&& false !== strpos( $strategy_data, '/nova-bridge/v1/mapping' )
+		&& false !== strpos( $strategy_data, '/nova-bridge/v1/posting' ),
+		'The mapping workspace loads draft and publishing controls with the local mapping and recovery endpoints.'
+	);
+	foreach ( [ 'nova-strategy-mapping', 'nova-mapping-drafts', 'nova-posting-admin' ] as $handle ) { wp_dequeue_script( $handle ); }
+	foreach ( [ 'nova-strategy-mapping', 'nova-mapping-drafts' ] as $handle ) { wp_dequeue_style( $handle ); }
 	wp_dequeue_script( 'nova-bridge-suite-content-context' );
 	wp_dequeue_style( 'nova-bridge-suite-content-context' );
 	if ( null === $old_tab ) {
@@ -1032,15 +1057,9 @@ try {
 	global $wp_rest_additional_fields;
 	foreach ( [ 'meta_descriptions', 'nova_content_mappings', 'nova_template_contexts' ] as $readonly_field_name ) {
 		$readonly_field_registration = $wp_rest_additional_fields[ $visible_post_type ][ $readonly_field_name ] ?? [];
-		$readonly_field_schema       = is_array( $readonly_field_registration['schema'] ?? null ) ? $readonly_field_registration['schema'] : [];
 		nova_content_context_test_assert(
-			is_array( $readonly_field_registration )
-			&& is_callable( $readonly_field_registration['get_callback'] ?? null )
-			&& empty( $readonly_field_registration['update_callback'] )
-			&& true === ( $readonly_field_schema['readonly'] ?? null )
-			&& 'object' === ( $readonly_field_schema['type'] ?? null )
-			&& [ 'edit' ] === ( $readonly_field_schema['context'] ?? null ),
-			$readonly_field_name . ' is an object available only in edit context, with a strict read-only schema and no write callback.'
+			empty( $readonly_field_registration ),
+			$readonly_field_name . ' is not registered on generic native REST resources.'
 		);
 	}
 	$rest_init_after_server = did_action( 'rest_api_init' );
@@ -1394,95 +1413,17 @@ try {
 	$admin_data   = $admin_result->get_data();
 	nova_content_context_test_assert( 200 === $admin_result->get_status(), 'An administrator can read the fixture item through REST.' );
 	nova_content_context_test_assert(
-		isset( $admin_data['meta_descriptions']['/title'] ) && $title_description === $admin_data['meta_descriptions']['/title'],
-		'An authenticated editable item receives its configured meta_descriptions.'
+		! isset( $admin_data['meta_descriptions']['/title'] )
+		&& ! isset( $admin_data['meta_descriptions']['/content'] )
+		&& ! isset( $admin_data['nova_content_mappings'] )
+		&& ! isset( $admin_data['nova_template_contexts'] ),
+		'Authenticated native REST responses omit generic NOVA mapping and guidance even when a legacy opt-in value exists.'
 	);
 	nova_content_context_test_assert(
-		isset( $admin_data['nova_content_mappings']['/title'] ) && 'content.title' === $admin_data['nova_content_mappings']['/title'],
-		'An authenticated editable item receives its configured NOVA content mappings.'
+		! isset( $admin_data['meta_descriptions'][ $matching_builder_pointer ] )
+		&& ! isset( $admin_data['meta_descriptions'][ $other_builder_pointer ] ),
+		'Generic REST responses do not inject builder guidance from either source document.'
 	);
-	nova_content_context_test_assert(
-		$landing_content_description === ( $admin_data['meta_descriptions']['/content'] ?? '' )
-		&& 'template.landing.body' === ( $admin_data['nova_content_mappings']['/content'] ?? '' ),
-		'The active landing template overrides only its configured real API field in authenticated guidance and mappings.'
-	);
-	$template_contexts = is_array( $admin_data['nova_template_contexts'] ?? null ) ? $admin_data['nova_template_contexts'] : [];
-	$selected_template_records = $template_contexts['selected'] ?? null;
-	$default_template_record = nova_content_context_test_template_record( $template_contexts, $default_template_id );
-	$landing_template_record = nova_content_context_test_template_record( $template_contexts, $landing_template_slug );
-	$resource_template_record = nova_content_context_test_template_record( $template_contexts, $resource_template_slug );
-	$template_context_keys = array_keys( $template_contexts );
-	$template_record_keys  = is_array( $landing_template_record ) ? array_keys( $landing_template_record ) : [];
-	sort( $template_context_keys, SORT_STRING );
-	sort( $template_record_keys, SORT_STRING );
-	nova_content_context_test_assert(
-		[ 'current', 'primary', 'selected' ] === $template_context_keys
-		&& [ 'context', 'current', 'id', 'label', 'mapping', 'primary', 'slug' ] === $template_record_keys,
-		'nova_template_contexts exposes only the documented top-level keys and selected-record fields.'
-	);
-	nova_content_context_test_assert(
-		is_array( $selected_template_records )
-		&& array_values( $selected_template_records ) === $selected_template_records,
-		'nova_template_contexts.selected is a sequential JSON-style list.'
-	);
-	$strict_template_flags = true;
-	foreach ( (array) $selected_template_records as $selected_template_record ) {
-		if (
-			! is_array( $selected_template_record )
-			|| ! array_key_exists( 'primary', $selected_template_record )
-			|| ! array_key_exists( 'current', $selected_template_record )
-			|| ! is_bool( $selected_template_record['primary'] )
-			|| ! is_bool( $selected_template_record['current'] )
-		) {
-			$strict_template_flags = false;
-			break;
-		}
-	}
-	nova_content_context_test_assert( $strict_template_flags, 'Every selected-template primary/current flag is a strict boolean.' );
-	nova_content_context_test_assert(
-		$landing_template_slug === ( $template_contexts['primary'] ?? '' )
-		&& $landing_template_slug === ( $template_contexts['current'] ?? '' )
-		&& 3 === count( (array) ( $template_contexts['selected'] ?? [] ) ),
-		'Authenticated edit context identifies the primary, current, and complete selected-template set.'
-	);
-	nova_content_context_test_assert(
-		is_array( $default_template_record )
-		&& '' === ( $default_template_record['slug'] ?? null )
-		&& $default_template_description === ( $default_template_record['context'] ?? '' )
-		&& 'template.default' === ( $default_template_record['mapping'] ?? '' )
-		&& empty( $default_template_record['primary'] )
-		&& empty( $default_template_record['current'] ),
-		'The default template appears as a non-current selected context record.'
-	);
-	nova_content_context_test_assert(
-		is_array( $landing_template_record )
-		&& $landing_template_slug === ( $landing_template_record['slug'] ?? '' )
-		&& 'NOVA Landing' === ( $landing_template_record['label'] ?? '' )
-		&& $landing_template_description === ( $landing_template_record['context'] ?? '' )
-		&& 'template.landing' === ( $landing_template_record['mapping'] ?? '' )
-		&& ! empty( $landing_template_record['primary'] )
-		&& ! empty( $landing_template_record['current'] ),
-		'The active landing template is marked as both primary and current with its configured context.'
-	);
-	nova_content_context_test_assert(
-		is_array( $resource_template_record )
-		&& $resource_template_slug === ( $resource_template_record['slug'] ?? '' )
-		&& 'NOVA Resource' === ( $resource_template_record['label'] ?? '' )
-		&& empty( $resource_template_record['primary'] )
-		&& empty( $resource_template_record['current'] ),
-		'The second selected theme template is present without inheriting active-template flags.'
-	);
-	nova_content_context_test_assert(
-		$template_matching_builder_description === ( $admin_data['meta_descriptions'][ $matching_builder_pointer ] ?? '' )
-		&& $template_matching_builder_mapping === ( $admin_data['nova_content_mappings'][ $matching_builder_pointer ] ?? '' ),
-		'The active template applies its builder guidance and mapping when the concrete source document matches.'
-	);
-	nova_content_context_test_assert(
-		! isset( $admin_data['meta_descriptions'][ $other_builder_pointer ] )
-		&& ! isset( $admin_data['nova_content_mappings'][ $other_builder_pointer ] ),
-		'Template-scoped builder guidance and mappings for a different concrete document remain excluded.'
-	);
-
 	update_post_meta( $fixture_post_id, '_wp_page_template', $resource_template_slug );
 	$resource_template_read = new WP_REST_Request( 'GET', $item_route );
 	$resource_template_read->set_param( 'context', 'edit' );
@@ -1490,18 +1431,12 @@ try {
 	$resource_template_data = $resource_template_result->get_data();
 	nova_content_context_test_assert(
 		200 === $resource_template_result->get_status()
-		&& $resource_content_description === ( $resource_template_data['meta_descriptions']['/content'] ?? '' )
-		&& 'template.resource.body' === ( $resource_template_data['nova_content_mappings']['/content'] ?? '' )
-		&& $resource_template_slug === ( $resource_template_data['nova_template_contexts']['current'] ?? '' ),
-		'Switching to the selected resource template applies only that template\'s field overrides and current-template context.'
-	);
-	nova_content_context_test_assert(
-		$landing_content_description !== ( $resource_template_data['meta_descriptions']['/content'] ?? '' )
-		&& 'template.landing.body' !== ( $resource_template_data['nova_content_mappings']['/content'] ?? '' ),
-		'Landing-template overrides do not leak into a post using another selected template.'
+		&& ! isset( $resource_template_data['nova_content_mappings'] )
+		&& ! isset( $resource_template_data['nova_template_contexts'] )
+		&& ! isset( $resource_template_data['meta_descriptions']['/content'] ),
+		'Switching native templates does not restore generic NOVA REST decoration.'
 	);
 	update_post_meta( $fixture_post_id, '_wp_page_template', $landing_template_slug );
-
 	$bridge_fields_route = '/nova-bridge/v1/content-endpoints/bridge-fields';
 	$bridge_fields_request = new WP_REST_Request( 'GET', $bridge_fields_route );
 	$bridge_fields_request->set_param( 'post_id', $fixture_post_id );
@@ -1536,14 +1471,29 @@ try {
 	$hidden_bridge_request->set_param( 'post_id', $hidden_post_id );
 	$hidden_bridge_result = rest_do_request( $hidden_bridge_request );
 	$hidden_bridge_data = $hidden_bridge_result->get_data();
-	$hidden_gutenberg_field = $hidden_bridge_data['fields'][0] ?? [];
-	nova_content_context_test_assert(
-		200 === $hidden_bridge_result->get_status()
-		&& 'gutenberg' === ( $hidden_gutenberg_field['builder'] ?? '' )
-		&& empty( $hidden_gutenberg_field['writable'] )
-		&& 'bridge_write_transport_unavailable' === ( $hidden_gutenberg_field['reason'] ?? '' ),
-		'A builder document on a REST-disabled CPT is inspectable but never claims a nonexistent write transport.'
-	);
+	$hidden_gutenberg_fields = array_values( array_filter( (array) ( $hidden_bridge_data['fields'] ?? [] ), static function ( $field ) { return 'gutenberg' === ( $field['builder'] ?? '' ); } ) );
+	$hidden_gutenberg_providers = array_values( array_filter( (array) ( $hidden_bridge_data['providers'] ?? [] ), static function ( $provider ) { return 'gutenberg' === ( $provider['id'] ?? '' ); } ) );
+	$hidden_gutenberg_field = $hidden_gutenberg_fields[0] ?? [];
+	$hidden_gutenberg_provider = $hidden_gutenberg_providers[0] ?? [];
+	if ( defined( 'NOVA_GUT_PLUGIN_DIR' ) ) {
+		nova_content_context_test_assert(
+			200 === $hidden_bridge_result->get_status()
+			&& 1 === count( $hidden_gutenberg_fields )
+			&& ! empty( $hidden_gutenberg_provider['available'] )
+			&& empty( $hidden_gutenberg_field['writable'] )
+			&& 'bridge_write_transport_unavailable' === ( $hidden_gutenberg_field['reason'] ?? '' )
+			&& [] === ( $hidden_gutenberg_field['methods'] ?? null ),
+			'An enabled Gutenberg inspector never advertises a native builder write route for a REST-disabled CPT.'
+		);
+	} else {
+		nova_content_context_test_assert(
+			200 === $hidden_bridge_result->get_status()
+			&& [] === $hidden_gutenberg_fields
+			&& false === ( $hidden_gutenberg_provider['available'] ?? null )
+			&& 'gutenberg_bridge_unavailable' === ( $hidden_gutenberg_provider['reason'] ?? '' ),
+			'Without its optional Gutenberg module, inspection reports the unavailable provider and invents no builder write fields.'
+		);
+	}
 
 	$admin_options_request = new WP_REST_Request( 'OPTIONS', $item_route );
 	$admin_options         = rest_do_request( $admin_options_request );
@@ -1553,8 +1503,8 @@ try {
 	$admin_options_data = $admin_options->get_data();
 	nova_content_context_test_assert( $admin_options->get_status() >= 200 && $admin_options->get_status() < 300, 'The fixture OPTIONS response is available to the administrator.' );
 	nova_content_context_test_assert(
-		isset( $admin_options_data['meta_descriptions']['/title'] ) && $title_description === $admin_options_data['meta_descriptions']['/title'],
-		'Authenticated OPTIONS includes the configured field description.'
+		! isset( $admin_options_data['meta_descriptions']['/title'] ),
+		'Authenticated OPTIONS omits generic NOVA guidance.'
 	);
 
 	wp_set_current_user( 0 );
@@ -1771,6 +1721,7 @@ try {
 } catch ( Throwable $error ) {
 	$failure = $error;
 } finally {
+	remove_filter( 'pre_option_nova_bridge_mapping_rest_guidance', $rest_guidance_override );
 	if ( $template_filter_added && is_callable( $template_filter ) ) {
 		remove_filter( $template_filter_hook, $template_filter, 10 );
 	}

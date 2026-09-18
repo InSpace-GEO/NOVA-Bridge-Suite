@@ -23,6 +23,10 @@ final class Nova_Bridge_Suite_Content_Context {
 	/** Dedicated Settings API group. */
 	public const SETTINGS_GROUP = 'nova_bridge_suite_content_context_settings';
 
+	/** Retained legacy option names; generic mapping REST guidance is disabled. */
+	public const GUIDANCE_OPTION = 'nova_bridge_mapping_rest_guidance';
+	public const GUIDANCE_SETTINGS_GROUP = 'nova_bridge_mapping_rest_guidance_settings';
+
 	/** Canonical option schema version. */
 	public const SCHEMA_VERSION = 4;
 
@@ -142,6 +146,16 @@ final class Nova_Bridge_Suite_Content_Context {
 		if ( false === get_option( self::OPTION_NAME, false ) ) {
 			add_option( self::OPTION_NAME, self::empty_config(), '', 'no' );
 		}
+	}
+
+	public static function sanitize_guidance( $value ): bool {
+		return in_array( $value, [ true, 1, '1' ], true );
+	}
+
+	public static function rest_guidance_enabled(): bool {
+		// Mappings and author instructions belong in NOVA, never page responses.
+		// The suite's own CPT modules register their separate context independently.
+		return false;
 	}
 
 	/**
@@ -874,6 +888,7 @@ final class Nova_Bridge_Suite_Content_Context {
 	 * registered by themes and other plugins are included.
 	 */
 	public static function register_post_type_prepare_filters(): void {
+		if ( ! self::rest_guidance_enabled() ) { return; }
 		$post_types = get_post_types( [], 'names' );
 		if ( ! is_array( $post_types ) ) {
 			return;
@@ -925,7 +940,7 @@ final class Nova_Bridge_Suite_Content_Context {
 		);
 
 		$config = self::get_option();
-		if ( empty( $config['resources'] ) ) {
+		if ( ! self::rest_guidance_enabled() || empty( $config['resources'] ) ) {
 			return;
 		}
 
@@ -1155,6 +1170,7 @@ final class Nova_Bridge_Suite_Content_Context {
 	 * @return mixed
 	 */
 	public static function filter_post_type_response( $response, $post, $request ) {
+		if ( ! self::rest_guidance_enabled() ) { return $response; }
 		if ( ! $response instanceof WP_REST_Response || ! $post instanceof WP_Post ) {
 			return $response;
 		}
@@ -1194,6 +1210,7 @@ final class Nova_Bridge_Suite_Content_Context {
 
 	/** Adds private product-category guidance to native and Woo REST responses. */
 	public static function filter_product_category_response( $response, $term, $request ) {
+		if ( ! self::rest_guidance_enabled() ) { return $response; }
 		if ( ! $response instanceof WP_REST_Response ) {
 			return $response;
 		}
@@ -4931,6 +4948,7 @@ final class Nova_Bridge_Suite_Content_Context {
 	 * @return mixed
 	 */
 	public static function filter_rest_post_dispatch( $result, $server, $request ) {
+		if ( ! self::rest_guidance_enabled() ) { return $result; }
 		if (
 			! $result instanceof WP_REST_Response ||
 			! $server instanceof WP_REST_Server ||

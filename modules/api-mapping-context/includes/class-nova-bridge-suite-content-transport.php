@@ -469,7 +469,7 @@ class Nova_Bridge_Suite_Content_Controller extends WP_REST_Posts_Controller {
 		unset( $data['meta'], $data['acf'], $data['password'] );
 		$data['meta_all'] = (object) Nova_Bridge_Suite_Content_Transport::read_fields( $item );
 		$data['nova_transport'] = [ 'id' => 'nova_content_bridge', 'route' => '/' . $this->namespace . '/' . $this->rest_base . '/' . $item->ID, 'methods' => [ 'POST', 'PUT', 'PATCH' ], 'native_show_in_rest' => (bool) get_post_type_object( $this->post_type )->show_in_rest ];
-		if ( class_exists( 'Nova_Bridge_Suite_Content_Context' ) ) {
+		if ( class_exists( 'Nova_Bridge_Suite_Content_Context' ) && Nova_Bridge_Suite_Content_Context::rest_guidance_enabled() ) {
 			$data['meta_descriptions'] = Nova_Bridge_Suite_Content_Context::get_generic_meta_descriptions( $this->post_type, [ 'id' => $item->ID ], $request );
 			$data['nova_content_mappings'] = Nova_Bridge_Suite_Content_Context::get_generic_content_mappings( 'post_type', $this->post_type, [ 'id' => $item->ID ], $request );
 			$data['nova_template_contexts'] = Nova_Bridge_Suite_Content_Context::get_generic_template_contexts( $this->post_type, [ 'id' => $item->ID ], $request );

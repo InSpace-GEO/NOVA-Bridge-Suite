@@ -719,11 +719,11 @@ final class Nova_Bridge_Suite_Strategy {
 		if ( empty( $object->show_in_rest ) || ! function_exists( 'acf_get_field' ) || ! is_callable( 'cf_tmrb_update_post_meta_all_payload' ) || ( $wp_rest_additional_fields[ $entity['post_type'] ]['meta_all']['update_callback'] ?? null ) !== 'cf_tmrb_update_post_meta_all_payload' ) { return; }
 		$route = '/' . trim( ( $object->rest_namespace ?? '' ) ?: 'wp/v2', '/' ) . '/' . trim( ( $object->rest_base ?? '' ) ?: $entity['post_type'], '/' );
 		$id = $entity['reference_id']; $meta = get_post_meta( $id );
-		$covered = array_column( array_filter( $fields, static function ( $f ) { return 'nova_content_bridge' === ( $f['transport'] ?? '' ); } ), 'acf_key' );
 		foreach ( $meta as $name => $values ) {
 			if ( ! Nova_Bridge_Suite_Content_Transport::safe_key( $name ) || ! preg_match( '/^[a-zA-Z][a-zA-Z0-9_]*$/', $name ) || count( $values ) !== 1 || ! current_user_can( 'edit_post_meta', $id, $name ) ) { continue; }
 			$key = get_post_meta( $id, '_' . $name, true );
-			if ( in_array( $key, $covered, true ) ) { continue; }
+			// Keep exact existing scalar storage available even when the bridge also exposes
+			// a complete-parent path. Contracted writers may safely replace only this row.
 			$field = is_string( $key ) && 0 === strpos( $key, 'field_' ) ? acf_get_field( $key ) : false;
 			if ( ! is_array( $field ) || ! empty( $field['readonly'] ) || ! empty( $field['disabled'] ) || ! in_array( $field['type'] ?? '', [ 'text', 'textarea', 'wysiwyg', 'url', 'email' ], true ) ) { continue; }
 			$value = get_post_meta( $id, $name, true ); if ( ! is_string( $value ) ) { continue; }
@@ -945,6 +945,7 @@ final class Nova_Bridge_Suite_Strategy {
 	}
 
 	public static function register_prepare_filters(): void {
+		if ( ! class_exists( 'Nova_Bridge_Suite_Content_Context' ) || ! Nova_Bridge_Suite_Content_Context::rest_guidance_enabled() ) { return; }
 		foreach ( get_post_types( [], 'names' ) as $post_type ) {
 			if ( isset( self::$prepared[ $post_type ] ) ) { continue; }
 			add_filter( 'rest_prepare_' . $post_type, [ __CLASS__, 'prepare_post' ], 11000, 3 );
@@ -969,6 +970,7 @@ final class Nova_Bridge_Suite_Strategy {
 
 	/** Also used by the opt-in bridge writer's authenticated response. */
 	public static function decorate_record( array $data, string $type, int $id ): array {
+		if ( ! class_exists( 'Nova_Bridge_Suite_Content_Context' ) || ! Nova_Bridge_Suite_Content_Context::rest_guidance_enabled() ) { return $data; }
 		$entity = self::entity( $type, $id );
 		if ( ! $entity ) { return $data; }
 		$option = self::get_option();

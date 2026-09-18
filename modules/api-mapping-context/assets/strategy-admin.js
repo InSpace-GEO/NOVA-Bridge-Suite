@@ -2,7 +2,7 @@
 
 	'use strict';
 
-	var root, config, scopeChosen = false, controlId = 0, state = { hideConsent: true, importOpen: false, data: null, selected: '', dirty: false, busy: false, filter: 'all', scope: 'all', epoch: 0, layout: null, activeField: '', frame: null, statuses: {}, frameReady: false };
+	var root, config, scopeChosen = false, controlId = 0, state = { hideConsent: true, importOpen: false, data: null, selected: '', dirty: false, busy: false, filter: 'all', scope: 'all', workflow: 'nova', draftEditor: null, epoch: 0, layout: null, activeField: '', frame: null, statuses: {}, frameReady: false };
 
 	var sources = [ [ '', 'Guidance only / no direct source' ], [ 'leave_empty', 'Leave empty (do not send)' ], [ 'h1', 'Visible heading (H1)', 'Content' ], [ 'content', 'Full content', 'Content' ], [ 'top_content', 'Intro', 'Content' ], [ 'bottom_content', 'Main content', 'Content' ], [ 'title', 'SEO title', 'SEO metadata' ], [ 'meta_description', 'Meta description', 'SEO metadata' ], [ 'primary_keyword', 'Primary keyword', 'SEO metadata' ], [ 'secondary_keywords', 'Secondary keywords', 'SEO metadata' ], [ 'featured_media', 'Uploaded WordPress image ID', 'Image data' ], [ 'image_url', 'Primary image URL', 'Image data' ], [ 'image_urls', 'All image URLs', 'Image data' ], [ 'image_alt', 'Image alternative text', 'Image data' ] ];
 
@@ -88,17 +88,22 @@
 
 	}
 
-	function statusText( entry ) { return entry.unresolved ? 'Choose reference' : { mapped: 'Mapping saved', native: 'Native fields', unmapped: 'Needs mapping' }[ entry.layout.mapping_status ]; }
+	function statusText( entry ) { return entry.unresolved ? 'Choose reference' : state.workflow === 'nova' ? 'Reference available' : { mapped: 'Mapping saved', native: 'Native fields', unmapped: 'Needs mapping' }[ entry.layout.mapping_status ]; }
+
+	function disposeDraftEditor() { if ( state.draftEditor ) { state.draftEditor.destroy(); state.draftEditor = null; } }
 
 	function render() {
 
-		++state.epoch; state.frame = null; state.layout = null; root.replaceChildren();
+		disposeDraftEditor(); ++state.epoch; state.frame = null; state.layout = null; root.replaceChildren();
 
-		var header = el( 'header', 'ns-header' ), text = el( 'div' ); text.appendChild( el( 'div', 'ns-eyebrow', 'NOVA / MAPPING' ) ); text.appendChild( el( 'h1', '', 'Map your site layouts' ) ); text.appendChild( el( 'p', '', 'Map each unique layout once. Select a field on the page or in the inspector.' ) ); header.appendChild( text );
+		var header = el( 'header', 'ns-header' ), text = el( 'div' ); text.appendChild( el( 'div', 'ns-eyebrow', 'NOVA / MAPPING' ) ); text.appendChild( el( 'h1', '', 'Map your site layouts' ) ); text.appendChild( el( 'p', '', 'Choose a reference and map its fields. Select content on the page or in the inspector.' ) ); header.appendChild( text );
 
 		header.appendChild( button( 'Refresh inventory', 'button', function () { if ( canLeave() ) { refresh().catch( function ( e ) { notice( e.message, true ); } ); } } ) ); root.appendChild( header );
 
 		var scopeBar = el( 'div', 'ns-scope' );
+
+		var workflow = control( scopeBar, 'Workflow', select( [ [ 'nova', 'NOVA mappings' ], [ 'legacy', 'Saved legacy profiles' ] ], state.workflow ) );
+		workflow.addEventListener( 'change', function () { if ( ! canLeave() ) { workflow.value = state.workflow; return; } state.workflow = workflow.value; state.filter = 'all'; state.dirty = false; render(); } );
 
 		var scope = control( scopeBar, 'Mapping scope', select( [ [ 'all', 'All site layouts' ], [ 'strategy', 'Imported strategy' ] ], state.scope ) );
 
@@ -118,7 +123,7 @@
 
 		var workspace = el( 'div', 'ns-workspace' ), nav = el( 'aside', 'ns-sidebar' ), navhead = el( 'div', 'ns-sidebar-head' ); navhead.appendChild( el( 'h2', '', 'Layouts' ) );
 
-		var filter = select( [ [ 'all', 'All layouts' ], [ 'pending', 'Needs mapping' ], [ 'mapped', 'Mapping saved / native' ] ], state.filter ); filter.setAttribute( 'aria-label', 'Filter layouts' );
+		var filter = select( state.workflow === 'nova' ? [ [ 'all', 'All layouts' ] ] : [ [ 'all', 'All layouts' ], [ 'pending', 'Needs mapping' ], [ 'mapped', 'Mapping saved / native' ] ], state.filter ); filter.setAttribute( 'aria-label', 'Filter layouts' );
 
 		filter.addEventListener( 'change', function () { if ( ! canLeave() ) { filter.value = state.filter; return; } state.filter = filter.value; state.dirty = false; render(); } ); navhead.appendChild( filter );
 
@@ -179,6 +184,7 @@
 	}
 
 	async function loadLayout( entry, editor, reference ) {
+		disposeDraftEditor();
 
 		var epoch = ++state.epoch, ref = reference || entry.layout; state.frame = null; state.frameReady = false; state.statuses = {}; state.activeField = ''; editor.replaceChildren( el( 'p', '', 'Loading reference fields…' ) );
 
@@ -200,7 +206,8 @@
 
 		examples.addEventListener( 'change', function () { if ( ! canLeave() ) { examples.value = layout.reference_type + ':' + layout.reference_id; return; } state.dirty = false; var ref = entry.layout.members.find( function ( m ) { return m.reference_type + ':' + m.reference_id === examples.value; } ); loadLayout( entry, parent, ref ); } ); parent.appendChild( top );
 
-		var affected = el( 'details', 'ns-details' ); affected.appendChild( el( 'summary', '', 'Used by ' + entry.layout.members.length + ' site items · ' + entry.rows.length + ' strategy URLs' ) );
+		var affected = el( 'details', 'ns-details' ); affected.appendChild( el( 'summary', '', ( state.workflow === 'nova' ? 'Similar layout on ' : 'Used by ' ) + entry.layout.members.length + ' site items · ' + entry.rows.length + ' strategy URLs' ) );
+		if ( state.workflow === 'nova' ) { affected.appendChild( el( 'p', 'ns-help', 'This draft targets the selected reference. Other pages need their own verified field bindings.' ) ); }
 
 		entry.layout.members.forEach( function ( m ) { affected.appendChild( el( 'p', 'ns-help', m.path || m.title + ' (draft/private reference)' ) ); } ); parent.appendChild( affected );
 		var replaceable = entry.rows.filter( function ( r ) { return ! r.post_id && ! r.term_id; } );
@@ -221,11 +228,14 @@
 			parent.appendChild( warning );
 		} );
 
-		if ( layout.unbound_fields ) { parent.appendChild( el( 'p', 'ns-notice ns-error', layout.unbound_fields + ' saved fields cannot be rebound to this reference. Choose the original mapped reference before saving; existing mappings are preserved.' ) ); }
+		if ( state.workflow === 'legacy' && layout.unbound_fields ) { parent.appendChild( el( 'p', 'ns-notice ns-error', layout.unbound_fields + ' saved fields cannot be rebound to this reference. Choose the original mapped reference before saving; existing mappings are preserved.' ) ); }
 
-		var label = control( parent, 'Layout name', input( 'text', saved.label || layout.title ), 'A name that describes where NOVA should put content.' );
+		var label, guidance;
+		if ( state.workflow === 'legacy' ) {
+			label = control( parent, 'Layout name', input( 'text', saved.label || layout.title ), 'A name that describes where NOVA should put content.' );
 
-		var guidance = control( parent, 'Layout instructions', textarea( saved.guidance || '', 3 ) ); label.addEventListener( 'input', markDirty ); guidance.addEventListener( 'input', markDirty );
+			guidance = control( parent, 'Layout instructions', textarea( saved.guidance || '', 3 ) ); label.addEventListener( 'input', markDirty ); guidance.addEventListener( 'input', markDirty );
+		}
 
 		var visual = el( 'div', 'ns-visual-workspace' ), page = el( 'section', 'ns-page-panel' ), inspector = el( 'section', 'ns-inspector' );
 
@@ -258,6 +268,20 @@
 			frame.addEventListener( 'load', function () { if ( state.frame === frame && ! state.frameReady ) { previewStatus.textContent = 'Waiting for preview controls. Use Refresh preview if this page shows an error. Your mappings remain available in the inspector.'; } } );
 
 		} else { previewStatus.textContent = 'No rendered preview is available. Use the field inspector.'; }
+
+		if ( state.workflow === 'nova' ) {
+			inspector.appendChild( el( 'div', 'ns-region-choices' ) );
+			var draftPanel = el( 'div' ); inspector.appendChild( draftPanel );
+			visual.appendChild( page ); visual.appendChild( inspector ); parent.appendChild( visual );
+			if ( ! window.NovaMappingDrafts ) { draftPanel.appendChild( el( 'p', 'ns-notice ns-error', 'The mapping editor could not load. Reload this page to try again.' ) ); return; }
+			var draftEpoch = state.epoch;
+			state.draftEditor = window.NovaMappingDrafts.mount( draftPanel, layout, config, {
+				onDirty: function () { if ( state.epoch === draftEpoch && state.workflow === 'nova' ) { markDirty(); } },
+				onSaved: function () { if ( state.epoch === draftEpoch && state.workflow === 'nova' ) { state.dirty = false; } },
+				onSelectField: function ( path ) { if ( state.epoch === draftEpoch && state.workflow === 'nova' ) { selectField( path, true ); } }
+			} );
+			return;
+		}
 
 		inspector.appendChild( el( 'h3', '', 'Field inspector' ) ); var fieldSearch = input( 'search' ); fieldSearch.placeholder = 'Find a field…'; fieldSearch.setAttribute( 'aria-label', 'Find a field' ); inspector.appendChild( fieldSearch ); inspector.appendChild( el( 'p', 'ns-help', 'Full content includes intro and main content. Choose either part to map it separately. Leave empty omits this field; existing site content is not cleared.' ) );
 
@@ -319,6 +343,7 @@
 	function selectField( path, fromInspector ) {
 
 		state.activeField = path;
+		if ( state.draftEditor && ! fromInspector ) { state.draftEditor.selectField( path ); }
 
 		root.querySelectorAll( '.ns-field' ).forEach( function ( row ) { var match = row.dataset.path === path; row.classList.toggle( 'is-selected', match ); row.querySelector( '.ns-field-select' ).setAttribute( 'aria-pressed', String( match ) ); if ( match && ! fromInspector ) { row.hidden = false; row.scrollIntoView( { behavior: 'smooth', block: 'nearest' } ); } } );
 

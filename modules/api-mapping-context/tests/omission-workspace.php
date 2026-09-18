@@ -5,7 +5,10 @@ $original_user = get_current_user_id(); $captured = null;
 $capture = static function($value, $old) use (&$captured) { $captured = $value; return $old; };
 $read = static function($value) use (&$captured) { return $captured ?? $value; };
 $assert = static function($ok, $message) { if (!$ok) { throw new RuntimeException($message); } };
+$rest_guidance_override = static function() { return true; };
 try {
+ // A stale opt-in value must not restore generic REST response decoration.
+ add_filter('pre_option_'.Nova_Bridge_Suite_Content_Context::GUIDANCE_OPTION,$rest_guidance_override);
  $admins=get_users(['role'=>'administrator','number'=>1,'fields'=>'ID']); wp_set_current_user((int)$admins[0]); rest_get_server();
  $original=Nova_Bridge_Suite_Strategy::get_option(); $profile=reset($original['profiles']);
  $assert($profile && $profile['reference_type']==='post','Requires an existing post layout profile.');
@@ -19,9 +22,10 @@ try {
  $assert(!is_wp_error($contract) && in_array('/excerpt',$contract['nova_omit_fields'],true),'Strategy contract exports omission.');
  $assert(!in_array('/excerpt',array_column($contract['field_contracts'],'path'),true),'Omitted field is excluded from write contracts.');
  $decorated=Nova_Bridge_Suite_Strategy::decorate_record(['nova_content_mappings'=>['/excerpt'=>'content']],'post',$profile['reference_id']);
- $assert($decorated['nova_content_mappings']['/excerpt']==='leave_empty' && in_array('/excerpt',$decorated['nova_omit_fields'],true),'Profile omission overrides endpoint defaults.');
- $assert(strpos($decorated['meta_descriptions']['/excerpt'],'Omit the key entirely')!==false,'Omission overrides conflicting guidance.');
+ $assert($decorated===['nova_content_mappings'=>['/excerpt'=>'content']],'Disabled generic decoration preserves the original response.');
+ $assert(!isset($decorated['nova_omit_fields']) && !isset($decorated['meta_descriptions']),'Generic REST decoration adds no omission or guidance fields.');
  WP_CLI::success('PASS 6 omission save and publishing-context checks (no site mutations).');
 } finally {
+ remove_filter('pre_option_nova_bridge_mapping_rest_guidance',$rest_guidance_override);
  remove_filter('pre_update_option_'.Nova_Bridge_Suite_Strategy::OPTION_NAME,$capture,999); remove_filter('option_'.Nova_Bridge_Suite_Strategy::OPTION_NAME,$read,999); wp_set_current_user($original_user);
 }
