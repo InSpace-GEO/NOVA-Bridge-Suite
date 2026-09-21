@@ -7781,6 +7781,23 @@ final class Plugin {
 	 * Registers the Body Clean settings page in the CPT menu.
 	 */
 	public function register_settings_page(): void {
+		global $pagenow;
+
+		// admin_init is too late: WordPress checks menu access before that hook.
+		if ( 'edit.php' === $pagenow
+			&& 'GET' === ( $_SERVER['REQUEST_METHOD'] ?? '' )
+			&& isset( $_GET['page'] ) && is_string( $_GET['page'] )
+			&& 'quarantined-cpt-bodyclean' === wp_unslash( $_GET['page'] )
+			&& current_user_can( 'manage_options' )
+		) {
+			$url = admin_url( 'options-general.php?page=quarantined-cpt-bodyclean' );
+			if ( isset( $_GET['lang'] ) && is_string( $_GET['lang'] ) ) {
+				$url = add_query_arg( 'lang', sanitize_key( wp_unslash( $_GET['lang'] ) ), $url );
+			}
+			wp_safe_redirect( $url );
+			exit;
+		}
+
 		$definition  = $this->get_primary_cpt_definition();
 		$settings_parent = 'options-general.php';
 
@@ -7794,7 +7811,7 @@ final class Plugin {
 			[ $this, 'render_settings_page' ]
 		);
 
-		// Also surface inside the CPT menu when a CPT is active.
+		// Link to the same settings screen instead of registering a second parent.
 		if ( $this->cpt_registration_enabled() && $definition && ! empty( $definition['type'] ) ) {
 			$parent_slug = 'edit.php?post_type=' . sanitize_key( (string) $definition['type'] );
 
@@ -7803,8 +7820,7 @@ final class Plugin {
 				__( 'NOVA Blog Settings', 'nova-bridge-suite' ),
 				__( 'NOVA Blog Settings', 'nova-bridge-suite' ),
 				'manage_options',
-				'quarantined-cpt-bodyclean',
-				[ $this, 'render_settings_page' ]
+				'options-general.php?page=quarantined-cpt-bodyclean'
 			);
 		}
 	}
