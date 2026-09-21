@@ -4,7 +4,7 @@
 - Requires at least: 6.0
 - Tested up to: 7.0
 - Requires PHP: 7.4
-- Stable tag: 2.8.8
+- Stable tag: 2.8.9
 - License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -23,6 +23,8 @@ Use it to automatically:
 And much more.
 
 Modules are optional and can be toggled from `Settings -> NOVA Settings`. The core bridge and post resolver are always on; other modules only run when enabled and when the related plugin is active.
+
+Enabled NOVA Blog and Service Page CPT modules load on every request, including REST and admin requests, so their registrations and rewrite rules remain available when WordPress rebuilds permalinks.
 
 ## Installation
 
