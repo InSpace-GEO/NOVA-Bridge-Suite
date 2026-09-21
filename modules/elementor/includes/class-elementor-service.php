@@ -74,6 +74,7 @@ class Elementor_Service {
 
 		$payload['fields']      = $include_fields ? $this->extract_fields_from_document( $data ) : array();
 		$payload['element_map'] = $include_element_map ? $this->summarize_elements( $data ) : array();
+		$payload['capabilities'] = array( 'remove_elements', 'remove_accordion_items' );
 
 		if ( $include_document ) {
 			$payload['document']        = $data;
@@ -186,6 +187,10 @@ class Elementor_Service {
 				$append_html   = isset( $payload['append_html'] ) ? (string) $payload['append_html'] : '';
 				$append_faqs   = isset( $payload['append_faqs'] ) && is_array( $payload['append_faqs'] ) ? $payload['append_faqs'] : array();
 				$elementor_data = $this->append_html_block( $elementor_data, $append_html, $append_faqs );
+				$elementor_data = $this->apply_removals( $elementor_data, $payload );
+				if ( is_wp_error( $elementor_data ) ) {
+					return $elementor_data;
+				}
 
 				$persist = $this->persist_elementor_document(
 					$post_id,
@@ -345,6 +350,10 @@ class Elementor_Service {
 			$append_html = isset( $payload['append_html'] ) ? (string) $payload['append_html'] : '';
 			$append_faqs = isset( $payload['append_faqs'] ) && is_array( $payload['append_faqs'] ) ? $payload['append_faqs'] : array();
 			$mutated     = $this->append_html_block( $mutated, $append_html, $append_faqs );
+			$mutated = $this->apply_removals( $mutated, $payload );
+			if ( is_wp_error( $mutated ) ) {
+				return $mutated;
+			}
 
 			$persist = $this->persist_elementor_document(
 				$post_id,
@@ -432,6 +441,103 @@ class Elementor_Service {
 		}
 
 		return $document;
+	}
+
+	/**
+	 * Explicit removals use IDs and zero-based indices from the same GET as fields.
+	 * Work on a copy; reject unknown/ambiguous targets before persisting a document.
+	 */
+	private function apply_removals( array $document, array $payload ) {
+		$remove = isset( $payload['remove_elements'] ) ? $payload['remove_elements'] : array();
+		$items  = isset( $payload['remove_accordion_items'] ) ? $payload['remove_accordion_items'] : array();
+		if ( empty( $remove ) && empty( $items ) ) {
+			return $document;
+		}
+		$error = static function ( $message ) {
+			return new WP_Error( 'seor_eb_invalid_removal', $message, array( 'status' => 400 ) );
+		};
+		if ( ! is_array( $remove ) || ! is_array( $items ) ) {
+			return $error( 'Removal operations must be arrays.' );
+		}
+		$elements = array();
+		$item_roots = array();
+		$index = function ( array $nodes ) use ( &$index, &$elements, &$item_roots ) {
+			foreach ( $nodes as $node ) {
+				if ( ! is_array( $node ) ) { continue; }
+				if ( isset( $node['id'] ) ) { $elements[ $node['id'] ][] = $node; }
+				if ( ! empty( $node['elements'] ) && is_array( $node['elements'] ) ) {
+					if ( isset( $node['widgetType'] ) && 'nested-accordion' === $node['widgetType'] ) {
+						foreach ( $node['elements'] as $child ) {
+							if ( isset( $child['id'] ) ) { $item_roots[ $child['id'] ] = true; }
+						}
+					}
+					$index( $node['elements'] );
+				}
+			}
+		};
+		$index( $document );
+		$remove_ids = array();
+		foreach ( $remove as $id ) {
+			if ( ! is_string( $id ) || ! isset( $elements[ $id ] ) || 1 !== count( $elements[ $id ] ) ) {
+				return $error( 'Every removed element must identify one existing element.' );
+			}
+			if ( isset( $item_roots[ $id ] ) ) {
+				return $error( 'Use remove_accordion_items to remove a nested answer container and its question together.' );
+			}
+			$remove_ids[ $id ] = true;
+		}
+		$operations = array();
+		foreach ( $items as $operation ) {
+			$id = isset( $operation['element_id'] ) ? $operation['element_id'] : null;
+			if ( ! is_string( $id ) || ! isset( $elements[ $id ] ) || 1 !== count( $elements[ $id ] ) || isset( $operations[ $id ] ) || isset( $remove_ids[ $id ] ) ) {
+				return $error( 'Each accordion removal must identify one existing, distinct accordion.' );
+			}
+			$node = $elements[ $id ][0];
+			$type = isset( $node['widgetType'] ) ? $node['widgetType'] : '';
+			if ( ! in_array( $type, array( 'nested-accordion', 'accordion', 'toggle' ), true ) ) {
+				return $error( 'Item removal supports native nested-accordion, accordion and toggle widgets.' );
+			}
+			$key = 'nested-accordion' === $type ? 'items' : 'tabs';
+			$rows = isset( $node['settings'][ $key ] ) ? $node['settings'][ $key ] : null;
+			$indices = isset( $operation['indices'] ) ? $operation['indices'] : null;
+			if ( ! is_array( $rows ) || ! is_array( $indices ) ) {
+				return $error( 'Accordion rows and removal indices must be arrays.' );
+			}
+			if ( 'nested-accordion' === $type && ( ! isset( $node['elements'] ) || count( $node['elements'] ) !== count( $rows ) ) ) {
+				return $error( 'Nested accordion questions and answer containers do not match.' );
+			}
+			$selected = array();
+			foreach ( $indices as $i ) {
+				if ( ! is_int( $i ) || $i < 0 || ! array_key_exists( $i, $rows ) ) {
+					return $error( 'An accordion removal index is invalid or out of range; fetch the current document.' );
+				}
+				$selected[ $i ] = true;
+			}
+			if ( ! empty( $selected ) && count( $selected ) === count( $rows ) ) {
+				return $error( 'To remove every item, remove the accordion widget with remove_elements.' );
+			}
+			$operations[ $id ] = array( 'key' => $key, 'indices' => $selected, 'nested' => 'nested-accordion' === $type );
+		}
+		$prune = function ( array $nodes ) use ( &$prune, $remove_ids, $operations ) {
+			$result = array();
+			foreach ( $nodes as $node ) {
+				$id = isset( $node['id'] ) ? $node['id'] : '';
+				if ( isset( $remove_ids[ $id ] ) ) { continue; }
+				if ( isset( $operations[ $id ] ) ) {
+					$op = $operations[ $id ];
+					foreach ( $op['indices'] as $i => $unused ) {
+						unset( $node['settings'][ $op['key'] ][ $i ] );
+						if ( $op['nested'] ) { unset( $node['elements'][ $i ] ); }
+					}
+					$node['settings'][ $op['key'] ] = array_values( $node['settings'][ $op['key'] ] );
+					if ( $op['nested'] ) { $node['elements'] = array_values( $node['elements'] ); }
+				}
+				if ( ! empty( $node['elements'] ) && is_array( $node['elements'] ) ) { $node['elements'] = $prune( $node['elements'] ); }
+				$result[] = $node;
+			}
+			return $result;
+		};
+		return $prune( $document );
 	}
 
 	/**
@@ -945,6 +1051,9 @@ class Elementor_Service {
 	 * @return bool
 	 */
 	private function payload_requires_document_mutation( array $payload ) {
+		if ( ! empty( $payload['remove_elements'] ) || ! empty( $payload['remove_accordion_items'] ) ) {
+			return true;
+		}
 		$fields = isset( $payload['fields'] ) && is_array( $payload['fields'] ) ? $payload['fields'] : array();
 		if ( ! empty( $fields ) ) {
 			return true;

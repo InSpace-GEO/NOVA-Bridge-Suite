@@ -847,6 +847,23 @@ class Rest_Controller extends WP_REST_Controller {
 					'required'   => array( 'value' ),
 				),
 			),
+			'remove_elements' => array(
+				'type' => 'array',
+				'description' => __( 'Explicit element IDs to remove with all descendants after field updates. Omitted elements are preserved.', 'nova-bridge-suite' ),
+				'items' => array( 'type' => 'string', 'minLength' => 1 ),
+			),
+			'remove_accordion_items' => array(
+				'type' => 'array',
+				'description' => __( 'Remove native accordion/toggle rows by zero-based indices from the same GET used for fields. Nested answers are removed with their questions. To remove all items, use remove_elements.', 'nova-bridge-suite' ),
+				'items' => array(
+					'type' => 'object',
+					'required' => array( 'element_id', 'indices' ),
+					'properties' => array(
+						'element_id' => array( 'type' => 'string', 'minLength' => 1 ),
+						'indices' => array( 'type' => 'array', 'items' => array( 'type' => 'integer', 'minimum' => 0 ) ),
+					),
+				),
+			),
 			'publish_elementor' => array(
 				'type'        => 'boolean',
 				'description' => __( 'Force Elementor to publish refreshed content after applying changes.', 'nova-bridge-suite' ),
