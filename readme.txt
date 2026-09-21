@@ -4,7 +4,7 @@ Tags: seo, automation, content, rest-api, page builder
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.8.9
+Stable tag: 2.8.10
 License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -41,6 +41,10 @@ Yes. If WooCommerce is active you can enable the rich text field module for cate
 1. NOVA Settings screen with module toggles.
 
 == Changelog ==
+
+= 2.8.10 =
+* Route the Blog CPT settings menu through the canonical WordPress Settings page.
+* Redirect legacy CPT settings links before WordPress checks menu access, preserving language selection and administrator permissions.
 
 = 2.8.9 =
 * Register enabled NOVA Blog and Service Page CPTs on every request, including selective REST and admin requests.
