@@ -19,13 +19,44 @@ verbatim, consuming **no Weglot word quota** and making no Weglot API calls.
 
 ## Endpoints
 
-- `POST /wp-json/weglot-translations/v1/posts`
-- `GET /wp-json/weglot-translations/v1/posts/{id}/translations`
-- `DELETE /wp-json/weglot-translations/v1/posts/{id}/translations/{language}`
-- `GET /wp-json/weglot-translations/v1/languages`
-- `POST /wp-json/weglot-translations/v1/terms` → always `501` (see Limitations)
+All under `/wp-json/weglot-translations/v1`. `{language}` matches `[A-Za-z0-9_-]+`.
 
-Auth: any authenticated user who can edit the related post.
+| Route | Methods | Required in the body/query | Capability |
+|---|---|---|---|
+| `/posts` | `POST` | `source_post_id`, `translations[]` | `edit_post` on `source_post_id` |
+| `/posts/{id}/translations` | `GET` | — | `edit_post` on `{id}` |
+| `/posts/{id}/translations/{language}` | `DELETE` | — | `edit_post` on `{id}` |
+| `/languages` | `GET` | — | `edit_posts` |
+| `/terms` | `POST` | `source_term_id`, `taxonomy`, `translations[]` | `edit_term` on `source_term_id` |
+| `/terms/{id}/translations` | `GET` | `taxonomy` | `edit_term` on `{id}` |
+| `/terms/{id}/translations/{language}` | `DELETE` | `taxonomy` | `edit_term` on `{id}` |
+
+Every `translations[]` item requires `language`; nothing else inside an item is.
+
+**`GET /terms` does not exist.** That route registers `POST` only, so the old stub —
+which advertised `GET /terms` and answered `501` with an explanation — is gone, and
+the URL now returns `rest_no_route` (`404`) with none. List a term's locales with
+`GET /terms/{id}/translations`.
+
+`taxonomy` is required on **all three** term routes, including `DELETE`, where it
+scopes the permission check and the term lookup rather than the deletion itself.
+Omitting it is a **`403`, not a `400`**: `permissions_check()` runs before argument
+validation and refuses any `/terms` request that carries no `taxonomy`. A
+`POST /terms` missing `source_term_id` does reach argument validation, and comes back
+as `400 rest_missing_callback_param`.
+
+The two POSTs enforce their required keys in different places. `POST /posts`
+validates `source_post_id` and `translations` inside the callback and answers
+`wgtai_missing_source` / `wgtai_missing_translations` (`400`). `POST /terms` declares
+all three of its top-level arguments `required` in the route registration instead, so
+WordPress rejects a missing `source_term_id` as `rest_missing_callback_param` before
+the callback runs.
+
+Auth: an authenticated user who can edit the post, or the term, that the request
+names. The term branch is evaluated first on purpose, so a `/terms` request can never
+be granted merely because its numeric id also happens to be an editable post. A
+`POST /terms` with no `source_term_id` falls back to the taxonomy's `edit_terms`
+capability.
 
 ## Post Translations Request
 
@@ -169,6 +200,76 @@ arrives as `post_content` and is already covered by the `.nova-weglot-i18n` wrap
 The tree walker expects Elementor's `{id, settings, elements}` shape; a builder that
 nests differently needs its own walker rather than just a template.
 
+## Taxonomy terms
+
+`POST /terms` stores a per-locale payload on the source **term**, in `wp_termmeta`,
+under the same `_nova_weglot_i18n_<lang>` key convention posts use in `wp_postmeta` —
+the two tables are what keep a shared numeric id from colliding, not a second key
+prefix. The request mirrors the Polylang and WPML term bridges, so a term flow only
+swaps the namespace:
+
+```json
+{
+  "source_term_id": 42,
+  "taxonomy": "product_cat",
+  "translations": [
+    {
+      "language": "fr",
+      "name": "Chauffage au sol",
+      "description": "<p>Description traduite</p>",
+      "slug": "chauffage-au-sol",
+      "meta": { "content_below_products": "<p>Texte sous les produits</p>" }
+    }
+  ]
+}
+```
+
+`trid` is accepted and ignored — it exists only so a WPML/Polylang flow does not have
+to strip it. `200` when every locale stored, `207` when some did not; a per-locale
+failure comes back in `errors[]`, never as a whole-request error. Merge semantics are
+the post ones: omitted keeps, `null` clears, `meta` merges per key.
+
+Each `results[]` entry carries `source_term_id`, `language`, `stored`, `created`,
+`fields[]`, `ignored_fields[]` and `url`. **`url` is the real taxonomy archive URL for
+that term and language, never the requested slug** — that is the value to write to
+`public.url`.
+
+Term-specific rules:
+
+- **`parent_id` is accepted, named in `results[].ignored_fields`, and never applied.**
+  Weglot serves one archive per term per locale and has no per-locale hierarchy to
+  re-parent into.
+- **`slug` is recorded as `requested_slug` and never routed**, exactly like the post
+  slug, and is deliberately kept out of `fields[]` so a response cannot imply the
+  locale controls its own URL.
+- **A page-builder meta key is refused on a term, not sanitised.** Keys listed by
+  `nova_weglot_structured_meta_keys` (default `_elementor_data`) fail that locale with
+  `wgtai_structured_meta_not_supported` in `errors[]` (so the request is a `207`,
+  and every other locale in it still stores), because no builder
+  document renders on a taxonomy archive: storing it as display HTML would buy
+  `wp_kses_post` corruption of the JSON with none of the notranslate protection.
+- **A term id belonging to another taxonomy is a `404`** (`wgtai_taxonomy_mismatch`),
+  not a `400`. Writing — or reading — a payload onto the wrong entity is the failure
+  being prevented, and the controller checks it, not storage: `term_id` is globally
+  unique, so no storage code branches on taxonomy.
+
+### Terms are stored and read back, but not served
+
+There is **no term render path in this module.** `WGTAI_Render_Service` hooks
+`the_content`, `the_title`, `single_post_title`, `document_title_parts`,
+`get_the_excerpt`, `get_post_metadata`, `weglot_exclude_blocks` and the Yoast head
+filters — and nothing on `term_description`, `single_term_title`, `get_term_metadata`
+or WooCommerce's archive-description filters. A stored term payload is therefore
+visible over REST and invisible to a visitor: the archive keeps its source-language
+name and description, which Weglot machine-translates exactly as before.
+
+The response does not say so either. `notes[]` adds only the `url`-vs-slug and
+`parent_id` lines for a term, while the first line it shares with `/posts` still reads
+"stored on the source post **and served** on Weglot-translated requests" — written for
+posts, and not true of a term today. So a flow must not read `POST /terms` → `200` as
+"the archive now shows NOVA's copy". The route is a write to storage: useful for
+`results[].url`, and for the payload a later render stage will serve.
+
 ## Limitations
 
 These are Weglot's, not the bridge's:
@@ -177,9 +278,10 @@ These are Weglot's, not the bridge's:
   recorded as `requested_slug` and never used for routing. Weglot resolves slug
   translations from its own dashboard (Pro plan and up) and has no write API, so
   URLs stay `/{lang}/{source-slug}`. New URLs are not auto-detected by Weglot either.
-- **Taxonomy terms are not supported.** Term names are translated from the rendered
-  page, so there is nothing to write — `/terms` returns `501` with that message
-  rather than a confusing `404`.
+- **Term payloads are stored but not rendered** — the one item in this list that is
+  the bridge's, not Weglot's. The `/terms` routes are real (see
+  [Taxonomy terms](#taxonomy-terms)), but nothing in this module serves a stored term
+  name or description on the archive page, so Weglot machine-translates it.
 - **Nothing appears in Weglot's Translation List.** The dashboard and visual editor
   will not show NOVA content, so an editor working there is editing a layer that is
   not being served.

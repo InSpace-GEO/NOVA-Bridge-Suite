@@ -23,6 +23,17 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 class Rest_Controller extends WP_REST_Controller {
 	/**
+	 * Post types a slug lookup must never resolve to.
+	 *
+	 * 'attachment' is the documented core injection: see
+	 * resolve_slug_lookup_types() below. It is listed explicitly rather than
+	 * derived so a reader can see why it is here.
+	 *
+	 * @var array
+	 */
+	const SLUG_LOOKUP_EXCLUDED_TYPES = array( 'attachment' );
+
+	/**
 	 * Elementor service.
 	 *
 	 * @var Elementor_Service
@@ -292,9 +303,10 @@ class Rest_Controller extends WP_REST_Controller {
 		}
 
 		if ( ! empty( $slug ) ) {
-			$lookup_types = ( 'any' === $post_type )
-				? array_values( get_post_types( array( 'public' => true ) ) )
-				: $post_type;
+			$lookup_types = $this->resolve_slug_lookup_types(
+				$post_type,
+				array_values( get_post_types( array( 'public' => true ) ) )
+			);
 
 			$page = get_page_by_path( $slug, OBJECT, $lookup_types );
 			if ( ! $page ) {
@@ -639,6 +651,49 @@ class Rest_Controller extends WP_REST_Controller {
 	 * @param mixed $value Raw value.
 	 * @return string
 	 */
+	/**
+	 * Resolve the post types a slug lookup may match.
+	 *
+	 * Always returns an ARRAY, never a bare string. WordPress core's
+	 * get_page_by_path() does this with its $post_type argument:
+	 *
+	 *     if ( is_array( $post_type ) ) { $post_types = $post_type; }
+	 *     else { $post_types = array( $post_type, 'attachment' ); }
+	 *
+	 * so passing the string 'page' silently widens the query to
+	 * post_type IN ('page','attachment'). get_page_by_path() also ignores
+	 * post_status, so an attachment's 'inherit' status matches happily. A media
+	 * item sharing a slug with the requested page then won the lookup and the
+	 * caller went on to PATCH the attachment. Do not "simplify" this back to a
+	 * string.
+	 *
+	 * The 'any' branch has the same hazard from the other side:
+	 * get_post_types( array( 'public' => true ) ) INCLUDES 'attachment'.
+	 *
+	 * @param string $post_type    Sanitized post type, or 'any'.
+	 * @param array  $public_types Public post type names.
+	 * @return array List of post type names to look up.
+	 */
+	private function resolve_slug_lookup_types( $post_type, array $public_types ) {
+		if ( 'any' !== $post_type ) {
+			return array( (string) $post_type );
+		}
+
+		$types = array();
+
+		foreach ( $public_types as $candidate ) {
+			$candidate = (string) $candidate;
+
+			if ( in_array( $candidate, self::SLUG_LOOKUP_EXCLUDED_TYPES, true ) ) {
+				continue;
+			}
+
+			$types[] = $candidate;
+		}
+
+		return array_values( array_unique( $types ) );
+	}
+
 	private function sanitize_post_type( $value ) {
 		if ( empty( $value ) ) {
 			return 'page';
