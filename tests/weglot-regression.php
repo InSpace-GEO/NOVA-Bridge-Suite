@@ -38,9 +38,11 @@ function nova_weglot_test_request(string $method, string $route, array $body = [
     return $request;
 }
 
-$marker      = 'nova-weglot-regression-' . wp_generate_uuid4();
-$created_ids = [];
-$admins      = get_users(
+$marker           = 'nova-weglot-regression-' . wp_generate_uuid4();
+$created_ids      = [];
+$skipped          = [];
+$created_term_ids = [];
+$admins           = get_users(
     [
         'role'   => 'administrator',
         'number' => 1,
@@ -368,24 +370,268 @@ try {
         'The render service swapped content before resolve_payload() ran.'
     );
 
-    // --- terms are explicitly unsupported -----------------------------------
+    // --- terms: create, read, delete -----------------------------------------
 
-    $response = $server->dispatch(
-        nova_weglot_test_request(
-            'POST',
-            '/weglot-translations/v1/terms',
-            [
-                'source_term_id' => 1,
-                'taxonomy'       => 'category',
-                'translations'   => [['language' => $target, 'name' => 'x']],
-            ]
-        )
-    );
+    // product_cat exists only where WooCommerce is active. Asserting it here
+    // aborted the whole run on a site without WooCommerce, so every arm above
+    // and below reported nothing and the post path could not be verified at
+    // all. The term routes are skipped instead, named in the closing summary
+    // so a clean run on such a site cannot be mistaken for full coverage.
+    if (! taxonomy_exists('product_cat')) {
+        $skipped[] = 'terms: the product_cat taxonomy is not registered (activate WooCommerce to cover the term routes).';
+        echo "weglot-regression: SKIP terms - product_cat is not registered on this site.\n";
+    } else {
+        $term_id = wp_insert_term($marker . '-term', 'product_cat');
 
-    nova_weglot_test_assert(
-        501 === $response->get_status(),
-        'POST /terms should return 501, got ' . $response->get_status() . '.'
-    );
+        nova_weglot_test_assert(! is_wp_error($term_id), 'Could not create the throwaway product_cat term.');
+        $term_id             = is_array($term_id) ? (int) $term_id['term_id'] : (int) $term_id;
+        $created_term_ids[]  = $term_id;
+
+        $second_target = $destinations[1] ?? $target;
+
+        $response = $server->dispatch(
+            nova_weglot_test_request(
+                'POST',
+                '/weglot-translations/v1/terms',
+                [
+                    'source_term_id' => $term_id,
+                    'taxonomy'       => 'product_cat',
+                    'translations'   => [
+                        [
+                            'language'    => $target,
+                            'name'        => $marker . '-term-name-' . $target,
+                            'description' => '<p>' . $marker . '-term-description-' . $target . '</p>',
+                        ],
+                        [
+                            'language' => $second_target,
+                            'name'     => $marker . '-term-name-' . $second_target,
+                        ],
+                    ],
+                ]
+            )
+        );
+
+        nova_weglot_test_assert(
+            in_array($response->get_status(), [200, 207], true),
+            'POST /terms returned ' . $response->get_status() . ': ' . wp_json_encode($response->get_data())
+        );
+
+        $term_response_data = $response->get_data();
+
+        nova_weglot_test_assert(
+            ! empty($term_response_data['results'][0]['stored']),
+            'POST /terms did not report the first locale as stored.'
+        );
+        nova_weglot_test_assert(
+            ! empty($term_response_data['results'][0]['url']),
+            'POST /terms did not report a translated archive URL; check that Weglot resolves URLs on this site.'
+        );
+
+        // The stored payload lives in termmeta, under the same key convention posts
+        // use in wp_postmeta -- the two tables are what keep a shared numeric id from
+        // colliding, not a second key prefix.
+        nova_weglot_test_assert(
+            metadata_exists('term', $term_id, '_nova_weglot_i18n_' . str_replace('-', '_', $target)),
+            'The term payload was not written to termmeta under the expected key.'
+        );
+
+        $term_payload = $storage_service->get_term($term_id, $target);
+
+        nova_weglot_test_assert(is_array($term_payload), 'The stored term payload could not be read back.');
+        nova_weglot_test_assert(
+            $term_payload['name'] === $marker . '-term-name-' . $target,
+            'The stored term name did not round-trip.'
+        );
+
+        // --- the body Parse translations actually sends, through real arg
+        // --- validation ------------------------------------------------------
+        //
+        // tests/weglot-unit.php calls create_term_translations() directly, so it
+        // can only pin the structural precondition: nothing in
+        // get_term_endpoint_args() sets additionalProperties => false. Whether
+        // rest_validate_value_from_schema() then TOLERATES the extra top-level
+        // content_below_products the flow emits, or 400s the whole request
+        // before the callback runs, is settled only here -- this is the one
+        // dispatch in the suite that goes through WordPress's own validator.
+        //
+        // Verdicts are printed per field rather than folded into one assertion:
+        // a bare "POST /terms returned 400" would not say which of the three
+        // keys the validator objected to. The top-level content_below_products
+        // is deliberately reported and NOT asserted -- it is expected to be
+        // dropped today, because term_ignored_fields()
+        // (class-wgtai-rest-controller.php) names only parent_id, so asserting
+        // it would fail the run on a known, separately-tracked gap instead of
+        // measuring it.
+
+        $probe_slug       = $marker . '-term-slug';
+        $probe_meta_below = '<p>' . $marker . '-below-meta</p>';
+
+        $response = $server->dispatch(
+            nova_weglot_test_request(
+                'POST',
+                '/weglot-translations/v1/terms',
+                [
+                    'source_term_id' => $term_id,
+                    'taxonomy'       => 'product_cat',
+                    'translations'   => [
+                        [
+                            'language'               => $target,
+                            'name'                   => $marker . '-term-name-' . $target,
+                            'slug'                   => $probe_slug,
+                            'content_below_products' => '<p>' . $marker . '-below-top-level</p>',
+                            'meta'                   => [
+                                '_yoast_wpseo_title'     => $marker . '-term-seo-title',
+                                'content_below_products' => $probe_meta_below,
+                            ],
+                        ],
+                    ],
+                ]
+            )
+        );
+
+        $probe_status   = (int) $response->get_status();
+        $probe_data     = $response->get_data();
+        $probe_accepted = in_array($probe_status, [200, 207], true);
+        $probe_result   = $probe_accepted ? ($probe_data['results'][0] ?? []) : [];
+        $probe_payload  = $probe_accepted ? $storage_service->get_term($term_id, $target) : null;
+        $probe_payload  = is_array($probe_payload) ? $probe_payload : [];
+
+        if (! $probe_accepted) {
+            $probe_below = 'not reached (request rejected)';
+        } elseif (array_key_exists('content_below_products', $probe_payload)) {
+            $probe_below = 'STORED as a payload field';
+        } elseif (in_array('content_below_products', (array) ($probe_result['fields'] ?? []), true)) {
+            $probe_below = 'reported in fields[]';
+        } elseif (in_array('content_below_products', (array) ($probe_result['ignored_fields'] ?? []), true)) {
+            $probe_below = 'reported in ignored_fields[]';
+        } else {
+            $probe_below = 'accepted, dropped, NOT reported';
+        }
+
+        $probe_verdict = [
+            'status'                 => $probe_status,
+            'rejected_params'        => $probe_accepted
+                ? []
+                : array_keys((array) ($probe_data['data']['params'] ?? [])),
+            'meta'                   => ($probe_payload['meta']['content_below_products'] ?? null) === $probe_meta_below
+                ? 'stored'
+                : 'NOT stored',
+            'slug'                   => '' !== (string) ($probe_payload['requested_slug'] ?? '')
+                ? 'recorded as requested_slug=' . $probe_payload['requested_slug']
+                : 'NOT recorded',
+            'content_below_products' => $probe_below,
+        ];
+
+        printf("terms flow-body probe: %s\n", wp_json_encode($probe_verdict));
+
+        nova_weglot_test_assert(
+            $probe_accepted,
+            'WordPress arg validation rejected the body the flow sends: ' . wp_json_encode($probe_verdict)
+        );
+        nova_weglot_test_assert(
+            'stored' === $probe_verdict['meta'],
+            'meta did not survive the flow body: ' . wp_json_encode($probe_verdict)
+        );
+        nova_weglot_test_assert(
+            'NOT recorded' !== $probe_verdict['slug'],
+            'slug did not survive the flow body: ' . wp_json_encode($probe_verdict)
+        );
+
+        // --- null clears a field, through real arg validation ----------------
+        //
+        // omit = keep / null = clear / value = set only holds if WordPress's
+        // validator lets the null through to apply_field(); a string-only
+        // schema type 400s it first.
+
+        $response = $server->dispatch(
+            nova_weglot_test_request(
+                'POST',
+                '/weglot-translations/v1/terms',
+                [
+                    'source_term_id' => $term_id,
+                    'taxonomy'       => 'product_cat',
+                    'translations'   => [
+                        [
+                            'language'    => $target,
+                            'slug'        => null,
+                            'description' => null,
+                        ],
+                    ],
+                ]
+            )
+        );
+
+        nova_weglot_test_assert(
+            200 === (int) $response->get_status(),
+            'WordPress arg validation rejected a null-clearing term body: ' . wp_json_encode($response->get_data())
+        );
+
+        $cleared_payload = $storage_service->get_term($term_id, $target);
+
+        nova_weglot_test_assert(
+            is_array($cleared_payload) && ! isset($cleared_payload['requested_slug']) && ! isset($cleared_payload['description']),
+            'A null slug/description did not clear the stored term fields.'
+        );
+        nova_weglot_test_assert(
+            ($cleared_payload['name'] ?? null) === $marker . '-term-name-' . $target,
+            'Clearing slug/description also dropped the omitted term name.'
+        );
+
+        // --- GET /terms/{id}/translations ----------------------------------------
+
+        $response = $server->dispatch(
+            nova_weglot_test_request(
+                'GET',
+                '/weglot-translations/v1/terms/' . $term_id . '/translations',
+                [],
+                ['id' => $term_id, 'taxonomy' => 'product_cat']
+            )
+        );
+
+        nova_weglot_test_assert(200 === $response->get_status(), 'GET /terms/{id}/translations did not return 200.');
+        nova_weglot_test_assert(
+            'product_cat' === ($response->get_data()['taxonomy'] ?? null),
+            'GET /terms/{id}/translations reported the wrong taxonomy.'
+        );
+
+        // --- a term in the wrong taxonomy 404s ------------------------------------
+
+        $response = $server->dispatch(
+            nova_weglot_test_request(
+                'GET',
+                '/weglot-translations/v1/terms/' . $term_id . '/translations',
+                [],
+                ['id' => $term_id, 'taxonomy' => 'category']
+            )
+        );
+
+        nova_weglot_test_assert(
+            404 === $response->get_status(),
+            'A term requested under the wrong taxonomy should 404, got ' . $response->get_status() . '.'
+        );
+
+        // --- DELETE a term translation --------------------------------------------
+
+        $response = $server->dispatch(
+            nova_weglot_test_request(
+                'DELETE',
+                '/weglot-translations/v1/terms/' . $term_id . '/translations/' . $target,
+                [],
+                ['id' => $term_id, 'language' => $target, 'taxonomy' => 'product_cat']
+            )
+        );
+
+        nova_weglot_test_assert(200 === $response->get_status(), 'DELETE term translation did not return 200.');
+        nova_weglot_test_assert(! empty($response->get_data()['deleted']), 'DELETE term translation did not report a deletion.');
+        nova_weglot_test_assert(
+            null === $storage_service->get_term($term_id, $target),
+            'The term payload survived deletion.'
+        );
+        nova_weglot_test_assert(
+            ! metadata_exists('term', $term_id, '_nova_weglot_i18n_' . str_replace('-', '_', $target)),
+            'The term payload row survived deletion in termmeta.'
+        );
+    }
 
     // --- rejections ---------------------------------------------------------
 
@@ -453,9 +699,21 @@ try {
         'The stored-language index survived deletion.'
     );
 
-    echo "weglot-regression: all checks passed\n";
+    if (empty($skipped)) {
+        echo "weglot-regression: all checks passed\n";
+    } else {
+        printf("weglot-regression: checks passed, %d arm(s) skipped\n", count($skipped));
+
+        foreach ($skipped as $skipped_arm) {
+            printf("  SKIPPED %s\n", $skipped_arm);
+        }
+    }
 } finally {
     foreach ($created_ids as $created_id) {
         wp_delete_post($created_id, true);
+    }
+
+    foreach ($created_term_ids as $created_term_id) {
+        wp_delete_term($created_term_id, 'product_cat');
     }
 }
