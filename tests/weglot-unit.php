@@ -2165,6 +2165,55 @@ wgtai_check_true(
     )
 );
 
+// --- contract_notes(): terms are stored, NOT rendered ------------------------
+//
+// WGTAI_Render_Service::resolve_payload() returns early on ! is_singular() and
+// registers no term filter, so a stored term payload is API-only today. The
+// shared post notes claim content is "served on Weglot-translated requests" and
+// "served verbatim" under data-wg-notranslate -- true for posts, false for
+// terms -- so a term response must not carry them.
+
+$wgtai_term_notes = $create_response->get_data()['notes'];
+$wgtai_term_notes_text = implode("\n", $wgtai_term_notes);
+
+wgtai_check('term notes never claim the payload is served', stripos($wgtai_term_notes_text, 'served'), false);
+wgtai_check('term notes never claim data-wg-notranslate protection', stripos($wgtai_term_notes_text, 'notranslate'), false);
+wgtai_check_true(
+    'term notes say the translations are stored, readable via GET, and not rendered on archive pages',
+    in_array(
+        'Term translations are stored on the source term and readable via GET /terms/{id}/translations, but they are NOT rendered on category or taxonomy archive pages yet - no term render filter is registered, so the public archive still shows the source content.',
+        $wgtai_term_notes,
+        true
+    )
+);
+wgtai_check_true(
+    'term notes keep the parent_id note',
+    in_array(
+        'parent_id is accepted and listed in results[].ignored_fields, but never applied - Weglot cannot re-parent a taxonomy archive per locale.',
+        $wgtai_term_notes,
+        true
+    )
+);
+
+// Post responses: pinned byte for byte to what 2.8.11 shipped.
+wgtai_test_seed_post(128, "post-128", "Post 128");
+$wgtai_post_notes_request = new WP_REST_Request('POST', '/weglot-translations/v1/posts');
+$wgtai_post_notes_request->set_param('source_post_id', 128);
+$wgtai_post_notes_request->set_param('translations', [['language' => 'fr', 'title' => 'Titre 128']]);
+
+$wgtai_post_notes_response = $rest->create_translations($wgtai_post_notes_request);
+
+wgtai_check('the post create route still answers 200', $wgtai_post_notes_response->get_status(), 200);
+wgtai_check(
+    'post responses keep the shipped notes byte for byte',
+    $wgtai_post_notes_response->get_data()['notes'],
+    [
+        'Content is stored on the source post and served on Weglot-translated requests; no translated post is created.',
+        'A translated slug cannot be applied from here - Weglot resolves slugs from its own dashboard (Pro plan and up), so URLs keep the source slug under the language prefix.',
+        'Stored content is marked data-wg-notranslate, so it is served verbatim and consumes no Weglot word quota.',
+    ]
+);
+
 // --- get_term_translations / delete_term_translation ------------------------
 
 $get_request = new WP_REST_Request('GET', '/weglot-translations/v1/terms/80/translations');

@@ -263,10 +263,11 @@ or WooCommerce's archive-description filters. A stored term payload is therefore
 visible over REST and invisible to a visitor: the archive keeps its source-language
 name and description, which Weglot machine-translates exactly as before.
 
-The response does not say so either. `notes[]` adds only the `url`-vs-slug and
-`parent_id` lines for a term, while the first line it shares with `/posts` still reads
-"stored on the source post **and served** on Weglot-translated requests" — written for
-posts, and not true of a term today. So a flow must not read `POST /terms` → `200` as
+The response says so: a term's `notes[]` is its own list, not the `/posts` notes
+plus extras, and its first line states that the translations are stored and readable
+via `GET /terms/{id}/translations` but **not** rendered on archive pages yet. It
+carries none of the post lines about content being served or marked
+`data-wg-notranslate`. So a flow must not read `POST /terms` → `200` as
 "the archive now shows NOVA's copy". The route is a write to storage: useful for
 `results[].url`, and for the payload a later render stage will serve.
 

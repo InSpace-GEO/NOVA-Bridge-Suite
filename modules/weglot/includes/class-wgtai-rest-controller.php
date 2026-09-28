@@ -414,7 +414,7 @@ class WGTAI_REST_Controller extends \WP_REST_Controller
                 'provider'       => 'weglot',
                 'results'        => $results,
                 'errors'         => $errors,
-                'notes'          => $this->contract_notes(true),
+                'notes'          => $this->term_contract_notes(),
             ],
             $status
         );
@@ -525,20 +525,32 @@ class WGTAI_REST_Controller extends \WP_REST_Controller
     /**
      * @return array<int,string>
      */
-    private function contract_notes(bool $is_term = false): array
+    private function contract_notes(): array
     {
-        $notes = [
+        return [
             'Content is stored on the source post and served on Weglot-translated requests; no translated post is created.',
             'A translated slug cannot be applied from here - Weglot resolves slugs from its own dashboard (Pro plan and up), so URLs keep the source slug under the language prefix.',
             'Stored content is marked data-wg-notranslate, so it is served verbatim and consumes no Weglot word quota.',
         ];
+    }
 
-        if ($is_term) {
-            $notes[] = 'For terms, results[].url is always the real taxonomy archive URL for this term and language, never the requested slug - write that value to public.url, not the slug field.';
-            $notes[] = 'parent_id is accepted and listed in results[].ignored_fields, but never applied - Weglot cannot re-parent a taxonomy archive per locale.';
-        }
-
-        return $notes;
+    /**
+     * Term notes are their own list, not the post notes plus extras: the post
+     * notes promise the payload is served on translated requests under
+     * data-wg-notranslate, and for terms that is false --
+     * WGTAI_Render_Service::resolve_payload() returns early on ! is_singular()
+     * and registers no term filter, so a stored term payload is API-only.
+     *
+     * @return array<int,string>
+     */
+    private function term_contract_notes(): array
+    {
+        return [
+            'Term translations are stored on the source term and readable via GET /terms/{id}/translations, but they are NOT rendered on category or taxonomy archive pages yet - no term render filter is registered, so the public archive still shows the source content.',
+            'A translated slug cannot be applied from here - Weglot resolves slugs from its own dashboard (Pro plan and up), so URLs keep the source slug under the language prefix.',
+            'For terms, results[].url is always the real taxonomy archive URL for this term and language, never the requested slug - write that value to public.url, not the slug field.',
+            'parent_id is accepted and listed in results[].ignored_fields, but never applied - Weglot cannot re-parent a taxonomy archive per locale.',
+        ];
     }
 
     public function get_item_schema(): array
