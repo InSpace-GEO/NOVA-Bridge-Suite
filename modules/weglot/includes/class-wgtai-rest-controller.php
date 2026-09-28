@@ -634,17 +634,22 @@ class WGTAI_REST_Controller extends \WP_REST_Controller
                             'description' => 'Weglot destination language (e.g. fr, nl-NL).',
                             'type'        => 'string',
                         ],
+                        // name, slug and description follow the storage update
+                        // contract (omit = keep, null = clear, value = set), so the
+                        // schema must admit null: WordPress validates nested items
+                        // before the callback runs, and a string-only type 400'd a
+                        // clearing request before apply_field() ever saw it.
                         'name'        => [
-                            'description' => 'Translated term name.',
-                            'type'        => 'string',
+                            'description' => 'Translated term name. null clears the stored value for this locale.',
+                            'type'        => ['string', 'null'],
                         ],
                         'slug'        => [
-                            'description' => 'Accepted and recorded, but not used for routing - see notes.',
-                            'type'        => 'string',
+                            'description' => 'Accepted and recorded, but not used for routing - see notes. null clears the recorded value.',
+                            'type'        => ['string', 'null'],
                         ],
                         'description' => [
-                            'description' => 'Translated term description (HTML allowed).',
-                            'type'        => 'string',
+                            'description' => 'Translated term description (HTML allowed). null clears the stored value for this locale.',
+                            'type'        => ['string', 'null'],
                         ],
                         'parent_id'   => [
                             'description' => 'Accepted and listed in ignored_fields, but never applied - see notes.',

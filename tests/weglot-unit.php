@@ -2310,6 +2310,113 @@ wgtai_check(
     false
 );
 
+// --- null clears a term field: it must get past WP arg validation first ----
+//
+// The storage contract is omit = keep / null = clear / value = set, but
+// WordPress validates nested items against the route schema BEFORE the
+// callback runs, so a string-only type 400s a clearing request and
+// apply_field() never sees the null. The harness has no WordPress, so this is
+// a replica of the TYPE rules rest_validate_value_from_schema() applies
+// (type unions via rest_get_best_type_for_value(), items, properties) -- not
+// WordPress itself. tests/weglot-regression.php is the real-validator run.
+
+$wgtai_schema_type_ok = static function (string $type, $value): bool {
+    switch ($type) {
+        case 'null':
+            return null === $value;
+        case 'string':
+            return is_string($value);
+        case 'integer':
+            return is_int($value) || (is_string($value) && ctype_digit($value));
+        case 'boolean':
+            return is_bool($value);
+        case 'array':
+            return is_array($value) && array_values($value) === $value;
+        case 'object':
+            return is_array($value) || is_object($value) || '' === $value;
+    }
+
+    return false;
+};
+
+$wgtai_validate_schema = static function ($value, array $schema, string $path) use (&$wgtai_validate_schema, $wgtai_schema_type_ok): array {
+    if (! isset($schema['type'])) {
+        return [];
+    }
+
+    $matched = null;
+
+    foreach ((array) $schema['type'] as $type) {
+        if ($wgtai_schema_type_ok($type, $value)) {
+            $matched = $type;
+            break;
+        }
+    }
+
+    if (null === $matched) {
+        return [$path . ' is not of type ' . implode(',', (array) $schema['type'])];
+    }
+
+    $errors = [];
+
+    if ('array' === $matched && isset($schema['items'])) {
+        foreach ($value as $index => $item) {
+            $errors = array_merge($errors, $wgtai_validate_schema($item, $schema['items'], $path . '[' . $index . ']'));
+        }
+    }
+
+    if ('object' === $matched && is_array($value)) {
+        foreach ((array) ($schema['required'] ?? []) as $required_key) {
+            if (! array_key_exists($required_key, $value)) {
+                $errors[] = $path . '[' . $required_key . '] is required';
+            }
+        }
+
+        foreach ((array) ($schema['properties'] ?? []) as $property => $property_schema) {
+            if (array_key_exists($property, $value)) {
+                $errors = array_merge($errors, $wgtai_validate_schema($value[$property], $property_schema, $path . '[' . $property . ']'));
+            }
+        }
+    }
+
+    return $errors;
+};
+
+$wgtai_clear_body = [
+    [
+        'language'    => 'de',
+        'name'        => null,
+        'slug'        => null,
+        'description' => null,
+    ],
+];
+
+wgtai_check(
+    'a translations[] entry with name/slug/description = null passes term arg validation',
+    $wgtai_validate_schema($wgtai_clear_body, $term_args['translations'], 'translations'),
+    []
+);
+wgtai_check_true(
+    'the replica validator is not vacuous: an integer name is still rejected',
+    [] !== $wgtai_validate_schema([['language' => 'de', 'name' => 7]], $term_args['translations'], 'translations')
+);
+
+wgtai_test_seed_term(127, 'product_cat', 'cat-127', 'Category 127 EN', 'EN 127');
+$storage->save_term(127, ['language' => 'de', 'name' => 'Kategorie 127', 'slug' => 'kategorie-127', 'description' => '<p>DE 127</p>']);
+
+$wgtai_clear_request = new WP_REST_Request('POST', '/weglot-translations/v1/terms');
+$wgtai_clear_request->set_param('source_term_id', 127);
+$wgtai_clear_request->set_param('taxonomy', 'product_cat');
+$wgtai_clear_request->set_param('translations', $wgtai_clear_body);
+
+$wgtai_clear_response = $rest->create_term_translations($wgtai_clear_request);
+$wgtai_cleared        = $storage->get_term(127, 'de');
+
+wgtai_check('a validated null-clearing body answers 200', $wgtai_clear_response->get_status(), 200);
+wgtai_check('null clears the stored term name through the route', isset($wgtai_cleared['name']), false);
+wgtai_check('null clears the recorded requested_slug through the route', isset($wgtai_cleared['requested_slug']), false);
+wgtai_check('null clears the stored term description through the route', isset($wgtai_cleared['description']), false);
+
 // --- the wire contract, byte for byte as Parse translations builds it -------
 
 wgtai_test_seed_term(120, 'product_cat', 'cat-120', 'Category 120 EN', 'EN description');

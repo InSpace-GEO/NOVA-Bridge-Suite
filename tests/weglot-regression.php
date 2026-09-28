@@ -537,6 +537,46 @@ try {
             'slug did not survive the flow body: ' . wp_json_encode($probe_verdict)
         );
 
+        // --- null clears a field, through real arg validation ----------------
+        //
+        // omit = keep / null = clear / value = set only holds if WordPress's
+        // validator lets the null through to apply_field(); a string-only
+        // schema type 400s it first.
+
+        $response = $server->dispatch(
+            nova_weglot_test_request(
+                'POST',
+                '/weglot-translations/v1/terms',
+                [
+                    'source_term_id' => $term_id,
+                    'taxonomy'       => 'product_cat',
+                    'translations'   => [
+                        [
+                            'language'    => $target,
+                            'slug'        => null,
+                            'description' => null,
+                        ],
+                    ],
+                ]
+            )
+        );
+
+        nova_weglot_test_assert(
+            200 === (int) $response->get_status(),
+            'WordPress arg validation rejected a null-clearing term body: ' . wp_json_encode($response->get_data())
+        );
+
+        $cleared_payload = $storage_service->get_term($term_id, $target);
+
+        nova_weglot_test_assert(
+            is_array($cleared_payload) && ! isset($cleared_payload['requested_slug']) && ! isset($cleared_payload['description']),
+            'A null slug/description did not clear the stored term fields.'
+        );
+        nova_weglot_test_assert(
+            ($cleared_payload['name'] ?? null) === $marker . '-term-name-' . $target,
+            'Clearing slug/description also dropped the omitted term name.'
+        );
+
         // --- GET /terms/{id}/translations ----------------------------------------
 
         $response = $server->dispatch(
