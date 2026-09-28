@@ -308,6 +308,14 @@ class Rest_Controller extends WP_REST_Controller {
 				array_values( get_post_types( array( 'public' => true ) ) )
 			);
 
+			// Nothing left to look up (e.g. post_type=attachment) is a plain
+			// not-found. Answer it here: neither lookup below reads an empty
+			// array as "match nothing" -- WP_Query falls back to 'post' for a
+			// name query.
+			if ( empty( $lookup_types ) ) {
+				return new WP_Error( 'seor_eb_not_found', __( 'Page not found for provided slug.', 'nova-bridge-suite' ), array( 'status' => 404 ) );
+			}
+
 			$page = get_page_by_path( $slug, OBJECT, $lookup_types );
 			if ( ! $page ) {
 				$slug_name = basename( $slug );
@@ -670,18 +678,20 @@ class Rest_Controller extends WP_REST_Controller {
 	 * The 'any' branch has the same hazard from the other side:
 	 * get_post_types( array( 'public' => true ) ) INCLUDES 'attachment'.
 	 *
+	 * An explicit request is filtered too: sanitize_post_type() accepts any
+	 * registered type, so post_type=attachment arrives here intact and used to
+	 * come back as array( 'attachment' ). The result may therefore be EMPTY;
+	 * the caller answers that as not-found rather than looking anything up.
+	 *
 	 * @param string $post_type    Sanitized post type, or 'any'.
 	 * @param array  $public_types Public post type names.
-	 * @return array List of post type names to look up.
+	 * @return array List of post type names to look up; possibly empty.
 	 */
 	private function resolve_slug_lookup_types( $post_type, array $public_types ) {
-		if ( 'any' !== $post_type ) {
-			return array( (string) $post_type );
-		}
+		$candidates = ( 'any' === $post_type ) ? $public_types : array( $post_type );
+		$types      = array();
 
-		$types = array();
-
-		foreach ( $public_types as $candidate ) {
+		foreach ( $candidates as $candidate ) {
 			$candidate = (string) $candidate;
 
 			if ( in_array( $candidate, self::SLUG_LOOKUP_EXCLUDED_TYPES, true ) ) {

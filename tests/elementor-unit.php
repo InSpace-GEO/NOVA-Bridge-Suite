@@ -894,6 +894,46 @@ nbs_check(
     1201
 );
 
+// An explicit post_type=attachment used to return ['attachment'] from the
+// helper -- only the 'any' branch filtered SLUG_LOOKUP_EXCLUDED_TYPES -- so the
+// slug lookup resolved the media item and the flow went on to PATCH it. The
+// excluded list now applies to explicit requests too, and a lookup with no
+// types left must answer the same 404 as a missing page. It must answer it
+// WITHOUT calling either lookup: get_page_by_path() given array() and WP_Query
+// given post_type => array() do not mean "match nothing" in core (WP_Query
+// falls back to 'post' for a name query), and the stubs here cannot show that.
+nbs_check(
+    'an explicit attachment request resolves to no lookup types',
+    nbs_invoke($controller, 'resolve_slug_lookup_types', ['attachment', $public_types]),
+    []
+);
+nbs_check(
+    'an explicit page request is untouched by the exclusion',
+    nbs_invoke($controller, 'resolve_slug_lookup_types', ['page', $public_types]),
+    ['page']
+);
+
+nbs_el_seed_post(9743, 'attachment', 'inherit', ['post_name' => 'explicit-attachment-slug']);
+$GLOBALS['nbs_el_lookup_arg'] = null;
+$GLOBALS['nbs_el_query_arg']  = null;
+$explicit_attachment = $lookup_controller->get_collection(
+    new WP_REST_Request(['slug' => 'explicit-attachment-slug', 'post_type' => 'attachment'])
+);
+
+nbs_check_true('post_type=attachment on a slug lookup is an error, not the media item', is_wp_error($explicit_attachment));
+nbs_check(
+    'post_type=attachment answers the same not-found code as a missing page',
+    is_wp_error($explicit_attachment) ? $explicit_attachment->get_error_code() : $explicit_attachment,
+    'seor_eb_not_found'
+);
+nbs_check(
+    'post_type=attachment answers the same 404 status as a missing page',
+    is_wp_error($explicit_attachment) ? nbs_el_at((array) $explicit_attachment->get_error_data(), 'status') : null,
+    is_wp_error($first_post) ? nbs_el_at((array) $first_post->get_error_data(), 'status') : 'first_post not an error'
+);
+nbs_check('an empty type list never reaches get_page_by_path()', $GLOBALS['nbs_el_lookup_arg'], null);
+nbs_check('an empty type list never reaches the WP_Query fallback', $GLOBALS['nbs_el_query_arg'], null);
+
 // ---------------------------------------------------------------------------
 // seor_eb_forbidden used to carry no data at all, so the REST layer answered
 // 500 for what is a plain permission refusal. Nothing above asserts the status
