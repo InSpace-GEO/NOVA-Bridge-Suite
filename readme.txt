@@ -4,7 +4,7 @@ Tags: seo, automation, content, rest-api, page builder
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.8.11
+Stable tag: 2.8.12
 License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -41,6 +41,10 @@ Yes. If WooCommerce is active you can enable the rich text field module for cate
 1. NOVA Settings screen with module toggles.
 
 == Changelog ==
+
+= 2.8.12 =
+* Serve stored NOVA translations on Weglot category and taxonomy archives, including the title, description, bottom-of-products content and Yoast SEO fields.
+* Protect approved category copy from a second Weglot translation; keep source-language and admin term data unchanged.
 
 = 2.8.11 =
 * Look up a page by slug among pages only, so a media file that happens to share the slug can no longer be picked up and edited by mistake.

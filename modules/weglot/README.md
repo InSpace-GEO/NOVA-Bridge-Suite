@@ -253,23 +253,23 @@ Term-specific rules:
   being prevented, and the controller checks it, not storage: `term_id` is globally
   unique, so no storage code branches on taxonomy.
 
-### Terms are stored and read back, but not served
+### Term archive rendering
 
-There is **no term render path in this module.** `WGTAI_Render_Service` hooks
-`the_content`, `the_title`, `single_post_title`, `document_title_parts`,
-`get_the_excerpt`, `get_post_metadata`, `weglot_exclude_blocks` and the Yoast head
-filters — and nothing on `term_description`, `single_term_title`, `get_term_metadata`
-or WooCommerce's archive-description filters. A stored term payload is therefore
-visible over REST and invisible to a visitor: the archive keeps its source-language
-name and description, which Weglot machine-translates exactly as before.
+`WGTAI_Term_Render_Service` resolves the queried term and Weglot language on
+front-end taxonomy archives, then reads the stored locale payload. It serves
+`name` through `single_term_title`, WooCommerce's page title and later `get_term`
+reads; `description` through the WordPress archive description and WooCommerce's
+raw taxonomy archive description; and `meta.*` through `get_term_metadata`.
+`content_below_products` is wrapped in `data-wg-notranslate` when a template
+reads that term-meta key. Yoast title and description filters serve the approved
+SEO copy. The source language, REST, admin, feeds and other terms are untouched.
 
-The response says so: a term's `notes[]` is its own list, not the `/posts` notes
-plus extras, and its first line states that the translations are stored and readable
-via `GET /terms/{id}/translations` but **not** rendered on archive pages yet. It
-carries none of the post lines about content being served or marked
-`data-wg-notranslate`. So a flow must not read `POST /terms` → `200` as
-"the archive now shows NOVA's copy". The route is a write to storage: useful for
-`results[].url`, and for the payload a later render stage will serve.
+`weglot_exclude_blocks` protects the standard archive title, description and
+SEO elements from a second machine translation. Custom themes can add selectors
+through `nova_weglot_term_notranslate_selectors` with arguments
+`($selectors, $language, $term_id)`. Check the client's category template to
+ensure its bottom-content field is read via `get_term_meta()` and that any
+custom wrappers containing approved copy are excluded.
 
 ## Limitations
 
@@ -279,10 +279,10 @@ These are Weglot's, not the bridge's:
   recorded as `requested_slug` and never used for routing. Weglot resolves slug
   translations from its own dashboard (Pro plan and up) and has no write API, so
   URLs stay `/{lang}/{source-slug}`. New URLs are not auto-detected by Weglot either.
-- **Term payloads are stored but not rendered** — the one item in this list that is
-  the bridge's, not Weglot's. The `/terms` routes are real (see
-  [Taxonomy terms](#taxonomy-terms)), but nothing in this module serves a stored term
-  name or description on the archive page, so Weglot machine-translates it.
+- **Custom category templates need a render check.** The standard WordPress and
+  WooCommerce archive hooks are covered. A theme that bypasses them or reads term
+  metadata directly must expose an equivalent hook or selector before its custom
+  copy can be confirmed live.
 - **Nothing appears in Weglot's Translation List.** The dashboard and visual editor
   will not show NOVA content, so an editor working there is editing a layer that is
   not being served.
@@ -291,9 +291,9 @@ These are Weglot's, not the bridge's:
   the dashboard can customise, and which is *not* a locale — is reported under
   `external_code`. Anything mapping `locale` → hreflang or → a WP language pack must
   read `code` or `external_code` instead.
-- **Only singular views are swapped.** Archive, listing and search views keep the
-  source-language title and excerpt, which Weglot then machine-translates — so a
-  listing can show a different wording than the page it links to.
+- **Post listing and search views are not swapped.** Term archive views are covered,
+  but a post excerpt shown inside a listing still comes from the source post and
+  is translated by Weglot.
 - **Theme markup this bridge does not own** (a theme rendering stored meta fields in
   its own template) is still translated by Weglot. Add CSS selectors via the
   `nova_weglot_notranslate_selectors` filter to exclude those regions:
@@ -311,10 +311,12 @@ add_filter( 'nova_weglot_notranslate_selectors', function ( $selectors, $languag
 storage, render, language and REST surfaces.
 
 Still **not verified against a live Weglot site.** `tests/weglot-regression.php`
-(`wp eval-file`) is the end-to-end pass; the two things only a real page settles are
-that `_elementor_data` reaches Elementor's `json_decode` intact through real
-`get_post_meta`, and that the excluded elements are exactly the ones that stay
-untranslated while the Weglot dashboard's word count does not move.
+(`wp eval-file`) checks the REST and storage path. A live localized category URL
+must also be inspected for the exact NOVA name, description, bottom copy and SEO
+fields, with the source-language archive unchanged. Only a real page settles
+whether a client's theme uses these archive hooks and whether Weglot honours the
+exclusions. The singular Elementor path likewise needs a real-page check that
+`_elementor_data` survives `get_post_meta()` and the word count does not move.
 
 ### Page-builder render caches
 
