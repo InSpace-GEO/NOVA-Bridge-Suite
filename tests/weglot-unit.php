@@ -734,6 +734,7 @@ require_once __DIR__ . '/../modules/weglot/includes/class-wgtai-language-service
 require_once __DIR__ . '/../modules/weglot/includes/class-wgtai-storage-entity.php';
 require_once __DIR__ . '/../modules/weglot/includes/class-wgtai-storage-service.php';
 require_once __DIR__ . '/../modules/weglot/includes/class-wgtai-render-service.php';
+require_once __DIR__ . '/../modules/weglot/includes/class-wgtai-term-render-service.php';
 require_once __DIR__ . '/../modules/weglot/includes/class-wgtai-rest-controller.php';
 
 $passed = 0;
@@ -1468,10 +1469,10 @@ $classic_render = wgtai_test_render_for(46, 'fr', $languages, $storage);
 $classic_after  = $classic_render->filter_content('<p>EN body, reworded</p>');
 
 wgtai_check('a post_content edit does not change what we serve', $classic_after, $classic_before);
-wgtai_check_true('our copy is still what renders', str_contains($classic_after, 'Corps FR'));
+wgtai_check_true('our copy is still what renders', false !== strpos($classic_after, 'Corps FR'));
 wgtai_check(
     'the edited wording never reaches the locale page',
-    str_contains($classic_after, 'reworded'),
+    false !== strpos($classic_after, 'reworded'),
     false
 );
 wgtai_check_true(
@@ -2165,27 +2166,20 @@ wgtai_check_true(
     )
 );
 
-// --- contract_notes(): terms are stored, NOT rendered ------------------------
-//
-// WGTAI_Render_Service::resolve_payload() returns early on ! is_singular() and
-// registers no term filter, so a stored term payload is API-only today. The
-// shared post notes claim content is "served on Weglot-translated requests" and
-// "served verbatim" under data-wg-notranslate -- true for posts, false for
-// terms -- so a term response must not carry them.
+// --- contract_notes(): terms are served on their archive -------------------
 
 $wgtai_term_notes = $create_response->get_data()['notes'];
 $wgtai_term_notes_text = implode("\n", $wgtai_term_notes);
 
-wgtai_check('term notes never claim the payload is served', stripos($wgtai_term_notes_text, 'served'), false);
-wgtai_check('term notes never claim data-wg-notranslate protection', stripos($wgtai_term_notes_text, 'notranslate'), false);
 wgtai_check_true(
-    'term notes say the translations are stored, readable via GET, and not rendered on archive pages',
+    'term notes say the translations are served on archive pages',
     in_array(
-        'Term translations are stored on the source term and readable via GET /terms/{id}/translations, but they are NOT rendered on category or taxonomy archive pages yet - no term render filter is registered, so the public archive still shows the source content.',
+        'Term translations are stored on the source term and exposed through standard WordPress and WooCommerce archive hooks in the matching Weglot language; no translated term is created.',
         $wgtai_term_notes,
         true
     )
 );
+wgtai_check_true('term notes describe notranslate protection', false !== stripos($wgtai_term_notes_text, 'data-wg-notranslate'));
 wgtai_check_true(
     'term notes keep the parent_id note',
     in_array(
@@ -2639,6 +2633,85 @@ wgtai_check('a malformed translation entry answers 207, not a bare error', $mixe
 wgtai_check_true('every errors[] entry carries the language key the flow reads', array_key_exists('language', $mixed_shape_data['errors'][0]));
 wgtai_check('a malformed entry does not abort the batch', count($mixed_shape_data['results']), 1);
 wgtai_check('the good locale in a malformed batch is really stored', $storage->get_term(126, 'de')['name'], 'Kategorie 126');
+
+// --- stored term copy is served on the Weglot archive ----------------------
+
+wgtai_test_seed_term(140, 'product_cat', 'floor-heating', 'Floor heating', '<p>Source intro</p>');
+wgtai_test_seed_term(141, 'product_cat', 'other', 'Other category', '<p>Other intro</p>');
+$storage->save_term(140, [
+    'language'    => 'fr',
+    'name'        => 'Chauffage au sol',
+    'description' => '<p>Présentation approuvée</p>',
+    'meta'        => [
+        'content_below_products' => '<p>Texte approuvé sous les produits</p>',
+        '_yoast_wpseo_title'     => 'Titre SEO approuvé',
+        '_yoast_wpseo_metadesc'  => 'Description SEO approuvée',
+    ],
+]);
+
+$GLOBALS['wgtai_test_context']['is_tax'] = true;
+$GLOBALS['wgtai_test_context']['queried_object'] = get_term(140);
+$GLOBALS['wgtai_test_context']['queried_id'] = 140;
+$GLOBALS['wgtai_test_context']['current_lang'] = 'fr-be';
+
+$term_render = new WGTAI_Term_Render_Service($languages, $storage);
+$term_render->hooks();
+$term_render->resolve_payload();
+
+wgtai_check_true('term renderer registers the archive title hook', wgtai_test_filter_registered('single_term_title'));
+wgtai_check_true('term renderer registers the WooCommerce description hook', wgtai_test_filter_registered('woocommerce_taxonomy_archive_description_raw'));
+wgtai_check('approved term name replaces archive title', $term_render->filter_title('Floor heating'), 'Chauffage au sol');
+wgtai_check('approved term name replaces document title', $term_render->filter_document_title_parts(['title' => 'Floor heating'])['title'], 'Chauffage au sol');
+wgtai_check('approved term description replaces WooCommerce raw description', $term_render->filter_woocommerce_description('<p>Source intro</p>', get_term(140)), '<p>Présentation approuvée</p>');
+wgtai_check('another term keeps its WooCommerce description', $term_render->filter_woocommerce_description('<p>Other intro</p>', get_term(141)), '<p>Other intro</p>');
+wgtai_check_true('WordPress archive description carries Weglot exclusion', false !== strpos($term_render->filter_archive_description('<p>Source intro</p>'), 'data-wg-notranslate'));
+wgtai_check_true('WordPress archive description contains approved copy', false !== strpos($term_render->filter_archive_description(''), 'Présentation approuvée'));
+
+$source_term = get_term(140);
+$translated_term = $term_render->filter_term($source_term, 'product_cat');
+wgtai_check('get_term serves approved name', $translated_term->name, 'Chauffage au sol');
+wgtai_check('get_term serves approved description', $translated_term->description, '<p>Présentation approuvée</p>');
+wgtai_check('get_term keeps the source slug', $translated_term->slug, 'floor-heating');
+wgtai_check('get_term does not mutate the cached source term', $source_term->name, 'Floor heating');
+wgtai_check('get_term leaves other terms alone', $term_render->filter_term(get_term(141), 'product_cat')->name, 'Other category');
+
+$bottom_meta = $term_render->filter_term_metadata(null, 140, 'content_below_products', true);
+wgtai_check_true('approved bottom copy reaches term metadata', false !== strpos($bottom_meta[0], 'Texte approuvé sous les produits'));
+wgtai_check_true('approved bottom copy is not translated again', false !== strpos($bottom_meta[0], 'data-wg-notranslate'));
+wgtai_check('other term metadata is untouched', $term_render->filter_term_metadata(null, 141, 'content_below_products', true), null);
+wgtai_check('bridge storage meta is not overridden', $term_render->filter_term_metadata('original', 140, WGTAI_Storage_Service::META_INDEX, true), 'original');
+wgtai_check('Yoast serves approved term SEO title', $term_render->filter_yoast_title('Source SEO title'), 'Titre SEO approuvé');
+wgtai_check('Yoast serves approved term SEO description', $term_render->filter_yoast_metadesc('Source SEO desc'), 'Description SEO approuvée');
+
+$term_blocks = $term_render->filter_exclude_blocks([]);
+wgtai_check_true('Weglot leaves the approved category heading alone', in_array('.woocommerce-products-header__title', $term_blocks, true));
+wgtai_check_true('Weglot leaves the approved category description alone', in_array('.term-description', $term_blocks, true));
+wgtai_check_true('Weglot leaves the approved bottom-of-products copy alone', in_array('.wc-content-below-products', $term_blocks, true));
+wgtai_check_true('Weglot leaves the approved SEO title alone', in_array('title', $term_blocks, true));
+wgtai_check_true('Weglot leaves the approved SEO description alone', in_array('meta[name="description"]', $term_blocks, true));
+
+$GLOBALS['wgtai_test_filter_returns']['nova_weglot_term_notranslate_selectors'] = static function ($selectors, $language, $term_id) {
+    return array_merge($selectors, ['.client-category-bottom']);
+};
+wgtai_check_true('client theme can protect its bottom-content wrapper', in_array('.client-category-bottom', $term_render->filter_exclude_blocks([]), true));
+unset($GLOBALS['wgtai_test_filter_returns']['nova_weglot_term_notranslate_selectors']);
+
+$GLOBALS['wgtai_test_context']['current_lang'] = 'nl';
+$source_term_render = new WGTAI_Term_Render_Service($languages, $storage);
+$source_term_render->resolve_payload();
+wgtai_check('source-language category keeps its original name', $source_term_render->filter_title('Floor heating'), 'Floor heating');
+
+$GLOBALS['wgtai_test_context']['is_admin'] = true;
+$GLOBALS['wgtai_test_context']['current_lang'] = 'fr-be';
+$admin_term_render = new WGTAI_Term_Render_Service($languages, $storage);
+$admin_term_render->resolve_payload();
+wgtai_check('admin term editor keeps the source name', $admin_term_render->filter_title('Floor heating'), 'Floor heating');
+
+$GLOBALS['wgtai_test_context']['is_admin'] = false;
+$GLOBALS['wgtai_test_context']['is_tax'] = false;
+$GLOBALS['wgtai_test_context']['queried_object'] = null;
+$GLOBALS['wgtai_test_context']['queried_id'] = 0;
+$GLOBALS['wgtai_test_context']['current_lang'] = '';
 
 // --- report ----------------------------------------------------------------
 

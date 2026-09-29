@@ -16,6 +16,7 @@ require_once WGTAI_PLUGIN_DIR . 'includes/class-wgtai-language-service.php';
 require_once WGTAI_PLUGIN_DIR . 'includes/class-wgtai-storage-entity.php';
 require_once WGTAI_PLUGIN_DIR . 'includes/class-wgtai-storage-service.php';
 require_once WGTAI_PLUGIN_DIR . 'includes/class-wgtai-render-service.php';
+require_once WGTAI_PLUGIN_DIR . 'includes/class-wgtai-term-render-service.php';
 require_once WGTAI_PLUGIN_DIR . 'includes/class-wgtai-rest-controller.php';
 
 function wgtai_is_weglot_active(): bool
@@ -37,10 +38,12 @@ function wgtai_bootstrap(): void
     $storage_service  = new WGTAI_Storage_Service($language_service);
     $rest_controller  = new WGTAI_REST_Controller($storage_service, $language_service);
     $render_service   = new WGTAI_Render_Service($language_service, $storage_service);
+    $term_render_service = new WGTAI_Term_Render_Service($language_service, $storage_service);
 
     add_action('rest_api_init', [$rest_controller, 'register_routes']);
 
     $render_service->hooks();
+    $term_render_service->hooks();
 }
 
 // Priority 20: Weglot builds its service container on plugins_loaded, and this
