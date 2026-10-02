@@ -2,6 +2,8 @@
 
 This guide describes the plugin candidate against posting-service commit `145fbcfb7319333e6369796489c068196cb68665` (reviewed 2026-10-02). It replaces the earlier writing-template, assignment, pin and URL-binding setup flow. It does not certify a deployed NOVA service or a real end-to-end delivery.
 
+The intended module describes what destination template fields can hold, with optional rules and instructions; posting-service then fits NOVA's existing content to those destinations. The current implementation below covers direct stock-field bindings. See the [template fitting handover](template-fitting-transfer-20261002.md) for the remaining plugin and API work needed to implement the intended flow.
+
 ## Prepare a local profile
 
 Choose a concrete WordPress page and its current structure in the mapping editor. The local draft retains the page identity, structure signature, server-derived native target descriptors, routing, protection decisions, explicit source skips and human instructions. Saving a draft does not edit or publish that page.
@@ -20,7 +22,7 @@ Historical profiles and repeat slots remain available for review. The current AP
 
 Global/template guidance and per-target instructions are preserved, including rules such as “exactly one relevant label,” character limits and existing-row capacity. Guidance keeps the local inherit/set/clear choice and an 8000 UTF-8 byte limit. When changing away from a historical template with inherited instructions, the editor preserves those instructions as explicit local guidance.
 
-The current publishing template schema does **not** accept authoring notes or arbitrary generation rules. Synchronization sends no undocumented properties and does not claim that the generator consumes these instructions. The editor and sync state report `unsupported_local_only`. The plugin stores the instructions with each approved historical profile so a later local edit cannot silently replace them for an older delivery. Connecting these rules to template-aware generation still needs a supported backend authoring contract.
+The current publishing template schema does **not** accept human instructions or arbitrary adaptation rules. Synchronization sends no undocumented properties and does not claim that posting-service consumes these instructions. The editor and sync state report `unsupported_local_only`. The plugin stores the instructions with each approved historical profile so a later local edit cannot silently replace them for an older delivery. Connecting these rules to posting-service content adaptation needs its supported API contract; NOVA generation can remain unchanged.
 
 ## Synchronize and approve
 

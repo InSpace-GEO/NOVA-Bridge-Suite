@@ -2,6 +2,8 @@
 
 This plugin candidate remains version **3.0.0** on `api-mapping-with-context`. The migration changes WordPress only. It replaces the earlier writing/pin integration with the shared CMS delivery API. The September testing reports describe historical simulated contracts; use this document and [current mapping setup](contracted-mapping-setup.md) for the migrated implementation.
 
+The [template fitting handover](template-fitting-transfer-20261002.md) records the clarified destination-description model and the remaining changes on both sides. This migration verifies direct stock-field publishing and recovery; it does not implement posting-service content fitting.
+
 ## Contract and mapping
 
 The contract is pinned to posting-service master commit `145fbcfb7319333e6369796489c068196cb68665`. The OpenAPI SHA256 is `ce48ded00914e595dde23d543e347bc748155a7726a108331cc051dc8246af28`; the same API schema was found on develop and the deployment feature branch inspected on 2 October. A source commit identifies the reviewed contract, not the release running on a particular host.
