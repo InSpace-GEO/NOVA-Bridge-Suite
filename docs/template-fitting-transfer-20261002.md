@@ -2,7 +2,7 @@
 
 This handover records the agreed purpose of the mapping module and the remaining integration work between NOVA posting-service and the WordPress plugin. Clients describe what existing template fields can hold, with optional rules and human instructions. NOVA generates its existing source content; posting-service fits that content to the template; WordPress writes the fitted values to the approved native destinations.
 
-We are not asking for changes to NOVA generation or nova-db. The colleague's explanation places adaptation in posting-service and resolves that architectural question. The remaining work is to connect the plugin to the implemented adaptation contract, or add the missing contract where it does not yet exist.
+We are not asking for changes to NOVA generation or nova-db. The colleague's explanation places adaptation in posting-service and resolves that architectural question. The plugin now supports local destination descriptions, rules, fixed capacity and a backend-neutral export. Use the [implementation handover](destination-mapping-backend-handover.md) for the tested preparation and remaining API connection; the review below records the original gaps.
 
 ## Intended flow
 
@@ -39,9 +39,9 @@ Reviewed on 2 October 2026: plugin `api-mapping-with-context` commit `60acfbbd82
 | Template synchronization | Shared CMS template CRUD, defaults and per-page settings are integrated | Reuse these operations with the supported adaptation definition |
 | Field description in posting-service | `id`, `label`, `kind`, `required`; kinds are `text`, `rich_text`, `image`, `list` | Represent field purpose, accepted formats, constraints and instructions through the documented contract |
 | Mapping in posting-service | Every mapping entry binds `field_id` to one of twelve stock `source_field` names; source and destination kinds must match | Support describing destinations for adaptation without requiring an exact stock-field copy for each one |
-| Plugin editor and synchronized template | Mapped fields require a stock source; synchronized field label and kind come from that source | Use the destination's name, purpose and accepted type; retain its discovered metadata in the saved description |
-| Human instructions | Template and per-field instructions are saved locally, bounded to 8,000 UTF-8 bytes | Upload them through supported API properties and make their adaptation status visible |
-| Length and repeat rules | No current API properties for these constraints; historical repeat slots remain local and cannot synchronize through the current adapter | Convey existing capacity and stable slot identities; return fitted values for those slots |
+| Plugin editor and prepared export | New drafts use destination label, purpose, type and rules without a stock source; trusted native metadata stays local | Connect this description to the supported backend API |
+| Human instructions | Template and per-field instructions are saved and exported locally, bounded to 8,000 UTF-8 bytes | Upload them through supported API properties and make their adaptation status visible |
+| Length and repeat rules | Local structured limits and fixed destination groups are implemented; the reviewed API has no corresponding properties | Accept existing capacity and stable slot identities; return fitted values for those slots |
 | Adapted content | Current delivery admission copies stock source fields unchanged | Implement or identify the adaptation step and its final output contract |
 | Plugin consumption | The native writer reads values by `source_field` | Read fitted values by destination identity and validate their types and approved targets |
 | Recovery | Exact delivery retrieval, frozen configuration, durable native operation evidence and event retries are implemented | Include final fitted values in the immutable delivery so retries retain the same output |
@@ -63,7 +63,7 @@ On the posting-service side, identify or expose the contract for destination des
 
 The response must let the plugin distinguish the three step headings from one another and resolve every returned value to its configured field. Fitted values and the selected configuration must remain fixed for that delivery. Later template edits or a retry must not reinterpret the saved output. Measurable hard constraints should be checked before a delivery is made available; a fitting failure must be explicit rather than silently truncating or dropping content. Human instructions guide adaptation; the contract should not claim deterministic enforcement of arbitrary natural-language rules.
 
-On the plugin side, replace the mandatory stock-source workflow with destination descriptions, retain the discovered destination metadata, add supported rule controls and synchronize those rules and instructions. Update delivery validation and the value lookup in the native writer to consume the fitted result. Reuse the current synchronization, approval, discovery, publication and recovery infrastructure. Preserve existing approved profiles; do not rewrite their frozen projection in place.
+On the plugin side, the source-free description workflow, metadata retention, rule controls and local export are now prepared and tested. Connect synchronization and delivery value lookup once the supported API is identified. Reuse the current approval, discovery, publication and recovery infrastructure. Preserve existing approved profiles; do not rewrite their frozen projection in place.
 
 Native write support must be verified separately from content fitting. The current writer supports its tested scalar targets, including nested ACF scalar leaves and static Elementor heading, text-editor and button-text settings. Elementor button URL writes and compound ACF link/image/list objects are not covered by that verified writer. Add the required typed native handling and tests before claiming those destinations can be populated. Fitting suitable text alone does not establish support for an entire widget.
 

@@ -1,18 +1,20 @@
 # API Mapping Context
 
-Version **3.0.0** discovers WordPress layouts, saves local mapping profiles and applies NOVA deliveries through the verified native writer. It uses the shared CMS posting-service API, pinned to commit `145fbcfb7319333e6369796489c068196cb68665` in the [schema subset](../posting-service/contracts/delivery-v1.json).
+Version **3.0.0** discovers WordPress layouts and prepares destination descriptions, rules and human instructions. Existing direct-source profiles apply NOVA deliveries through the verified native writer and shared CMS API, pinned to commit `145fbcfb7319333e6369796489c068196cb68665` in the [schema subset](../posting-service/contracts/delivery-v1.json). New destination descriptions await the supported adaptation API.
 
 See [current mapping setup](../../docs/contracted-mapping-setup.md), [local testing](../../docs/contracted-delivery-local-testing.md) and the [migration/validation record](../../docs/posting-service-migration-20261002.md). September handovers and retained simulated tests document the earlier contract. Isolated canaries do not install this candidate or certify a real NOVA round trip.
 
 ## Mapping and human rules
 
-Open **Mapping**, select a concrete page/layout, and save its NOVA mapping draft. The preview and inspector use the existing field inventory, including nested ACF targets. The twelve contracted delivery sources remain available for offline preparation. Unsupported custom repeat sources remain retained for review rather than silently converted.
+Open **Mapping**, select a concrete page/layout, and describe what its destination fields can hold. New drafts work offline without choosing NOVA sources. Add purpose, type, optional length/list limits, required/optional policy and instructions. Fixed groups describe selected existing slots with stable identities; they do not change native rows. Save, then export the backend description. See the [backend handover and tested example](../../docs/destination-mapping-backend-handover.md).
+
+Existing source profiles retain their catalog and mappings until explicitly converted. Unsupported historical repeat bindings remain available for review rather than silently converted. Destination descriptions cannot synchronize or activate against the reviewed stock-field API; they are prepared and exported locally.
 
 Configure the HTTPS service origin, site UUID, site token and authorized WordPress execution user. **Save locally**, **Synchronize**, and **Approve native profile** are separate operations. Synchronization creates/replaces `/v1/sites/{site_id}/templates`; local approval validates native capabilities and retains the exact site/template UUID/integer revision profile. Updates use `If-Match`. Unknown template-create responses require explicit recovery with the reviewed remote UUID, since POST has no contracted idempotency key.
 
 Optional `/pages/{url_id}/setting` selections and `/template-defaults` choose publishing templates on NOVA. The trusted NOVA URL ID is distinct from a WordPress ID. Native addresses, update/clone routing and protection remain local and must match the frozen delivery configuration. Source skips affect publishing mappings, not generation.
 
-Human instructions remain editable and retained with approved profiles, including template-level inherit/set/clear and per-field rules. **The current API has no instruction/rule property, so they remain local and NOVA does not enforce them.** The editor reports this limitation explicitly. Adding generation rules, custom labels, length/cardinality limits or generated repeat members requires backend authoring support.
+Human instructions remain editable, including template-level inherit/set/clear and per-field rules. Bounded UTF-8 instruction text preserves literal HTML and URL examples in the saved/exported description. **The reviewed API has no instruction/rule property, so they remain local and NOVA does not enforce them.** Connect them to posting-service content adaptation without changing NOVA generation.
 
 | Target behavior | Existing-page update | New clone |
 | --- | --- | --- |
@@ -104,7 +106,7 @@ All submitted custom fields are validated before native content is changed. Unkn
 
 WordPress and third-party save hooks are not a database transaction. A runtime failure after a valid update can leave a partial write, reported with `post_id` and `partial_write`. A custom-field failure during creation retains a draft and reports its ID for recovery; it is not reported as a successful publication. Do not blindly retry failed creates without inspecting the returned draft ID.
 
-Responses include `meta_all` and `nova_transport`. This generic Mapping module does not add `meta_descriptions`, `nova_content_mappings` or `nova_template_contexts`; its mappings and author instructions are synchronized to NOVA instead. Dedicated CPT context is separate. Native route discovery additionally reports `content_bridge`, and hidden CPT resolver results use the guarded route when available. This module does not edit n8n workflows: callers must use the returned route and request paths.
+Responses include `meta_all` and `nova_transport`. This generic Mapping module does not add `meta_descriptions`, `nova_content_mappings` or `nova_template_contexts`. Destination descriptions and instructions remain in local drafts/exports until the backend adaptation contract is connected; existing direct-source templates use the current setup API. Dedicated CPT context is separate. Native route discovery additionally reports `content_bridge`, and hidden CPT resolver results use the guarded route when available. This module does not edit n8n workflows: callers must use the returned route and request paths.
 
 ## Developer integration
 
@@ -118,6 +120,7 @@ Standalone plugin suites use local mocks and do not call a service or mutate a W
 
 ```sh
 php modules/posting-service/tests/mapping-contract-unit.php
+php modules/posting-service/tests/destination-description-unit.php
 php modules/posting-service/tests/protocol-unit.php
 php modules/posting-service/tests/receipt-json-unit.php
 php modules/posting-service/tests/mapped-writer-contract-unit.php

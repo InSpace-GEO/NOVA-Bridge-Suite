@@ -36,13 +36,16 @@ final class Nova_Bridge_Suite_Mapping_Drafts {
     public static function catalog_response( $request ) {
         $permission = self::can_admin();
         if ( is_wp_error( $permission ) ) { return $permission; }
-        $mode = $request->get_param( 'mode' ) ?: 'nova';
-        if ( ! in_array( $mode, [ 'preview', 'nova' ], true ) ) { return self::error( 'mode', 'Choose preview or nova catalog mode.' ); }
+        $mode = $request->get_param( 'mode' ) ?: 'destination';
+        if ( ! in_array( $mode, [ 'destination', 'preview', 'nova' ], true ) ) { return self::error( 'mode', 'Choose destination, preview or nova catalog mode.' ); }
         return self::response( self::catalog( $mode ) );
     }
 
     /** A trusted server adapter supplies this normalized shape, not an assumed NOVA HTTP envelope. */
     public static function catalog( string $mode ): array {
+        if ( 'destination' === $mode ) {
+            return [ 'origin' => 'destination', 'templates' => [ [ 'id' => 'local-destination', 'revision' => '1', 'label' => 'Destination template description', 'family' => 'page', 'authoring_notes' => '', 'fields' => [], 'groups' => [], 'protected_slots' => [] ] ], 'api_available' => false, 'message' => 'Describe existing template destinations locally. This description is not a deployed posting-service API contract.' ];
+        }
         if ( 'preview' === $mode ) { return self::preview_catalog(); }
         $unavailable = [ 'origin' => 'unavailable', 'templates' => [], 'message' => 'NOVA catalog is not connected. Existing drafts remain local and editable.' ];
         $value = apply_filters( 'nova_bridge_mapping_catalog', [ 'templates' => [] ] );
@@ -69,6 +72,29 @@ final class Nova_Bridge_Suite_Mapping_Drafts {
 
     private static function key( $value ): bool {
         return is_string( $value ) && 1 === preg_match( '/^[a-z][a-z0-9_]{1,63}$/D', $value );
+    }
+
+    private static function uuid( $value ): bool {
+        return is_string( $value ) && 1 === preg_match( '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D', $value );
+    }
+
+    private static function list_array( $value ): bool {
+        return is_array( $value ) && ( [] === $value || array_keys( $value ) === range( 0, count( $value ) - 1 ) );
+    }
+
+    public static function normalize_description( $value ) {
+        if ( ! is_array( $value ) || array_diff( array_keys( $value ), [ 'label', 'purpose', 'value_type', 'constraints' ] ) || ! self::text( $value['label'] ?? null, 200, false ) || ! self::text( $value['purpose'] ?? '', 2000 ) || ! in_array( $value['value_type'] ?? null, [ 'text', 'rich_text', 'url', 'email', 'image', 'list', 'link' ], true ) ) { return self::error( 'description', 'Describe the destination with a label, supported value type and optional purpose.' ); }
+        $constraints = $value['constraints'] ?? [];
+        if ( ! is_array( $constraints ) || array_diff( array_keys( $constraints ), [ 'max_length', 'min_items', 'max_items' ] ) ) { return self::error( 'constraints', 'Use only supported destination length and item constraints.' ); }
+        foreach ( $constraints as $key => $limit ) {
+            $minimum = 'max_length' === $key ? 1 : 0; $maximum = 'max_length' === $key ? 100000 : 500;
+            if ( ( 'max_length' === $key && ! in_array( $value['value_type'], [ 'text', 'rich_text', 'url', 'email' ], true ) ) || ( 'max_length' !== $key && 'list' !== $value['value_type'] ) ) { return self::error( 'constraints', 'Length limits apply to scalar text; item limits apply to list destinations.' ); }
+            if ( ! is_int( $limit ) || $limit < $minimum || $limit > $maximum ) { return self::error( 'constraints', 'Destination constraints must be bounded integer counts.' ); }
+        }
+        if ( isset( $constraints['max_items'] ) && $constraints['max_items'] < ( $constraints['min_items'] ?? 0 ) ) { return self::error( 'constraints', 'Maximum item count cannot be lower than minimum item count.' ); }
+        $label = sanitize_text_field( $value['label'] );
+        if ( '' === trim( $label ) ) { return self::error( 'description', 'The destination label cannot be empty.' ); }
+        return [ 'label' => $label, 'purpose' => $value['purpose'] ?? '', 'value_type' => $value['value_type'], 'constraints' => $constraints ];
     }
 
     private static function normalize_template( $input ) {
@@ -167,15 +193,15 @@ final class Nova_Bridge_Suite_Mapping_Drafts {
         if ( is_wp_error( $reference ) ) { return $reference; }
         $stored = self::stored( self::option_name( $reference ) );
         if ( isset( $stored['error'] ) ) { return $stored['error']; }
-        $mode = $request->get_param( 'mode' ) ?: ( $stored['draft']['catalog_mode'] ?? 'nova' );
-        if ( ! in_array( $mode, [ 'preview', 'nova' ], true ) ) { return self::error( 'mode', 'Choose preview or nova catalog mode.' ); }
+        $mode = $request->get_param( 'mode' ) ?: ( $stored['draft']['catalog_mode'] ?? 'destination' );
+        if ( ! in_array( $mode, [ 'destination', 'preview', 'nova' ], true ) ) { return self::error( 'mode', 'Choose destination, preview or nova catalog mode.' ); }
         return self::draft_response( $stored['draft'], $reference, self::catalog( $mode ) );
     }
 
     private static function descriptor( string $path, array $field, array $reference ): array {
         $result = [ 'path' => $path, 'reference_type' => $reference['entity']['reference_type'], 'reference_id' => $reference['entity']['reference_id'], 'signature' => $reference['signature'] ];
-        foreach ( [ 'route', 'transport', 'request_path', 'builder', 'write_mode', 'acf_key', 'binding', 'source', 'parent_path', 'element', 'logical_field' ] as $key ) {
-            if ( isset( $field[ $key ] ) && self::text( $field[ $key ], 2000 ) ) { $result[ $key ] = $field[ $key ]; }
+        foreach ( [ 'route', 'transport', 'request_path', 'builder', 'write_mode', 'acf_key', 'binding', 'source', 'parent_path', 'element', 'logical_field', 'label', 'type', 'format', 'native_description' ] as $key ) {
+            if ( isset( $field[ $key ] ) && self::text( $field[ $key ], 'native_description' === $key ? 8000 : 2000 ) ) { $result[ $key ] = $field[ $key ]; }
         }
         if ( isset( $field['selector_data'] ) && is_array( $field['selector_data'] ) && strlen( (string) wp_json_encode( $field['selector_data'] ) ) <= 8192 ) { $result['selector_data'] = $field['selector_data']; }
         return $result;
@@ -200,7 +226,8 @@ final class Nova_Bridge_Suite_Mapping_Drafts {
         $previous = $stored['draft'];
         if ( ( $previous['revision'] ?? '' ) !== $input['expected_revision'] || ( null !== $stored['raw'] && null === $previous ) ) { return self::error( 'conflict', 'This draft changed elsewhere. Reload and reconcile your changes; nothing was overwritten.', 409 ); }
         if ( $previous && $previous['signature'] !== $reference['signature'] && true !== ( $input['confirm_reference_change'] ?? false ) ) { return self::error( 'reference_changed', 'The saved draft belongs to an earlier layout. Review all targets and confirm the reference change before saving.', 409 ); }
-        if ( ! in_array( $input['catalog_mode'] ?? null, [ 'preview', 'nova' ], true ) || ! is_array( $input['template'] ?? null ) || ! self::text( $input['template']['id'] ?? null, 200, false ) || ! self::text( $input['template']['revision'] ?? null, 200, false ) ) { return self::error( 'template', 'Choose an exact template and catalog mode.' ); }
+        if ( ! in_array( $input['catalog_mode'] ?? null, [ 'destination', 'preview', 'nova' ], true ) || ! is_array( $input['template'] ?? null ) || ! self::text( $input['template']['id'] ?? null, 200, false ) || ! self::text( $input['template']['revision'] ?? null, 200, false ) ) { return self::error( 'template', 'Choose an exact template and catalog mode.' ); }
+        if ( 'destination' === $input['catalog_mode'] && ( 'local-destination' !== $input['template']['id'] || '1' !== $input['template']['revision'] ) ) { return self::error( 'template', 'Destination preparation uses the local description template.' ); }
         $catalog = self::catalog( $input['catalog_mode'] );
         $identity = [ 'id' => $input['template']['id'], 'revision' => $input['template']['revision'] ];
         $template = self::exact_template( $catalog, $identity );
@@ -219,7 +246,7 @@ final class Nova_Bridge_Suite_Mapping_Drafts {
         if ( is_wp_error( $draft ) ) { return $draft; }
         $draft['revision'] = wp_generate_uuid4();
         $draft['updated_at'] = gmdate( 'c' );
-        $draft['status'] = 'preview' === $input['catalog_mode'] ? 'local_draft' : 'awaiting_backend';
+        $draft['status'] = 'nova' === $input['catalog_mode'] ? 'awaiting_backend' : 'local_draft';
         $draft['warnings'] = self::warnings( $draft, $reference, $inventory, $template );
         if ( strlen( (string) wp_json_encode( $draft ) ) > self::MAX_BYTES ) { return self::error( 'size', 'The normalized draft exceeds 256 KiB.' ); }
         $saved = self::store( $name, $stored['raw'], $draft );
@@ -228,13 +255,15 @@ final class Nova_Bridge_Suite_Mapping_Drafts {
     }
 
     private static function validate_draft( array $input, $previous, array $reference, array $inventory, $template ) {
-        $fields = $input['fields'] ?? []; $skips = $input['skipped_sources'] ?? []; $repeats = $input['repeat_slots'] ?? []; $routing = $input['routing'] ?? [];
+        $fields = $input['fields'] ?? []; $skips = $input['skipped_sources'] ?? []; $repeats = $input['repeat_slots'] ?? []; $routing = $input['routing'] ?? []; $destinations = $input['destination_groups'] ?? [];
         if ( ! is_array( $fields ) || count( $fields ) > 500 || ! is_array( $skips ) || count( $skips ) > 144 || ! is_array( $repeats ) || count( $repeats ) > 8 || ! is_array( $routing ) || ! in_array( $routing['operation'] ?? null, [ 'update', 'clone' ], true ) || ! self::text( $routing['locale'] ?? '', 64 ) || ( '' !== ( $routing['locale'] ?? '' ) && ! preg_match( '/^[A-Za-z0-9_-]+$/D', $routing['locale'] ) ) ) { return self::error( 'shape', 'Supply bounded fields, skipped sources, fixed repeat slots and valid routing.' ); }
         if ( 'term' === $reference['entity']['reference_type'] && 'clone' === $routing['operation'] ) { return self::error( 'routing', 'Category references support update drafts only; category cloning is not implemented.' ); }
         $publication = $routing['publication'] ?? ( 'clone' === $routing['operation'] ? 'draft' : 'preserve' );
         if ( ! in_array( $publication, [ 'preserve', 'publish', 'draft' ], true ) ) { return self::error( 'routing', 'Choose a valid publication policy.' ); }
-        $draft = [ 'schema_version' => 1, 'signature' => $reference['signature'], 'reference_type' => $reference['entity']['reference_type'], 'reference_id' => $reference['entity']['reference_id'], 'template' => [ 'id' => $input['template']['id'], 'revision' => $input['template']['revision'] ], 'catalog_mode' => $input['catalog_mode'], 'label' => sanitize_text_field( $input['label'] ?? '' ), 'guidance' => sanitize_textarea_field( $input['guidance'] ?? '' ), 'fields' => [], 'skipped_sources' => [], 'repeat_slots' => [], 'routing' => [ 'operation' => $routing['operation'], 'locale' => $routing['locale'] ?? '' ], 'target_descriptors' => [] ];
-        $snapshot = $template ?: ( $previous['catalog_snapshot'] ?? null );
+        // Instructions are bounded plain text; literal markup examples must survive for the adapter.
+        $draft = [ 'schema_version' => 1, 'signature' => $reference['signature'], 'reference_type' => $reference['entity']['reference_type'], 'reference_id' => $reference['entity']['reference_id'], 'template' => [ 'id' => $input['template']['id'], 'revision' => $input['template']['revision'] ], 'catalog_mode' => $input['catalog_mode'], 'label' => sanitize_text_field( $input['label'] ?? '' ), 'guidance' => $input['guidance'] ?? '', 'fields' => [], 'skipped_sources' => [], 'repeat_slots' => [], 'routing' => [ 'operation' => $routing['operation'], 'locale' => $routing['locale'] ?? '' ], 'target_descriptors' => [] ];
+        // An explicit switch retains historical source bindings for review; it never converts them.
+        $snapshot = 'destination' === $input['catalog_mode'] ? ( $previous['catalog_snapshot'] ?? $template ) : ( $template ?: ( $previous['catalog_snapshot'] ?? null ) );
         $draft['guidance_mode'] = $input['guidance_mode'];
         $draft['profile_page_type'] = $input['profile_page_type'];
         $draft['catalog_snapshot'] = $snapshot;
@@ -257,9 +286,15 @@ final class Nova_Bridge_Suite_Mapping_Drafts {
         $used_sources = []; $used_targets = []; $protected = []; $protected_slots = [];
         $known_protected = $snapshot ? array_column( $snapshot['protected_slots'], null, 'key' ) : [];
         foreach ( $fields as $path => $field ) {
-            if ( ! Nova_Bridge_Suite_Strategy::valid_pointer( $path ) || ! is_array( $field ) || ! in_array( $field['mode'] ?? null, [ 'mapped', 'leave_empty', 'protected' ], true ) || ! self::text( $field['instructions'] ?? '', 8000 ) ) { return self::error( 'field', 'A selected field has an invalid path, mode or instructions.' ); }
+            if ( ! Nova_Bridge_Suite_Strategy::valid_pointer( $path ) || ! is_array( $field ) || ! in_array( $field['mode'] ?? null, [ 'adapt', 'mapped', 'leave_empty', 'protected' ], true ) || ! self::text( $field['instructions'] ?? '', 8000 ) ) { return self::error( 'field', 'A selected field has an invalid path, mode or instructions.' ); }
             $source = $field['source_path'] ?? '';
             if ( isset( $discarded[ $path ] ) ) { return self::error( 'stale_discard', 'A target cannot be retained and explicitly discarded in the same draft.' ); }
+            $description = null;
+            if ( 'adapt' === $field['mode'] ) {
+                if ( 'destination' !== $input['catalog_mode'] || '' !== $source ) { return self::error( 'source', 'Adapted destinations use no stock source and belong to destination preparation.' ); }
+                $description = self::normalize_description( $field['description'] ?? null );
+                if ( is_wp_error( $description ) ) { return $description; }
+            }
             if ( 'mapped' === $field['mode'] ) {
                 if ( ! self::source_path( $source ) || ( null !== $known_sources && ! isset( $known_sources[ $source ] ) ) ) { return self::error( 'source', 'A mapping uses a source absent from the exact selected template revision.' ); }
                 if ( false !== strpos( $source, '[].' ) ) { return self::error( 'repeat_source', 'Map repeat-member sources through ordered fixed existing slots, not an individual field mapping.' ); }
@@ -273,17 +308,25 @@ final class Nova_Bridge_Suite_Mapping_Drafts {
                 if ( 'mapped' === $field['mode'] && empty( $inventory[ $path ]['writable'] ) && ( ! $old || $old['mode'] !== 'mapped' || $old['source_path'] !== $source ) ) { return self::error( 'unwritable', 'This target has no discovered writer. Choose a supported target.' ); }
                 $descriptor = self::descriptor( $path, $inventory[ $path ], $reference );
             }
-            $draft['fields'][ $path ] = [ 'mode' => $field['mode'], 'source_path' => $source, 'instructions' => sanitize_textarea_field( $field['instructions'] ?? '' ), 'binding' => $descriptor['binding'] ?? '' ];
+            $draft['fields'][ $path ] = [ 'mode' => $field['mode'], 'source_path' => $source, 'instructions' => $field['instructions'] ?? '', 'binding' => $descriptor['binding'] ?? '' ];
+            if ( null !== $description ) { $draft['fields'][ $path ]['description'] = $description; }
             $protected_slot = $field['protected_slot'] ?? '';
             $retained_guard = $previous['fields'][ $path ] ?? null;
             $retained_slot = $retained_guard && 'protected' === ( $retained_guard['mode'] ?? '' ) && $protected_slot === ( $retained_guard['protected_slot'] ?? null );
             if ( ! is_string( $protected_slot ) || ( '' !== $protected_slot && ( 'protected' !== $field['mode'] || ( ! isset( $known_protected[ $protected_slot ] ) && ! $retained_slot ) || isset( $protected_slots[ $protected_slot ] ) ) ) ) { return self::error( 'protected_slot', 'Each selected protected region must bind one native target. Historical guard labels may be retained locally.' ); }
-            if ( isset( $field['required'] ) && ! is_bool( $field['required'] ) ) { return self::error( 'required', 'Required must be a boolean.' ); }
+            if ( array_key_exists( 'required', $field ) && ! is_bool( $field['required'] ) ) { return self::error( 'required', 'Required must be a boolean.' ); }
             $draft['fields'][ $path ]['required'] = true === ( $field['required'] ?? false );
             if ( '' !== $protected_slot ) { $draft['fields'][ $path ]['protected_slot'] = $protected_slot; $protected_slots[ $protected_slot ] = true; }
             $draft['target_descriptors'][ $path ] = $descriptor;
             $used_targets[ $path ] = true;
             if ( 'protected' === $field['mode'] ) { $protected[] = $path; }
+        }
+        $adapted = [];
+        foreach ( $draft['fields'] as $path => $field ) {
+            if ( 'adapt' !== $field['mode'] ) { continue; }
+            // ponytail: pairwise checks are bounded by 500 destinations; index bindings if that limit grows.
+            foreach ( $adapted as $other ) { if ( self::overlaps( $other, $draft['target_descriptors'][ $path ] ) ) { return self::error( 'destination_overlap', 'Two destination descriptions address the same native field or overlapping region. Select one destination.' ); } }
+            $adapted[] = $draft['target_descriptors'][ $path ];
         }
         foreach ( $previous['fields'] ?? [] as $path => $field ) {
             if ( ! isset( $inventory[ $path ] ) && ! isset( $draft['fields'][ $path ] ) && ! isset( $discarded[ $path ] ) ) { return self::error( 'stale_drop', 'A missing saved target was removed from this request. Its mapping has been retained; reconcile the stale target explicitly.', 409 ); }
@@ -323,6 +366,9 @@ final class Nova_Bridge_Suite_Mapping_Drafts {
                 foreach ( $old_slot['targets'] as $member => $path ) { if ( ! isset( $inventory[ $path ] ) && ! isset( $discarded[ $path ] ) && ( ! $slot || ( $slot['targets'][ $member ] ?? null ) !== $path ) ) { return self::error( 'stale_drop', 'A missing saved repeat target cannot be silently discarded.', 409 ); } }
             }
         }
+        $destination_groups = self::destination_groups( $destinations, $draft, $previous, $inventory, $discarded );
+        if ( is_wp_error( $destination_groups ) ) { return $destination_groups; }
+        if ( 'destination' === $input['catalog_mode'] || $destination_groups ) { $draft['destination_groups'] = $destination_groups; }
         $seen_skips = [];
         foreach ( $skips as $skip ) {
             if ( ! is_array( $skip ) || ! self::source_path( $skip['source_path'] ?? null ) || ! self::text( $skip['reason'] ?? null, 8000, false ) || isset( $seen_skips[ $skip['source_path'] ] ) || isset( $used_sources[ $skip['source_path'] ] ) || ( null !== $known_sources && ! isset( $known_sources[ $skip['source_path'] ] ) ) ) { return self::error( 'skip', 'Skipped sources need a unique unmapped source and an explicit reason.' ); }
@@ -334,12 +380,44 @@ final class Nova_Bridge_Suite_Mapping_Drafts {
         foreach ( $protected as $protected_path ) {
             foreach ( $draft['target_descriptors'] as $path => $descriptor ) {
                 $mode = $draft['fields'][ $path ]['mode'] ?? 'mapped';
-                $may_write = 'mapped' === $mode || ( 'clone' === $routing['operation'] && 'leave_empty' === $mode );
+                $may_write = in_array( $mode, [ 'adapt', 'mapped' ], true ) || ( 'clone' === $routing['operation'] && 'leave_empty' === $mode );
                 if ( $path === $protected_path || ! $may_write ) { continue; }
                 if ( self::overlaps( $draft['target_descriptors'][ $protected_path ], $descriptor ) ) { return self::error( 'protected_overlap', 'A generated target overlaps a protected target or its complete-parent writer. Choose disjoint fields.' ); }
             }
         }
         return $draft;
+    }
+
+    private static function destination_groups( $groups, array $draft, $previous, array $inventory, array $discarded ) {
+        if ( ! self::list_array( $groups ) || count( $groups ) > 64 || ( $groups && 'destination' !== $draft['catalog_mode'] ) ) { return self::error( 'destination_group', 'Supply bounded fixed destination groups in destination preparation.' ); }
+        $result = []; $ids = []; $used = [];
+        foreach ( $groups as $group ) {
+            if ( ! is_array( $group ) || array_diff( array_keys( $group ), [ 'id', 'label', 'slots' ] ) || ! self::uuid( $group['id'] ?? null ) || isset( $ids[ $group['id'] ] ) || ! self::text( $group['label'] ?? null, 200, false ) || ! self::list_array( $group['slots'] ?? null ) || ! $group['slots'] || count( $group['slots'] ) > 500 ) { return self::error( 'destination_group', 'Fixed groups need unique lowercase UUIDs, labels and existing slots.' ); }
+            $label = sanitize_text_field( $group['label'] );
+            if ( '' === trim( $label ) ) { return self::error( 'destination_group', 'A fixed group label cannot be empty.' ); }
+            $ids[ $group['id'] ] = true; $slots = [];
+            foreach ( $group['slots'] as $ordinal => $slot ) {
+                if ( ! is_array( $slot ) || array_diff( array_keys( $slot ), [ 'id', 'ordinal', 'fields' ] ) || ! self::uuid( $slot['id'] ?? null ) || isset( $ids[ $slot['id'] ] ) || ( $slot['ordinal'] ?? null ) !== $ordinal || ! self::list_array( $slot['fields'] ?? null ) || ! $slot['fields'] || count( $slot['fields'] ) > 500 ) { return self::error( 'destination_slot', 'Fixed slots need unique lowercase UUIDs, matching ordinals and selected fields.' ); }
+                $ids[ $slot['id'] ] = true;
+                foreach ( $slot['fields'] as $path ) {
+                    if ( ! Nova_Bridge_Suite_Strategy::valid_pointer( $path ) || isset( $used[ $path ] ) || 'adapt' !== ( $draft['fields'][ $path ]['mode'] ?? '' ) || ! in_array( $draft['fields'][ $path ]['description']['value_type'] ?? '', [ 'text', 'rich_text', 'url', 'email' ], true ) || in_array( $inventory[ $path ]['type'] ?? $draft['target_descriptors'][ $path ]['type'] ?? '', [ 'group', 'repeater', 'flexible_content', 'object', 'array', 'link', 'image', 'gallery' ], true ) ) { return self::error( 'destination_target', 'Each fixed slot must describe distinct selected scalar destinations.' ); }
+                    $used[ $path ] = true;
+                }
+                $slots[] = [ 'id' => $slot['id'], 'ordinal' => $ordinal, 'fields' => $slot['fields'] ];
+            }
+            $result[] = [ 'id' => $group['id'], 'label' => $label, 'slots' => $slots ];
+        }
+        foreach ( $previous['destination_groups'] ?? [] as $group ) {
+            $saved_group = null;
+            foreach ( $result as $candidate ) { if ( $candidate['id'] === $group['id'] ) { $saved_group = $candidate; break; } }
+            foreach ( $group['slots'] as $slot ) {
+                $saved_slot = self::find_slot( $saved_group['slots'] ?? [], $slot['id'] );
+                foreach ( $slot['fields'] as $path ) {
+                    if ( ! isset( $inventory[ $path ] ) && ! isset( $discarded[ $path ] ) && ! in_array( $path, $saved_slot['fields'] ?? [], true ) ) { return self::error( 'stale_drop', 'A missing fixed-slot destination cannot be silently discarded.', 409 ); }
+                }
+            }
+        }
+        return $result;
     }
 
     private static function find_slot( array $slots, string $id ) {
@@ -369,13 +447,16 @@ final class Nova_Bridge_Suite_Mapping_Drafts {
     }
 
     private static function warnings( array $draft, array $reference, array $inventory, $template ): array {
-        $warnings = [ 'Local draft only: saving does not synchronize or publish.', 'Human instructions and rules are retained locally. The current posting API does not accept them or apply them during generation.' ];
+        $warnings = [ 'Local draft only: saving does not synchronize or publish.', 'Human instructions and rules are retained locally. The current posting API does not accept them for content adaptation.' ];
         if ( 'preview' === $draft['catalog_mode'] ) { $warnings[] = 'This draft uses illustrative preview IDs and field types. It must be reviewed against a real NOVA template before synchronization.'; }
-        if ( ! $template ) { $warnings[] = 'The exact NOVA template revision is unavailable; source compatibility and coverage cannot be validated. Saved selections are retained.'; }
+        $destination = 'destination' === $draft['catalog_mode'];
+        if ( $destination ) { $warnings[] = 'Destination descriptions and fixed capacity are preparation only. No posting-service adaptation contract or native typed writer is certified by saving them.'; }
+        if ( ! $template && ! $destination ) { $warnings[] = 'The exact NOVA template revision is unavailable; source compatibility and coverage cannot be validated. Saved selections are retained.'; }
         if ( $reference['signature'] !== $draft['signature'] ) { $warnings[] = 'The reference layout has changed. Saved native targets are stale and require reconciliation.'; }
         $covered = [];
         foreach ( $draft['fields'] as $path => $field ) {
             if ( 'mapped' === $field['mode'] ) { $covered[ $field['source_path'] ] = true; }
+            if ( 'adapt' === $field['mode'] && ( empty( $inventory[ $path ]['writable'] ) || in_array( $field['description']['value_type'] ?? '', [ 'image', 'list', 'link' ], true ) ) ) { $warnings[] = 'Adapted destination ' . $path . ' requires a verified native writer before publication; its description can still be prepared.'; }
             if ( 'protected' === $field['mode'] ) { $warnings[] = 'Protected target ' . $path . ' remains a local native guard; no protected-content contract is sent to NOVA.'; }
         }
         foreach ( $draft['repeat_slots'] as $key => $slots ) { foreach ( $slots as $ordinal => $slot ) { if ( ! preg_match( '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D', $slot['id'] ) || ( $slot['ordinal'] ?? null ) !== $ordinal ) { $warnings[] = 'Legacy repeat slot identities are retained. Explicitly replace them before synchronizing a new mapping; historical slots are never backfilled.'; } foreach ( $slot['targets'] as $member => $path ) { $covered[ $key . '[].' . $member ] = true; } } }
@@ -387,7 +468,7 @@ final class Nova_Bridge_Suite_Mapping_Drafts {
         $skipped = [];
         foreach ( $draft['skipped_sources'] as $skip ) { $skipped[ $skip['source_path'] ] = true; }
         if ( $skipped ) { $warnings[] = 'Explicitly skipped NOVA fields: ' . implode( ', ', array_keys( $skipped ) ) . '. These are omitted from the publishing mapping; generation and the delivered source content are unchanged.'; }
-        if ( $template ) {
+        if ( $template && ! $destination ) {
             $missing = [];
             foreach ( $template['fields'] as $field ) { if ( ! isset( $covered[ $field['source_path'] ] ) && ! isset( $skipped[ $field['source_path'] ] ) ) { $missing[] = $field['source_path']; } }
             if ( $missing ) { $warnings[] = 'Unmapped NOVA fields: ' . implode( ', ', $missing ) . '. This incomplete draft can be saved locally.'; }
@@ -402,16 +483,23 @@ final class Nova_Bridge_Suite_Mapping_Drafts {
     }
 
     private static function draft_response( $draft, array $reference, array $catalog ) {
-        $warnings = []; $handoff = null;
+        $warnings = []; $handoff = null; $backend_description = null;
         if ( $draft ) {
             $inventory = array_column( Nova_Bridge_Suite_Strategy::field_inventory( $reference['entity'] ), null, 'path' );
             $warnings = self::warnings( $draft, $reference, $inventory, self::exact_template( $catalog, $draft['template'] ) );
             $draft['warnings'] = $warnings;
             $bindings = [];
-            foreach ( $draft['fields'] as $path => $field ) { $bindings[] = [ 'mode' => $field['mode'], 'source_path' => $field['source_path'], 'instructions' => $field['instructions'], 'target' => $draft['target_descriptors'][ $path ] ]; }
+            foreach ( $draft['fields'] as $path => $field ) { $binding = [ 'mode' => $field['mode'], 'source_path' => $field['source_path'], 'instructions' => $field['instructions'], 'required' => true === ( $field['required'] ?? false ), 'target' => $draft['target_descriptors'][ $path ] ]; if ( isset( $field['description'] ) ) { $binding['description'] = $field['description']; } $bindings[] = $binding; }
             $handoff = [ 'format' => 'nova_bridge_local_mapping_draft_v1', 'local_only' => true, 'verified' => false, 'synchronized' => false, 'activation' => 'not_requested', 'reference_type' => $draft['reference_type'], 'reference_id' => $draft['reference_id'], 'signature' => $draft['signature'], 'catalog_mode' => $draft['catalog_mode'], 'template' => $draft['template'], 'label' => $draft['label'], 'guidance' => $draft['guidance'], 'bindings' => $bindings, 'skipped_sources' => $draft['skipped_sources'], 'repeat_slots' => $draft['repeat_slots'], 'target_descriptors' => $draft['target_descriptors'], 'routing' => $draft['routing'], 'warnings' => $warnings ];
+            if ( isset( $draft['destination_groups'] ) ) { $handoff['destination_groups'] = $draft['destination_groups']; }
+            if ( class_exists( 'Nova_Bridge_Suite_Writing_Adapter' ) && Nova_Bridge_Suite_Writing_Adapter::is_destination_draft( $draft ) ) {
+                if ( $draft['signature'] !== $reference['signature'] || $reference['requested_signature'] !== $reference['signature'] ) { $description = self::error( 'reference_changed', 'Refresh and reconcile the layout before exporting its backend description.', 409 ); }
+                else { $description = Nova_Bridge_Suite_Writing_Adapter::destination_description( $draft ); }
+                foreach ( $draft['fields'] as $path => $field ) { if ( 'adapt' === $field['mode'] && ! isset( $inventory[ $path ] ) ) { $description = self::error( 'stale_target', 'A described destination is no longer discovered. Reconcile it before exporting.', 409 ); break; } }
+                $backend_description = is_wp_error( $description ) ? [ 'status' => 'needs_review', 'error' => [ 'code' => $description->get_error_code(), 'message' => $description->get_error_message() ] ] : [ 'status' => 'prepared_local', 'local_revision' => $draft['revision'], 'sha256' => hash( 'sha256', Nova_Bridge_Suite_Writing_Adapter::canonical_json( $description ) ), 'description' => $description ];
+            }
         }
         if ( $reference['requested_signature'] !== $reference['signature'] && ! $draft ) { $warnings[] = 'The requested layout signature is stale. Refresh the reference before creating a draft.'; }
-        return self::response( [ 'draft' => $draft, 'handoff' => $handoff, 'catalog' => $catalog, 'warnings' => $warnings, 'reference' => [ 'reference_type' => $reference['entity']['reference_type'], 'reference_id' => $reference['entity']['reference_id'], 'signature' => $reference['signature'] ] ] );
+        return self::response( [ 'draft' => $draft, 'handoff' => $handoff, 'backend_description' => $backend_description, 'catalog' => $catalog, 'warnings' => $warnings, 'reference' => [ 'reference_type' => $reference['entity']['reference_type'], 'reference_id' => $reference['entity']['reference_id'], 'signature' => $reference['signature'] ] ] );
     }
 }

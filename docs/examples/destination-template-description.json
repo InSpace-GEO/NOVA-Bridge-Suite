@@ -1,0 +1,179 @@
+{
+    "status": "prepared_local",
+    "local_revision": "synthetic-example-only",
+    "sha256": "7a26dde0337059f5ddce6a2cbd3a6e6b4d8866bd483d18d67f8d6e0df92a5d65",
+    "description": {
+        "format": "nova-template-description/v1",
+        "name": "Service page with three existing steps",
+        "page_type": "service",
+        "instructions": {
+            "mode": "set",
+            "text": "Exactly one relevant label per page. Keep all existing repeat rows."
+        },
+        "fields": [
+            {
+                "id": "field_f5093aabe42ba31382a9bbb0",
+                "label": "Relevant page label",
+                "purpose": "A relevant destination value for this page.",
+                "value_type": "text",
+                "constraints": {
+                    "max_length": 30
+                },
+                "required": true,
+                "instructions": "Provide exactly one relevant page label, not multiple tags.",
+                "element": "Existing badge widget",
+                "logical_field": "label"
+            },
+            {
+                "id": "field_c5dac51943784bf3197c1459",
+                "label": "Primary button label",
+                "purpose": "A relevant destination value for this page.",
+                "value_type": "text",
+                "constraints": {
+                    "max_length": 30
+                },
+                "required": false,
+                "instructions": "Fit this value to the existing layout.",
+                "element": "button",
+                "logical_field": "text"
+            },
+            {
+                "id": "field_27f57e60d1236d31d87b9747",
+                "label": "Contact email",
+                "purpose": "A relevant destination value for this page.",
+                "value_type": "email",
+                "required": false,
+                "instructions": "Fit this value to the existing layout."
+            },
+            {
+                "id": "field_064865d7878b30d3c39c449f",
+                "label": "Hero heading",
+                "purpose": "A relevant destination value for this page.",
+                "value_type": "text",
+                "constraints": {
+                    "max_length": 70
+                },
+                "required": true,
+                "instructions": "Fit this value to the existing layout."
+            },
+            {
+                "id": "field_13a1b6eb5622db9da76d8a16",
+                "label": "Introduction",
+                "purpose": "A relevant destination value for this page.",
+                "value_type": "rich_text",
+                "constraints": {
+                    "max_length": 800
+                },
+                "required": false,
+                "instructions": "Fit this value to the existing layout."
+            },
+            {
+                "id": "field_a76d020581e9037cacd1c811",
+                "label": "Step description 1",
+                "purpose": "A relevant destination value for this page.",
+                "value_type": "rich_text",
+                "constraints": {
+                    "max_length": 500
+                },
+                "required": false,
+                "instructions": "Fit this value to the existing layout."
+            },
+            {
+                "id": "field_e4814ab947493a2918536680",
+                "label": "Step title 1",
+                "purpose": "A relevant destination value for this page.",
+                "value_type": "text",
+                "constraints": {
+                    "max_length": 40
+                },
+                "required": true,
+                "instructions": "Fit this value to the existing layout."
+            },
+            {
+                "id": "field_1e01cd5383afd517b257cf99",
+                "label": "Step description 2",
+                "purpose": "A relevant destination value for this page.",
+                "value_type": "rich_text",
+                "constraints": {
+                    "max_length": 500
+                },
+                "required": false,
+                "instructions": "Fit this value to the existing layout."
+            },
+            {
+                "id": "field_66cf9647b15b389dcd0433c3",
+                "label": "Step title 2",
+                "purpose": "A relevant destination value for this page.",
+                "value_type": "text",
+                "constraints": {
+                    "max_length": 40
+                },
+                "required": true,
+                "instructions": "Fit this value to the existing layout."
+            },
+            {
+                "id": "field_d9bc53f8f2d251c111a2bbe4",
+                "label": "Step description 3",
+                "purpose": "A relevant destination value for this page.",
+                "value_type": "rich_text",
+                "constraints": {
+                    "max_length": 500
+                },
+                "required": false,
+                "instructions": "Fit this value to the existing layout."
+            },
+            {
+                "id": "field_f345b33e20c5490ebc0b5d8e",
+                "label": "Step title 3",
+                "purpose": "A relevant destination value for this page.",
+                "value_type": "text",
+                "constraints": {
+                    "max_length": 40
+                },
+                "required": true,
+                "instructions": "Fit this value to the existing layout."
+            },
+            {
+                "id": "field_766c4650cb3e23432941ddcd",
+                "label": "Relevant URL",
+                "purpose": "A relevant destination value for this page.",
+                "value_type": "url",
+                "required": false,
+                "instructions": "Fit this value to the existing layout."
+            }
+        ],
+        "groups": [
+            {
+                "id": "11111111-1111-4111-8111-111111111111",
+                "label": "Existing steps",
+                "capacity": 3,
+                "slots": [
+                    {
+                        "id": "22222222-2222-4222-8222-222222222220",
+                        "ordinal": 0,
+                        "field_ids": [
+                            "field_e4814ab947493a2918536680",
+                            "field_a76d020581e9037cacd1c811"
+                        ]
+                    },
+                    {
+                        "id": "22222222-2222-4222-8222-222222222221",
+                        "ordinal": 1,
+                        "field_ids": [
+                            "field_66cf9647b15b389dcd0433c3",
+                            "field_1e01cd5383afd517b257cf99"
+                        ]
+                    },
+                    {
+                        "id": "22222222-2222-4222-8222-222222222222",
+                        "ordinal": 2,
+                        "field_ids": [
+                            "field_f345b33e20c5490ebc0b5d8e",
+                            "field_d9bc53f8f2d251c111a2bbe4"
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+}

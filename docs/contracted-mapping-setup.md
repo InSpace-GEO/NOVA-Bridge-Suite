@@ -2,13 +2,23 @@
 
 This guide describes the plugin candidate against posting-service commit `145fbcfb7319333e6369796489c068196cb68665` (reviewed 2026-10-02). It replaces the earlier writing-template, assignment, pin and URL-binding setup flow. It does not certify a deployed NOVA service or a real end-to-end delivery.
 
-The intended module describes what destination template fields can hold, with optional rules and instructions; posting-service then fits NOVA's existing content to those destinations. The current implementation below covers direct stock-field bindings. See the [template fitting handover](template-fitting-transfer-20261002.md) for the remaining plugin and API work needed to implement the intended flow.
+New drafts describe what destination template fields can hold, with optional rules and instructions; posting-service is expected to fit NOVA's existing content to those destinations. Destination preparation is available locally; synchronization awaits the supported adaptation API. See the [backend handover](destination-mapping-backend-handover.md) for the exact prepared data and remaining connection work. The direct stock-field setup below remains available for existing profiles.
 
-## Prepare a local profile
+## Prepare destination descriptions
+
+Open the Mapping tab in NOVA Bridge settings and choose a concrete page/template. New drafts need no source catalog or NOVA connection. Choose **Fit NOVA content to this field**, describe its label, purpose and accepted type, and add optional limits and human instructions. Required/optional is explicit; an incomplete local draft can still be saved.
+
+For fixed repeat capacity, create a named group and add existing slots. Bind each slot to its selected scalar destination fields. The editor preserves slot UUIDs and ordinals; it never creates native rows. Protected and Leave empty remain separate choices.
+
+Save the draft, then choose **Export backend description**. This export contains stable destination IDs and rules without WordPress addresses or protected content. It checks the saved revision and current layout; stale or mixed legacy descriptions require review. Backend synchronization and approval are unavailable for these descriptions until the adaptation contract is connected.
+
+Existing drafts retain their original mode. **Prepare destination descriptions instead** switches the local editor explicitly while keeping historical mappings and instructions for review. Convert direct-source fields explicitly, and remove retained legacy repeat bindings after review before describing their existing destinations. Approved historical profiles remain unchanged.
+
+## Existing direct-source profiles
 
 Choose a concrete WordPress page and its current structure in the mapping editor. The local draft retains the page identity, structure signature, server-derived native target descriptors, routing, protection decisions, explicit source skips and human instructions. Saving a draft does not edit or publish that page.
 
-The editor always offers the twelve source fields defined by the current delivery contract, including when the site connection is disabled or unavailable:
+Existing direct-source profiles use the twelve source fields defined by the current delivery contract, including when the site connection is disabled or unavailable:
 
 `title`, `meta_description`, `h1`, `content`, `top_content`, `bottom_content`, `image_url`, `image_urls`, `image_alt`, `url`, `page_type_frontend`, `language`.
 

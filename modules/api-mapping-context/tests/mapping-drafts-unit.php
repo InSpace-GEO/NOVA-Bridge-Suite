@@ -8,6 +8,7 @@ class WP_Error {
     public $code; public $message; public $data;
     public function __construct( $code, $message, $data = [] ) { $this->code = $code; $this->message = $message; $this->data = $data; }
     public function get_error_code() { return $this->code; }
+    public function get_error_message() { return $this->message; }
 }
 class Draft_Test_Response {
     public $data; public $headers = [];
@@ -78,6 +79,7 @@ $inventory[] = $native( '/@builders/elementor/b', [ 'builder' => 'elementor', 'r
 $inventory[] = $native( '/@builders/elementor/alias', [ 'builder' => 'elementor', 'request_path' => '/fields/*/value', 'selector_data' => [ 'field_key' => 'widgetA|title' ] ] );
 Nova_Bridge_Suite_Strategy::$inventory = $inventory;
 require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-mapping-drafts.php';
+require_once dirname( __DIR__, 2 ) . '/posting-service/includes/class-nova-bridge-suite-writing-adapter.php';
 
 $checks = 0;
 $assert = static function ( $condition, $message ) use ( &$checks ) { if ( ! $condition ) { throw new RuntimeException( $message ); } ++$checks; };
@@ -216,5 +218,110 @@ $canonical['fields'][0]['type'] = 'arbitrary'; $adapter_catalog = [ 'templates' 
 $new = $input; $new['reference_id'] = 3;
 $wpdb->before_query = static function ( $db, $prepared ) { $db->rows[ $prepared[1][0] ] = [ 'value' => serialize( [ 'revision' => 'first-insert-winner' ] ), 'autoload' => 'no' ]; };
 $error( $save( $new ), 'conflict', 409 );
+
+// Destination descriptions are useful without a NOVA source catalog or a native write.
+$legacy_rows = $wpdb->rows;
+$destination_name = 'nova_mapping_draft_' . hash( 'sha256', 'post:3' ); unset( $wpdb->rows[ $destination_name ] );
+foreach ( $inventory as &$field ) {
+    if ( '/title' === $field['path'] ) { $field += [ 'label' => 'Native title', 'type' => 'string', 'format' => 'plain_text', 'native_description' => 'Native title guidance' ]; }
+}
+unset( $field ); Nova_Bridge_Suite_Strategy::$inventory = $inventory;
+$catalog = Nova_Bridge_Suite_Mapping_Drafts::catalog_response( new Draft_Test_Request( [] ) );
+$assert( 'destination' === $catalog->data['origin'] && false === $catalog->data['api_available'] && [] === $catalog->data['templates'][0]['fields'], 'Default destination catalog describes local preparation without invented remote sources.' );
+$assert( 'destination' === $get( 3 )->data['catalog']['origin'], 'New references default to destination preparation.' );
+$describe = static function ( string $label, string $type = 'text', array $constraints = [] ): array {
+    return [ 'mode' => 'adapt', 'source_path' => '', 'required' => false, 'instructions' => '', 'description' => [ 'label' => $label, 'purpose' => 'Existing template destination', 'value_type' => $type, 'constraints' => $constraints ] ];
+};
+$destination = [ 'expected_revision' => '', 'reference_type' => 'post', 'reference_id' => 3, 'signature' => 'layout-one', 'catalog_mode' => 'destination', 'template' => [ 'id' => 'local-destination', 'revision' => '1' ], 'label' => 'Source-free service description', 'guidance_mode' => 'set', 'guidance' => 'Fit the content to the existing template. Add exactly one relevant badge label.', 'fields' => [ '/title' => $describe( 'Hero heading', 'text', [ 'max_length' => 70 ] ), '/content' => $describe( 'Introduction', 'rich_text' ), '/excerpt' => $describe( 'Read-only example', 'rich_text' ), '/meta_all/acf/group/intro' => $describe( 'Compound destination', 'link' ) ], 'destination_groups' => [], 'skipped_sources' => [], 'repeat_slots' => [], 'routing' => [ 'operation' => 'update', 'locale' => '' ] ];
+$literal_rule = 'Use <strong>...</strong>; preserve <br> and /path%20example';
+$destination['guidance'] .= "\n" . $literal_rule;
+$destination['fields']['/title']['required'] = true;
+$destination['fields']['/title']['instructions'] = $literal_rule;
+$destination['fields']['/title']['description']['purpose'] = $literal_rule;
+$destination['fields']['/@builders/elementor/a'] = [ 'mode' => 'protected', 'source_path' => '', 'instructions' => 'Private local protection instructions.' ];
+$destination['target_descriptors'] = [ '/title' => [ 'label' => 'forged native label', 'route' => 'https://forged.invalid/' ] ];
+$group = [ 'id' => '60000000-0000-4000-8000-000000000001', 'label' => 'Three existing steps', 'slots' => [] ];
+for ( $index = 1; $index <= 3; ++$index ) {
+    $paths = [];
+    foreach ( [ 'heading', 'body' ] as $member ) { $path = '/slots/' . $index . '/' . $member; $paths[] = $path; $destination['fields'][ $path ] = $describe( 'Step ' . $index . ' ' . $member, 'body' === $member ? 'rich_text' : 'text', 'body' === $member ? [] : [ 'max_length' => 40 ] ); }
+    $group['slots'][] = [ 'id' => sprintf( '60000000-0000-4000-8000-%012d', $index + 1 ), 'ordinal' => $index - 1, 'fields' => $paths ];
+}
+$destination['destination_groups'][] = $group;
+$admin = false; $logged_in = false; $error( $save( $destination ), 'forbidden', 401 );
+$logged_in = true; $error( $save( $destination ), 'forbidden', 403 ); $admin = true;
+$destination_saved = $save( $destination );
+$assert( $destination_saved instanceof Draft_Test_Response, 'Adapted destination description saves without a stock source or backend connection.' );
+$destination_draft = $destination_saved->data['draft'];
+$assert( 'local_draft' === $destination_draft['status'] && $destination_draft['fields']['/title']['description'] === $destination['fields']['/title']['description'] && '' === $destination_draft['fields']['/title']['source_path'], 'Description, rules, required intent and source-free mode survive local storage.' );
+$assert( $destination_draft['target_descriptors']['/title']['label'] === 'Native title' && $destination_draft['target_descriptors']['/title']['type'] === 'string' && $destination_draft['target_descriptors']['/title']['format'] === 'plain_text' && $destination_draft['target_descriptors']['/title']['native_description'] === 'Native title guidance' && false === strpos( json_encode( $destination_saved->data ), 'forged.invalid' ), 'Trusted discovered destination metadata is retained and caller addresses discarded.' );
+$assert( $destination_draft['destination_groups'] === $destination['destination_groups'] && $destination_saved->data['handoff']['destination_groups'] === $destination['destination_groups'] && count( $destination_draft['destination_groups'][0]['slots'] ) === 3, 'Three identified existing slots round-trip with their exact capacity and field selections.' );
+$assert( $destination_saved->data['handoff']['bindings'][0]['description'] === $destination['fields']['/title']['description'] && true === $destination_saved->data['handoff']['bindings'][0]['required'], 'Local export retains description, optional rules and required intent.' );
+$assert( false === strpos( implode( ' ', $destination_saved->data['warnings'] ), 'Unmapped NOVA fields' ) && false !== strpos( implode( ' ', $destination_saved->data['warnings'] ), 'requires a verified native writer' ), 'Destination preparation omits irrelevant stock coverage and warns about unsupported native destinations.' );
+$backend = $destination_saved->data['backend_description'];
+$assert( 'prepared_local' === $backend['status'] && $backend['local_revision'] === $destination_draft['revision'] && $backend['sha256'] === hash( 'sha256', Nova_Bridge_Suite_Writing_Adapter::canonical_json( $backend['description'] ) ), 'Backend-neutral export is tied to the local revision and exact description digest.' );
+$backend_json = json_encode( $backend['description'] );
+$assert( false === strpos( $backend_json, 'reference_id' ) && false === strpos( $backend_json, 'native-page.php' ) && false === strpos( $backend_json, 'request_path' ) && false === strpos( $backend_json, 'source_field' ) && false === strpos( $backend_json, 'source_path' ) && false === strpos( $backend_json, '/slots/' ) && false === strpos( $backend_json, '/meta_all/' ) && false === strpos( $backend_json, 'Private local protection instructions.' ), 'Backend description excludes native addresses, WordPress IDs, stock source bindings and private protection details.' );
+$backend_fields = array_column( $backend['description']['fields'], null, 'id' );
+$title_id = Nova_Bridge_Suite_Writing_Adapter::field_id( '/title' );
+$assert( isset( $backend_fields[ $title_id ] ) && $backend_fields[ $title_id ]['label'] === 'Hero heading' && true === $backend_fields[ $title_id ]['required'] && false === $backend_fields[ Nova_Bridge_Suite_Writing_Adapter::field_id( '/excerpt' ) ]['required'], 'Destination field IDs are stable and required/optional intent is explicit.' );
+$assert( $destination_draft['guidance'] === $destination['guidance'] && $destination_draft['fields']['/title']['instructions'] === $literal_rule && $destination_draft['fields']['/title']['description']['purpose'] === $literal_rule && $backend['description']['instructions']['text'] === $destination['guidance'] && $backend_fields[ $title_id ]['instructions'] === $literal_rule && $backend_fields[ $title_id ]['purpose'] === $literal_rule && 0 === $cms_calls && 0 === $remote_calls, 'Literal HTML and URL escapes survive purpose and human rule storage/export as nonexecuted metadata.' );
+$assert( 3 === $backend['description']['groups'][0]['capacity'] && $backend['description']['groups'][0]['slots'][0]['field_ids'] === [ Nova_Bridge_Suite_Writing_Adapter::field_id( '/slots/1/heading' ), Nova_Bridge_Suite_Writing_Adapter::field_id( '/slots/1/body' ) ], 'Backend group capacity and slot members refer to exact stable destination IDs.' );
+$assert( $get( 3 )->data['backend_description']['sha256'] === $backend['sha256'], 'Repeated reads export the identical description digest without remote calls.' );
+$stale_export = $get( 3, 'stale-request-signature' )->data['backend_description'];
+$assert( 'needs_review' === $stale_export['status'] && 'nova_mapping_draft_reference_changed' === $stale_export['error']['code'] && ! isset( $stale_export['description'] ), 'A stale requested signature blocks backend description export while retaining the local draft.' );
+$error( $save( $destination ), 'conflict', 409 );
+$destination['expected_revision'] = $destination_draft['revision'];
+$builder_description = $destination; $builder_description['fields'] = [ '/@builders/elementor/a' => $describe( 'First widget heading' ), '/@builders/elementor/alias' => $describe( 'Aliased widget heading' ) ]; $builder_description['destination_groups'] = [];
+$error( $save( $builder_description ), 'destination_overlap' );
+unset( $builder_description['fields']['/@builders/elementor/alias'] ); $builder_description['fields']['/@builders/elementor/b'] = $describe( 'Second widget heading' );
+$distinct_destinations = $save( $builder_description );
+$assert( $distinct_destinations instanceof Draft_Test_Response && 'prepared_local' === $distinct_destinations->data['backend_description']['status'], 'Distinct existing widget selectors can be described separately despite sharing a request envelope.' );
+$destination['expected_revision'] = $distinct_destinations->data['draft']['revision']; $restored_destinations = $save( $destination );
+$assert( $restored_destinations instanceof Draft_Test_Response && $backend['sha256'] === $restored_destinations->data['backend_description']['sha256'], 'Restoring the reviewed template description retains stable identities and its exact exported digest.' );
+$destination['expected_revision'] = $restored_destinations->data['draft']['revision'];
+$bad = $destination; $bad['fields']['/title']['source_path'] = 'h1'; $error( $save( $bad ), 'source' );
+$bad = $destination; $bad['fields']['/title']['required'] = 1; $error( $save( $bad ), 'required' );
+$bad = $destination; $bad['fields']['/title']['required'] = null; $error( $save( $bad ), 'required' );
+$bad = $destination; $bad['fields']['/title']['description']['field_path'] = '/forged'; $error( $save( $bad ), 'description' );
+$bad = $destination; $bad['fields']['/title']['description']['purpose'] = str_repeat( 'é', 1001 ); $error( $save( $bad ), 'description' );
+$bad = $destination; $bad['fields']['/title']['description']['label'] = "invalid\xff"; $error( $save( $bad ), 'description' );
+$bad = $destination; $bad['fields']['/title']['description']['value_type'] = 'button'; $error( $save( $bad ), 'description' );
+foreach ( [ [ 'max_length' => 0 ], [ 'max_length' => 100001 ], [ 'max_length' => '70' ], [ 'max_length' => null ], [ 'min_items' => -1 ], [ 'max_items' => 501 ], [ 'min_items' => 3, 'max_items' => 2 ], [ 'pattern' => '.*' ] ] as $constraints ) { $bad = $destination; $bad['fields']['/title']['description']['constraints'] = $constraints; $error( $save( $bad ), 'constraints' ); }
+$accepted = Nova_Bridge_Suite_Mapping_Drafts::normalize_description( [ 'label' => 'Optional list', 'value_type' => 'list', 'constraints' => [ 'min_items' => 0, 'max_items' => 500 ] ] );
+$assert( is_array( $accepted ) && '' === $accepted['purpose'] && 500 === $accepted['constraints']['max_items'], 'Description bounds are inclusive and omitted purpose is explicitly empty.' );
+$assert( is_array( Nova_Bridge_Suite_Mapping_Drafts::normalize_description( [ 'label' => 'Long text', 'value_type' => 'text', 'constraints' => [ 'max_length' => 100000 ] ] ) ), 'Scalar maximum length allows the documented upper bound.' );
+foreach ( [ [ 'text', [ 'min_items' => 1 ] ], [ 'rich_text', [ 'max_items' => 2 ] ], [ 'list', [ 'max_length' => 20 ] ], [ 'link', [ 'max_length' => 20 ] ] ] as $case ) { $error( Nova_Bridge_Suite_Mapping_Drafts::normalize_description( [ 'label' => 'Invalid typed constraint', 'value_type' => $case[0], 'constraints' => $case[1] ] ), 'constraints' ); }
+$bad = $destination; $bad['destination_groups'][0]['route'] = '/forged'; $error( $save( $bad ), 'destination_group' );
+$bad = $destination; $bad['destination_groups'][] = $group; $error( $save( $bad ), 'destination_group' );
+$bad = $destination; $bad['destination_groups'][0]['slots'][1]['id'] = $group['slots'][0]['id']; $error( $save( $bad ), 'destination_slot' );
+$bad = $destination; $bad['destination_groups'][0]['slots'][0]['id'] = $group['id']; $error( $save( $bad ), 'destination_slot' );
+$bad = $destination; $bad['destination_groups'][0]['slots'][0]['id'] = 'AAAAAAAA-0000-4000-8000-000000000002'; $error( $save( $bad ), 'destination_slot' );
+$bad = $destination; $bad['destination_groups'][0]['slots'][0]['ordinal'] = 1; $error( $save( $bad ), 'destination_slot' );
+$bad = $destination; $bad['destination_groups'][0]['slots'][0]['fields'][] = '/slots/1/heading'; $error( $save( $bad ), 'destination_target' );
+$bad = $destination; $bad['destination_groups'][0]['slots'][0]['fields'][] = '/unknown'; $error( $save( $bad ), 'destination_target' );
+$bad = $destination; $bad['destination_groups'][0]['slots'][0]['fields'][] = '/meta_all/acf/group/intro'; $error( $save( $bad ), 'destination_target' );
+$bad = $destination; $bad['fields']['/slots/1/heading']['mode'] = 'protected'; $error( $save( $bad ), 'destination_target' );
+$bad = $destination; $bad['fields']['/meta_all/acf/group/faq'] = [ 'mode' => 'protected', 'source_path' => '' ]; $error( $save( $bad ), 'protected_overlap' );
+$wpdb->before_query = static function ( $db, $prepared ) { $name = $prepared[1][1]; $winner = unserialize( $db->rows[ $name ]['value'] ); $winner['revision'] = 'destination-concurrent-winner'; $db->rows[ $name ]['value'] = serialize( $winner ); };
+$error( $save( $destination ), 'conflict', 409 );
+$assert( 'destination-concurrent-winner' === $get( 3 )->data['draft']['revision'], 'Source-free drafts retain compare-and-swap protection.' );
+$destination['expected_revision'] = 'destination-concurrent-winner';
+Nova_Bridge_Suite_Strategy::$signature = 'destination-layout-two';
+Nova_Bridge_Suite_Strategy::$inventory = array_values( array_filter( $inventory, static function ( $field ) { return '/slots/1/heading' !== $field['path']; } ) );
+$destination['signature'] = 'destination-layout-two'; $destination['confirm_reference_change'] = true;
+$retained = $save( $destination ); $assert( $retained instanceof Draft_Test_Response && isset( $retained->data['draft']['fields']['/slots/1/heading'] ), 'Confirmed layout changes retain missing adapted destinations and group identities.' );
+$assert( 'needs_review' === $retained->data['backend_description']['status'] && ! isset( $retained->data['backend_description']['description'] ), 'A retained disappeared destination remains local but cannot be exported as current template capacity.' );
+$destination['expected_revision'] = $retained->data['draft']['revision'];
+$bad = $destination; unset( $bad['fields']['/slots/1/heading'] ); $error( $save( $bad ), 'stale_drop', 409 );
+$bad = $destination; $bad['destination_groups'] = []; $error( $save( $bad ), 'stale_drop', 409 );
+$discard = $destination; unset( $discard['fields']['/slots/1/heading'] ); $discard['destination_groups'][0]['slots'][0]['fields'] = [ '/slots/1/body' ]; $discard['discard_stale_targets'] = [ '/slots/1/heading' ];
+$discarded_destination = $save( $discard );
+$assert( $discarded_destination instanceof Draft_Test_Response && ! isset( $discarded_destination->data['draft']['target_descriptors']['/slots/1/heading'] ), 'Explicit stale discard removes only the reviewed missing adapted destination.' );
+$assert( $wpdb->rows[ 'nova_mapping_draft_' . hash( 'sha256', 'post:1' ) ] === $legacy_rows[ 'nova_mapping_draft_' . hash( 'sha256', 'post:1' ) ] && $wpdb->rows[ $legacy_name ] === $legacy_rows[ $legacy_name ], 'Creating destination descriptions never rewrites historical source or repeat drafts.' );
+Nova_Bridge_Suite_Strategy::$inventory = $inventory; Nova_Bridge_Suite_Strategy::$signature = 'layout-one';
+$switch = $legacy_saved->data['draft']; $switch['expected_revision'] = $switch['revision']; $switch['catalog_mode'] = 'destination'; $switch['template'] = [ 'id' => 'local-destination', 'revision' => '1' ];
+$switched = $save( $switch );
+$assert( $switched instanceof Draft_Test_Response && $switched->data['draft']['fields'] === $legacy_saved->data['draft']['fields'] && $switched->data['draft']['repeat_slots'] === $legacy_saved->data['draft']['repeat_slots'], 'Explicit destination-mode switch preserves historical source bindings and unsupported repeat identities for review.' );
+$assert( 'needs_review' === $switched->data['backend_description']['status'] && 'nova_writing_mixed_mapping' === $switched->data['backend_description']['error']['code'] && ! isset( $switched->data['backend_description']['description'] ), 'Mixed historical source/repeat selections stay readable while backend description export requires explicit review.' );
 $assert( 0 === $cms_calls && 0 === $remote_calls, 'All catalog/save/read/conflict scenarios perform zero CMS mutations and zero remote calls.' );
 echo 'PASS ' . $checks . " local mapping draft, catalog, conflict, preservation and no-publication checks.\n";

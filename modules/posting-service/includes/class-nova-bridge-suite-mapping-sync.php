@@ -138,6 +138,7 @@ final class Nova_Bridge_Suite_Mapping_Sync {
 
     /** Local native capability approval; no removed seal/activation API is called. */
     public function activate( array $draft, array $context = [] ) {
+        $input = Nova_Bridge_Suite_Writing_Adapter::template_input( $draft ); if ( is_wp_error( $input ) ) { return $input; }
         $locked = $this->acquire( $draft ); if ( is_wp_error( $locked ) ) { return $locked; }
         try {
             if ( ! $this->state || self::CONTRACT !== ( $this->state['contract'] ?? '' ) || $this->state['local_revision'] !== $draft['revision'] || ! in_array( $this->state['status'], [ 'synced_draft', 'active' ], true ) ) { return self::error( 'not_synced', 'Synchronize this exact local revision before approving native writes.' ); }
@@ -235,6 +236,7 @@ final class Nova_Bridge_Suite_Mapping_Sync {
     }
 
     public static function validate_live( array $draft ) {
+        if ( Nova_Bridge_Suite_Writing_Adapter::is_destination_draft( $draft ) ) { return Nova_Bridge_Suite_Writing_Adapter::template_input( $draft ); }
         $entity = Nova_Bridge_Suite_Strategy::entity( $draft['reference_type'], (int) $draft['reference_id'] );
         if ( ! $entity || Nova_Bridge_Suite_Strategy::fingerprint( $entity )['signature'] !== $draft['signature'] ) { return self::error( 'reference_changed', 'The selected native layout has changed. Reconcile and save its local draft.' ); }
         $inventory = array_column( Nova_Bridge_Suite_Strategy::field_inventory( $entity ), null, 'path' );
