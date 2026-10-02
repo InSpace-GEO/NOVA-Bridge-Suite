@@ -1,5 +1,5 @@
 <?php
-/** Exact delivery execution. An uncertain mutation is recovered, never replayed. */
+/** Durable delivery intake, native-write reconciliation and exact connector-event replay. */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 final class Nova_Bridge_Suite_Posting_Worker {
@@ -8,29 +8,30 @@ final class Nova_Bridge_Suite_Posting_Worker {
     private $client;
     private $configuration;
     private $writer;
+    private $policy;
+    private $recovery_only = false;
 
-    public function __construct( array $connection, $jobs = null, $client = null, $configuration = null, $writer = 'Nova_Bridge_Suite_Mapped_Writer' ) {
+    public function __construct( array $connection, $jobs = null, $client = null, $configuration = null, $writer = 'Nova_Bridge_Suite_Mapped_Writer', $policy = null ) {
         $this->connection = $connection;
         $this->jobs = $jobs ?: new Nova_Bridge_Suite_Posting_Jobs();
         $this->client = $client ?: new Nova_Bridge_Suite_Posting_Client( $connection );
-        $this->configuration = $configuration ?: static function ( $pin, $digest, $site, $client ) {
-            return Nova_Bridge_Suite_Mapping_Sync::exact_configuration( $client, $pin, $digest, $site );
-        };
+        $this->configuration = $configuration ?: [ 'Nova_Bridge_Suite_Mapping_Sync', 'configuration_for_snapshot' ];
+        $this->policy = $policy ?: [ 'Nova_Bridge_Suite_Mapping_Sync', 'frozen_policy' ];
         $this->writer = $writer;
     }
 
-    private static function error( string $code, string $message ): WP_Error {
-        return new WP_Error( 'nova_posting_' . $code, $message );
-    }
-
-    /** Start at most three deliveries within twenty seconds; in-flight operations have their own bounds. */
     public function run(): void {
         if ( empty( $this->connection['enabled'] ) ) { return; }
+        $discovery = ( new Nova_Bridge_Suite_Posting_Discovery( $this->connection, $this->jobs, $this->client ) )->run();
+        $status = is_wp_error( $discovery ) ? (int) ( $discovery->get_error_data()['status'] ?? 0 ) : 0;
+        if ( 401 === $status ) { return; }
+        $this->recovery_only = ! empty( $this->connection['paused'] ) || 403 === $status;
         $started = microtime( true );
-        for ( $i = 0; $i < 3 && microtime( true ) - $started < 20; $i++ ) {
-            $job = $this->jobs->claim( $this->connection['site_id'], ! empty( $this->connection['paused'] ) );
+        for ( $i = 0; $i < 3 && microtime( true ) - $started < 20; ++$i ) {
+            $job = $this->jobs->claim( $this->connection['site_id'], $this->recovery_only );
             if ( ! $job || is_wp_error( $job ) ) { break; }
-            $this->process( $job );
+            $result = $this->process( $job );
+            if ( is_array( $result ) && in_array( $result['last_error'] ?? '', [ 'authentication_required', 'site_ineligible' ], true ) ) { break; }
         }
         $this->jobs->prune();
     }
@@ -39,159 +40,164 @@ final class Nova_Bridge_Suite_Posting_Worker {
         return $this->jobs->save( $job, [ 'state' => 'blocked', 'last_error' => substr( $code, 0, 100 ) ] );
     }
 
-    private function retry( array $job, string $code ) {
+    private function retry( array $job, string $code, string $retry_after = '' ) {
         if ( $job['attempts'] >= 8 ) { return $this->block( $job, $code . '_retry_limit' ); }
         $delay = min( 3600, 30 * ( 2 ** max( 0, $job['attempts'] - 1 ) ) );
+        if ( '' !== $retry_after ) {
+            $seconds = ctype_digit( $retry_after ) ? (float) $retry_after : max( 0, ( strtotime( $retry_after ) ?: time() ) - time() );
+            if ( $seconds > 86400 ) { return $this->block( $job, 'retry_after_out_of_bounds' ); }
+            $delay = max( $delay, (int) $seconds );
+        }
         return $this->jobs->save( $job, [ 'state' => 'ready', 'next_attempt' => time() + $delay, 'last_error' => substr( $code, 0, 100 ) ] );
+    }
+
+    private function paused( array $job ) {
+        return $this->jobs->save( $job, [ 'state' => 'ready', 'next_attempt' => time() + 300, 'attempts' => 0, 'last_error' => 'paused' ] );
+    }
+
+    private function remote_error( array $job, WP_Error $error ) {
+        $data = $error->get_error_data(); $status = (int) ( $data['status'] ?? 0 );
+        if ( 401 === $status || 403 === $status ) {
+            ( new Nova_Bridge_Suite_Posting_Discovery( $this->connection, $this->jobs, $this->client ) )->suspend( $error );
+            return $this->block( $job, 401 === $status ? 'authentication_required' : 'site_ineligible' );
+        }
+        if ( in_array( $status, [ 409, 410, 412 ], true ) ) { return $this->block( $job, 'remote_identity_conflict' ); }
+        if ( 404 === $status || 429 === $status || $status >= 500 || 'nova_posting_transport' === $error->get_error_code() ) {
+            return $this->retry( $job, $error->get_error_code(), (string) ( $data['retry_after'] ?? '' ) );
+        }
+        return $this->block( $job, $error->get_error_code() );
     }
 
     private function save_payload( array $job, array $payload, string $phase, array $extra = [] ) {
         $saved = $this->jobs->save( $job, array_merge( [ 'phase' => $phase, 'payload' => array_merge( $job['payload'], $payload ), 'last_error' => '' ], $extra ) );
-        if ( is_wp_error( $saved ) && 'nova_posting_journal_size' === $saved->get_error_code() ) {
-            // Retain the last durable phase without the oversized addition; never enter mutation unjournaled.
-            $this->block( $job, 'journal_size' );
-        }
+        if ( is_wp_error( $saved ) && 'nova_posting_journal_size' === $saved->get_error_code() ) { $this->block( $job, 'journal_size' ); }
         return $saved;
     }
 
-    private function receipt( array $job ) {
-        $response = $this->client->request( 'GET', '/v1/content/' . rawurlencode( $job['content_id'] ) . '/result?version=' . $job['version'] );
-        if ( is_wp_error( $response ) ) {
-            $data = $response->get_error_data();
-            return 404 === (int) ( $data['status'] ?? 0 ) ? null : $response;
-        }
-        if ( 404 === (int) $response['status'] ) { return null; }
-        return 200 === (int) $response['status'] && is_array( $response['body'] ) ? $response['body'] : self::error( 'receipt_unavailable', 'Receipt lookup was not definitive.' );
+    private static function path( array $job ): string {
+        return '/deliveries/' . rawurlencode( $job['payload']['discovery']['id'] );
     }
 
-    public static function receipt_matches( array $actual, array $expected, array $job ): bool {
-        if ( ( $actual['content_id'] ?? null ) !== $job['content_id'] || ( $actual['version'] ?? null ) !== $job['version'] ) { return false; }
-        foreach ( [ 'outcome', 'remote_post_id', 'fail_reason', 'cms_post_status' ] as $key ) {
-            if ( ( $actual[ $key ] ?? null ) !== ( $expected[ $key ] ?? null ) ) { return false; }
+    private function fetch( array $job ) {
+        // The attempt header can change without changing frozen bytes: always request full 200.
+        $reply = $this->client->site_request( 'GET', self::path( $job ) );
+        if ( is_wp_error( $reply ) ) { return $reply; }
+        $snapshot = Nova_Bridge_Suite_Posting_Protocol::snapshot( $reply, $job );
+        if ( is_wp_error( $snapshot ) ) { return $snapshot; }
+        if ( isset( $job['payload']['snapshot_raw'] ) && $reply['raw_body'] !== $job['payload']['snapshot_raw'] ) {
+            return Nova_Bridge_Suite_Posting_Protocol::error( 'snapshot_changed', 'An immutable delivery changed its bytes.' );
         }
-        // The service may normalize ISO timestamps; their instants must still agree.
-        if ( isset( $expected['posted_at'] ) && ( ! is_string( $actual['posted_at'] ?? null ) || strtotime( $actual['posted_at'] ) !== strtotime( $expected['posted_at'] ) ) ) { return false; }
-        return true;
+        return [ 'content' => $snapshot, 'snapshot_raw' => $reply['raw_body'], 'delivery_etag' => $reply['etag'], 'attempt_id' => $reply['attempt_id'] ];
     }
 
-    public static function validate_content( array $content, array $job ) {
-        if ( ( $content['content_id'] ?? null ) !== $job['content_id'] || ( $content['version'] ?? null ) !== $job['version'] || 'ready' !== ( $content['status'] ?? null ) ) { return self::error( 'exact_content_unavailable', 'The response is not the exact notified ready content version.' ); }
-        if ( isset( $content['site_id'] ) && $content['site_id'] !== $job['site_id'] ) { return self::error( 'content_site_mismatch', 'The delivered site identity differs.' ); }
-        if ( ! is_array( $content['fields'] ?? null ) ) { return self::error( 'content_invalid', 'The delivered fields are unavailable.' ); }
-        if ( isset( $content['repeat_instances'] ) ) {
-            if ( ! is_array( $content['repeat_instances'] ) || count( $content['repeat_instances'] ) > 8 ) { return self::error( 'repeat_identity_invalid', 'Repeat identities are outside the supported envelope.' ); }
-            foreach ( $content['repeat_instances'] as $group => $slots ) {
-                if ( ! is_string( $group ) || ! preg_match( '/^[a-z][a-z0-9_]{1,63}$/D', $group ) || ! is_array( $slots ) || array_values( $slots ) !== $slots || count( $slots ) > 12 ) { return self::error( 'repeat_identity_invalid', 'Repeat identities are outside the supported envelope.' ); }
-                $seen_slots = []; $seen_instances = [];
-                foreach ( $slots as $slot ) {
-                    if ( ! is_array( $slot ) || count( $slot ) !== 2 || ! is_string( $slot['slot_id'] ?? null ) || ! is_string( $slot['instance_id'] ?? null ) || '' === $slot['slot_id'] || '' === $slot['instance_id'] || strlen( $slot['slot_id'] ) > 128 || strlen( $slot['instance_id'] ) > 128 || isset( $seen_slots[ $slot['slot_id'] ] ) || isset( $seen_instances[ $slot['instance_id'] ] ) ) { return self::error( 'repeat_identity_invalid', 'Repeat identity is missing, duplicated, or unsupported.' ); }
-                    $seen_slots[ $slot['slot_id'] ] = true; $seen_instances[ $slot['instance_id'] ] = true;
-                }
+    /** An operator-issued attempt never authorizes repeating a known or uncertain CMS write. */
+    private function check_attempt( array $job, array $fetched ) {
+        $old = $job['payload']['attempt_id'] ?? null;
+        if ( $old === $fetched['attempt_id'] ) {
+            return $this->save_payload( $job, [], 'committed', [ 'state' => 'complete' ] );
+        }
+        $proof = $job['payload']['native_absence_proof'] ?? [];
+        if ( true !== ( $proof['no_native_commit'] ?? false ) || ! empty( $job['payload']['result']['post_id'] ) ) {
+            return $this->block( $job, 'attempt_changed_without_native_absence' );
+        }
+        if ( isset( $job['payload']['plan'] ) ) {
+            $current = call_user_func( [ $this->writer, 'recover' ], $job['payload']['plan'], $job['operation_id'] );
+            if ( ! is_array( $current ) || 'not_committed' !== ( $current['state'] ?? null ) || true !== ( $current['no_native_commit'] ?? false ) ) {
+                return $this->block( $job, 'attempt_changed_without_native_absence' );
             }
         }
-        return true;
+        $payload = $job['payload'];
+        $history = $payload['prior_attempts'] ?? [];
+        if ( count( $history ) >= 8 ) { return $this->block( $job, 'attempt_history_limit' ); }
+        $history[] = array_intersect_key( $payload, array_flip( [ 'attempt_id', 'events', 'native_absence_proof', 'result' ] ) );
+        foreach ( [ 'events', 'pending_event', 'event_bytes', 'event_sha256', 'event_continue', 'plan', 'context', 'configuration', 'selected_policy', 'result', 'native_absence_proof', 'failure_code' ] as $key ) { unset( $payload[ $key ] ); }
+        $payload = array_merge( $payload, $fetched, [ 'prior_attempts' => $history ] );
+        return $this->jobs->save( $job, [ 'payload' => $payload, 'phase' => 'validated', 'target_id' => 0, 'last_error' => '' ] );
     }
 
-    private function configuration_for( array $content, array $job ) {
-        foreach ( [ 'pin_id', 'digest', 'template_id', 'template_version' ] as $key ) {
-            if ( ! is_string( $content[ $key ] ?? null ) || '' === $content[ $key ] || strlen( $content[ $key ] ) > 200 ) { return self::error( 'configuration_missing', 'This exact delivery does not carry its sealed configuration identity.' ); }
-        }
-        if ( ! is_callable( $this->configuration ) ) { return self::error( 'configuration_unavailable', 'An exact retained configuration is required.' ); }
-        $configuration = call_user_func( $this->configuration, $content['pin_id'], $content['digest'], $job['site_id'], $this->client );
-        if ( is_wp_error( $configuration ) ) { return $configuration; }
-        if ( ! is_array( $configuration ) || ( $configuration['pin_id'] ?? null ) !== $content['pin_id'] || ! is_string( $configuration['digest'] ?? null ) || ! hash_equals( $configuration['digest'], $content['digest'] ) || ( $configuration['site_id'] ?? null ) !== $job['site_id'] ) { return self::error( 'configuration_mismatch', 'The exact retained configuration identity does not match this delivery.' ); }
-        return $configuration;
-    }
-
-    /** Public for deterministic failure-injection tests; called only with a claimed journal row. */
+    /** Public to allow deterministic process-loss tests at journal/native boundaries. */
     public function process( array $job ) {
+        if ( empty( $this->connection['enabled'] ) ) { return $this->block( $job, 'connection_disabled' ); }
         if ( $job['site_id'] !== ( $this->connection['site_id'] ?? null ) ) { return $this->block( $job, 'installation_mismatch' ); }
-        $content_lock = 'content:' . $job['site_id'] . ':' . $job['content_id'];
-        $locked = $this->jobs->lock( $content_lock );
-        if ( is_wp_error( $locked ) ) { return $this->retry( $job, 'content_busy' ); }
-        $target_lock = null;
-        $previous_user = function_exists( 'get_current_user_id' ) ? get_current_user_id() : 0;
+        if ( ( $job['payload']['protocol'] ?? null ) !== Nova_Bridge_Suite_Posting_Protocol::SNAPSHOT ) { return $this->block( $job, 'legacy_protocol_requires_review' ); }
+        if ( ( $job['payload']['business_result_id'] ?? null ) !== $job['operation_id'] || ! Nova_Bridge_Suite_Posting_Protocol::uuid( $job['operation_id'] ) ) { return $this->block( $job, 'operation_identity_invalid' ); }
+        $lock = 'delivery:' . $job['site_id'] . ':' . $job['content_id'];
+        if ( is_wp_error( $this->jobs->lock( $lock ) ) ) { return $this->retry( $job, 'delivery_busy' ); }
+        $target_lock = null; $previous_user = function_exists( 'get_current_user_id' ) ? get_current_user_id() : 0;
         try {
             if ( function_exists( 'wp_set_current_user' ) ) { wp_set_current_user( (int) ( $this->connection['actor_user_id'] ?? 0 ) ); }
-            $remote = $this->receipt( $job );
-            if ( is_wp_error( $remote ) ) { return $this->retry( $job, 'receipt_lookup_unavailable' ); }
-            if ( $remote ) {
-                if ( isset( $job['payload']['receipt'] ) ) {
-                    return self::receipt_matches( $remote, $job['payload']['receipt'], $job ) ? $this->jobs->save( $job, [ 'state' => 'complete', 'last_error' => '' ] ) : $this->block( $job, 'receipt_conflict' );
-                }
-                // Recover a local commit before comparing; an unrelated remote winner cannot authorize a write.
-                if ( ! in_array( $job['phase'], [ 'applying', 'committed' ], true ) ) { return $this->block( $job, 'remote_receipt_without_local_commit' ); }
+            if ( 'event_pending' === $job['phase'] ) {
+                $job = $this->drain_event( $job );
+                if ( is_wp_error( $job ) || 'running' !== $job['state'] || 'received' !== $job['phase'] ) { return $job; }
             }
-            if ( 'receipt_pending' === $job['phase'] ) { return $this->drain_receipt( $job ); }
-            if ( ! empty( $this->connection['paused'] ) && ! in_array( $job['phase'], [ 'applying', 'committed' ], true ) ) { return $this->retry( $job, 'paused' ); }
-
+            $paused = $this->recovery_only || ! empty( $this->connection['paused'] );
+            if ( $paused && ! in_array( $job['phase'], [ 'applying', 'committed' ], true ) ) { return $this->paused( $job ); }
+            $fetched = $this->fetch( $job );
+            if ( is_wp_error( $fetched ) ) { return $this->remote_error( $job, $fetched ); }
+            if ( 'attempt_check' === $job['phase'] ) {
+                $job = $this->check_attempt( $job, $fetched );
+                if ( is_wp_error( $job ) || 'running' !== $job['state'] ) { return $job; }
+            } elseif ( isset( $job['payload']['attempt_id'] ) && $job['payload']['attempt_id'] !== $fetched['attempt_id'] ) {
+                return $this->block( $job, 'attempt_changed_during_execution' );
+            }
             if ( 'accepted' === $job['phase'] ) {
-                // Query exact history and still verify the returned version; older services may ignore the query.
-                $fetched = $this->client->request( 'GET', '/v1/content/' . rawurlencode( $job['content_id'] ) . '?version=' . $job['version'] );
-                if ( is_wp_error( $fetched ) || 200 !== (int) ( $fetched['status'] ?? 0 ) || ! is_array( $fetched['body'] ?? null ) ) { return $this->retry( $job, 'content_fetch_unavailable' ); }
-                $valid = self::validate_content( $fetched['body'], $job );
-                if ( is_wp_error( $valid ) ) { return $this->block( $job, $valid->get_error_code() ); }
-                $job = $this->save_payload( $job, [ 'content' => $fetched['body'] ], 'validated' );
+                $job = $this->save_payload( $job, $fetched, 'validated' );
                 if ( is_wp_error( $job ) ) { return $job; }
             }
+            $snapshot = $fetched['content'];
             if ( 'validated' === $job['phase'] ) {
-                $configuration = $this->configuration_for( $job['payload']['content'], $job );
-                if ( is_wp_error( $configuration ) ) {
-                    $data = $configuration->get_error_data(); $status = (int) ( $data['status'] ?? 0 );
-                    return 429 === $status || $status >= 500 ? $this->retry( $job, 'configuration_fetch_unavailable' ) : $this->block( $job, $configuration->get_error_code() );
-                }
-                $local = $configuration['local'] ?? [];
-                $operation = $local['routing']['operation'] ?? null;
-                $target = (int) ( $local['reference_id'] ?? 0 );
-                if ( ! in_array( $operation, [ 'update', 'clone' ], true ) || 'post' !== ( $local['reference_type'] ?? null ) || $target < 1 ) { return $this->block( $job, 'routing_unavailable' ); }
-                if ( ! is_callable( [ $this->writer, 'plan' ] ) ) { return $this->block( $job, 'writer_unavailable' ); }
-                $publication = $local['routing']['publication'] ?? 'preserve';
-                if ( ! in_array( $publication, [ 'preserve', 'publish', 'draft' ], true ) ) { return $this->block( $job, 'publication_policy_unavailable' ); }
-                $desired_status = 'preserve' === $publication ? ( 'clone' === $operation ? 'draft' : get_post_status( $target ) ) : $publication;
-                $context = [ 'site_id' => $job['site_id'], 'content_id' => $job['content_id'], 'version' => $job['version'], 'operation_id' => $job['operation_id'], 'target_post_id' => $target, 'operation' => $operation, 'desired_status' => $desired_status, 'actor_user_id' => (int) ( $this->connection['actor_user_id'] ?? 0 ) ];
-                $context['repeat_instances'] = $job['payload']['content']['repeat_instances'] ?? [];
-                $plan = call_user_func( [ $this->writer, 'plan' ], $job['payload']['content'], $configuration, $context );
-                if ( is_wp_error( $plan ) ) { return $this->block( $job, $plan->get_error_code() ); }
+                $job = $this->queue_event( $job, $snapshot, 'received_complete', [], 'received' );
+                if ( is_wp_error( $job ) || 'running' !== $job['state'] || 'received' !== $job['phase'] ) { return $job; }
+            }
+            if ( 'received' === $job['phase'] ) {
+                $configuration = call_user_func( $this->configuration, $snapshot, $job['site_id'] );
+                if ( is_wp_error( $configuration ) ) { return $this->native_failure( $job, $snapshot, $configuration->get_error_code(), [ 'no_native_commit' => true, 'boundary' => 'before_apply' ] ); }
+                $selected = call_user_func( $this->policy, $this->client, $snapshot, $configuration );
+                if ( is_wp_error( $selected ) ) { return $this->native_failure( $job, $snapshot, $selected->get_error_code(), [ 'no_native_commit' => true, 'boundary' => 'before_apply' ] ); }
+                $reference = $selected['reference'] ?? []; $routing = $selected['routing'] ?? [];
+                $operation = $routing['operation'] ?? null; $target = $reference['reference_id'] ?? 0;
+                if ( ! in_array( $operation, [ 'update', 'clone' ], true ) || 'post' !== ( $reference['reference_type'] ?? null ) || ! is_int( $target ) || $target < 1 ) { return $this->native_failure( $job, $snapshot, 'routing_unavailable', [ 'no_native_commit' => true ] ); }
+                $publication = $routing['publication'] ?? 'preserve';
+                if ( ! in_array( $publication, [ 'preserve', 'publish', 'draft' ], true ) ) { return $this->native_failure( $job, $snapshot, 'publication_policy_unavailable', [ 'no_native_commit' => true ] ); }
+                $desired = 'preserve' === $publication ? ( 'clone' === $operation ? 'draft' : get_post_status( $target ) ) : $publication;
+                $context = [ 'site_id' => $job['site_id'], 'delivery_id' => $snapshot['id'], 'content_id' => $snapshot['content_item_id'], 'content_item_id' => $snapshot['content_item_id'], 'content_item_version_id' => $snapshot['content_item_version_id'], 'url_id' => $snapshot['url_id'], 'version' => $snapshot['version_number'], 'operation_id' => $job['operation_id'], 'business_result_id' => $job['operation_id'], 'target_post_id' => $target, 'operation' => $operation, 'desired_status' => $desired, 'actor_user_id' => (int) ( $this->connection['actor_user_id'] ?? 0 ), 'attempt_id' => $fetched['attempt_id'], 'source_sha256' => $snapshot['source_sha256'], 'snapshot_sha256' => hash( 'sha256', $fetched['snapshot_raw'] ), 'delivery_etag' => $fetched['delivery_etag'] ];
+                $job = $this->save_payload( $job, [ 'configuration' => $configuration, 'selected_policy' => $selected, 'context' => $context ], 'received' );
+                if ( is_wp_error( $job ) ) { return $job; }
+                $plan = call_user_func( [ $this->writer, 'plan' ], $snapshot, $configuration, $context );
+                if ( is_wp_error( $plan ) ) { return $this->native_failure( $job, $snapshot, $plan->get_error_code(), [ 'no_native_commit' => true, 'boundary' => 'before_apply' ] ); }
                 if ( ! is_array( $plan ) ) { return $this->block( $job, 'plan_invalid' ); }
-                $job = $this->save_payload( $job, [ 'plan' => $plan, 'configuration' => $configuration, 'context' => $context ], 'planned', [ 'target_id' => (int) ( $plan['source_post_id'] ?? $plan['target_post_id'] ?? $target ) ] );
+                $job = $this->save_payload( $job, [ 'plan' => $plan ], 'planned', [ 'target_id' => $target ] );
                 if ( is_wp_error( $job ) ) { return $job; }
             }
+            if ( ! in_array( $job['phase'], [ 'planned', 'applying', 'committed' ], true ) ) { return $this->block( $job, 'journal_phase_invalid' ); }
             $target_lock = 'target:' . $job['site_id'] . ':' . $job['target_id'];
-            $locked = $this->jobs->lock( $target_lock );
-            if ( is_wp_error( $locked ) ) { $target_lock = null; return $this->retry( $job, 'target_busy' ); }
+            if ( is_wp_error( $this->jobs->lock( $target_lock ) ) ) { $target_lock = null; return $this->retry( $job, 'target_busy' ); }
             $uncertain = $this->jobs->uncertain_target( $job );
             if ( is_wp_error( $uncertain ) ) { return $this->retry( $job, 'journal_unavailable' ); }
             if ( $uncertain ) { return $this->block( $job, 'other_mutation_unreconciled' ); }
-
             if ( 'planned' === $job['phase'] ) {
-                $newer = $this->jobs->newer_committed( $job );
-                if ( is_wp_error( $newer ) ) { return $this->retry( $job, 'journal_unavailable' ); }
-                if ( $newer ) { return $this->block( $job, 'newer_version_already_committed' ); }
-                // Crash anywhere after this durable boundary must go through recover(), never apply().
                 $job = $this->save_payload( $job, [], 'applying' );
                 if ( is_wp_error( $job ) ) { return $job; }
                 $result = call_user_func( [ $this->writer, 'apply' ], $job['payload']['plan'], $job['operation_id'] );
             } elseif ( 'applying' === $job['phase'] ) {
-                if ( ! is_callable( [ $this->writer, 'recover' ] ) ) { return $this->block( $job, 'mutation_recovery_required' ); }
                 $result = call_user_func( [ $this->writer, 'recover' ], $job['payload']['plan'], $job['operation_id'] );
                 if ( is_array( $result ) && 'not_committed' === ( $result['state'] ?? null ) && true === ( $result['safe_to_apply'] ?? null ) ) {
-                    if ( $remote ) { return $this->block( $job, 'remote_receipt_without_local_commit' ); }
-                    if ( ! empty( $this->connection['paused'] ) ) { return $this->retry( $job, 'paused' ); }
+                    if ( $paused ) { return $this->paused( $job ); }
                     $result = call_user_func( [ $this->writer, 'apply' ], $job['payload']['plan'], $job['operation_id'] );
                 }
             } else { $result = $job['payload']['result'] ?? null; }
-            if ( is_wp_error( $result ) ) { return $this->block( $job, $result->get_error_code() ); }
-            if ( ! is_array( $result ) || empty( $result['post_id'] ) ) { return $this->block( $job, 'mutation_result_unverified' ); }
-            if ( $remote ) {
-                $status = $result['desired_status'] ?? $result['cms_post_status'] ?? null;
-                $expected = [ 'outcome' => 'future' === $status ? 'scheduled' : 'posted', 'remote_post_id' => (string) $result['post_id'], 'cms_post_status' => $status, 'fail_reason' => null ];
-                if ( ! self::receipt_matches( $remote, $expected, $job ) ) { return $this->block( $job, 'receipt_conflict' ); }
+            if ( is_wp_error( $result ) ) {
+                if ( 'nova_writer_ambiguous_commit' === $result->get_error_code() ) { return $this->retry( $job, 'native_commit_reconciliation' ); }
+                $proof = call_user_func( [ $this->writer, 'recover' ], $job['payload']['plan'], $job['operation_id'] );
+                if ( is_array( $proof ) && 'not_committed' === ( $proof['state'] ?? null ) && true === ( $proof['no_native_commit'] ?? false ) ) { return $this->native_failure( $job, $snapshot, $proof['failure_code'] ?? $result->get_error_code(), $proof ); }
+                return is_array( $proof ) && ! empty( $proof['post_id'] ) ? $this->retry( $job, 'native_commit_reconciliation' ) : $this->block( $job, $result->get_error_code() );
             }
+            if ( is_array( $result ) && 'not_committed' === ( $result['state'] ?? null ) && true === ( $result['no_native_commit'] ?? false ) && false === ( $result['safe_to_apply'] ?? null ) ) { return $this->native_failure( $job, $snapshot, $result['failure_code'] ?? 'native_target_unavailable', $result ); }
+            if ( ! is_array( $result ) || empty( $result['post_id'] ) ) { return $this->block( $job, 'mutation_result_unverified' ); }
             if ( 'committed' !== $job['phase'] ) {
-                $job = $this->save_payload( $job, [ 'result' => $result ], 'committed', [ 'target_id' => (int) $result['post_id'] ] );
+                $job = $this->save_payload( $job, [ 'result' => $result ], 'committed' );
                 if ( is_wp_error( $job ) ) { return $job; }
             }
-            // Only idempotent derived work/status completion runs after the CMS commit.
             if ( is_callable( [ $this->writer, 'finish' ] ) ) {
                 $result = call_user_func( [ $this->writer, 'finish' ], $job['payload']['plan'], $result );
                 if ( is_wp_error( $result ) ) { return $this->retry( $job, $result->get_error_code() ); }
@@ -200,28 +206,52 @@ final class Nova_Bridge_Suite_Posting_Worker {
             }
             $verified = call_user_func( [ $this->writer, 'verify' ], $job['payload']['plan'], $result );
             if ( is_wp_error( $verified ) ) { return $this->retry( $job, $verified->get_error_code() ); }
-            if ( ! is_array( $verified ) || empty( $verified['post_id'] ) || (int) $verified['post_id'] !== (int) $result['post_id'] || ! in_array( $verified['cms_post_status'] ?? null, [ 'draft', 'publish', 'future', 'private', 'pending' ], true ) ) { return $this->block( $job, 'verification_result_invalid' ); }
-            $receipt = [ 'version' => $job['version'], 'outcome' => 'future' === $verified['cms_post_status'] ? 'scheduled' : 'posted', 'remote_post_id' => (string) $verified['post_id'], 'cms_post_status' => $verified['cms_post_status'], 'fail_reason' => null ];
-            if ( ! empty( $verified['posted_at'] ) ) { $receipt['posted_at'] = $verified['posted_at']; }
-            $job = $this->save_payload( $job, [ 'receipt' => $receipt ], 'receipt_pending' );
-            if ( is_wp_error( $job ) ) { return $job; }
-            if ( $remote ) { return self::receipt_matches( $remote, $receipt, $job ) ? $this->jobs->save( $job, [ 'state' => 'complete' ] ) : $this->block( $job, 'receipt_conflict' ); }
-            return $this->drain_receipt( $job );
+            if ( ! is_array( $verified ) || (int) ( $verified['post_id'] ?? 0 ) !== (int) $result['post_id'] || ! in_array( $verified['cms_post_status'] ?? null, [ 'draft', 'publish', 'future', 'private', 'pending' ], true ) ) { return $this->block( $job, 'verification_result_invalid' ); }
+            if ( 'publish' !== $verified['cms_post_status'] ) {
+                // Stored drafts/scheduled posts stay waiting_in_draft in NOVA until actual publication.
+                return $this->save_payload( $job, [ 'result' => $verified ], 'committed', [ 'state' => 'ready', 'next_attempt' => time() + 300, 'attempts' => 0, 'last_error' => 'awaiting_publication' ] );
+            }
+            return $this->queue_event( $job, $snapshot, 'publication_succeeded', [ 'published_at' => Nova_Bridge_Suite_Posting_Protocol::now(), 'publication_ref' => 'wordpress:post:' . $verified['post_id'] . ';operation:' . $job['operation_id'] ], 'complete' );
         } catch ( Throwable $error ) {
-            // Do not log payloads or exception text; applying remains recover-only after any throw.
             return $this->retry( $job, 'worker_interrupted' );
         } finally {
             if ( function_exists( 'wp_set_current_user' ) ) { wp_set_current_user( $previous_user ); }
             if ( null !== $target_lock ) { $this->jobs->unlock( $target_lock ); }
-            $this->jobs->unlock( $content_lock );
+            $this->jobs->unlock( $lock );
         }
     }
 
-    private function drain_receipt( array $job ) {
-        $receipt = $job['payload']['receipt'] ?? null;
-        if ( ! is_array( $receipt ) ) { return $this->block( $job, 'receipt_journal_invalid' ); }
-        $response = $this->client->request( 'POST', '/v1/content/' . rawurlencode( $job['content_id'] ) . '/result', $receipt );
-        if ( is_wp_error( $response ) || ! in_array( (int) ( $response['status'] ?? 0 ), [ 200, 201 ], true ) || ! is_array( $response['body'] ?? null ) ) { return $this->retry( $job, 'receipt_delivery_unavailable' ); }
-        return self::receipt_matches( $response['body'], $receipt, $job ) ? $this->jobs->save( $job, [ 'state' => 'complete', 'last_error' => '' ] ) : $this->block( $job, 'receipt_conflict' );
+    private function native_failure( array $job, array $snapshot, string $code, array $proof ) {
+        $code = preg_match( '/^[a-z0-9_]{1,100}$/D', $code ) ? $code : 'native_failure';
+        return $this->queue_event( $job, $snapshot, 'publication_failed', [ 'reason' => $code ], 'complete', [ 'native_absence_proof' => $proof, 'failure_code' => $code ] );
+    }
+
+    private function queue_event( array $job, array $snapshot, string $kind, array $evidence, string $continue, array $extra = [] ) {
+        $event = array_merge( [ 'event_id' => strtolower( wp_generate_uuid4() ), 'kind' => $kind, 'site_id' => $job['site_id'], 'delivery_id' => $snapshot['id'], 'content_item_version_id' => $snapshot['content_item_version_id'], 'version_number' => $snapshot['version_number'], 'source_sha256' => $snapshot['source_sha256'], 'attempt_id' => $job['payload']['attempt_id'], 'delivery_etag' => $job['payload']['delivery_etag'] ], $evidence );
+        if ( is_wp_error( Nova_Bridge_Suite_Posting_Protocol::event_input( $event ) ) ) { return $this->block( $job, 'event_schema' ); }
+        $bytes = Nova_Bridge_Suite_Receipt_Json::encode( $event );
+        $job = $this->save_payload( $job, array_merge( $extra, [ 'pending_event' => $event, 'event_bytes' => $bytes, 'event_sha256' => hash( 'sha256', $bytes ), 'event_continue' => $continue ] ), 'event_pending' );
+        if ( is_wp_error( $job ) ) { return $job; }
+        try { return $this->drain_event( $job ); }
+        catch ( Throwable $error ) { return $this->retry( $job, 'worker_interrupted' ); }
+    }
+
+    private function drain_event( array $job ) {
+        $bytes = $job['payload']['event_bytes'] ?? null; $event = $job['payload']['pending_event'] ?? [];
+        if ( ! is_string( $bytes ) || ! hash_equals( hash( 'sha256', $bytes ), $job['payload']['event_sha256'] ?? '' ) || is_wp_error( Nova_Bridge_Suite_Posting_Protocol::event_input( $event ) ) || Nova_Bridge_Suite_Receipt_Json::encode( $event ) !== $bytes ) { return $this->block( $job, 'event_journal_invalid' ); }
+        $snapshot = $job['payload']['content'] ?? [];
+        foreach ( [ 'site_id' => $job['site_id'], 'delivery_id' => $job['payload']['discovery']['id'], 'attempt_id' => $job['payload']['attempt_id'], 'delivery_etag' => $job['payload']['delivery_etag'], 'content_item_version_id' => $snapshot['content_item_version_id'] ?? null, 'version_number' => $snapshot['version_number'] ?? null, 'source_sha256' => $snapshot['source_sha256'] ?? null ] as $key => $value ) {
+            if ( ( $event[ $key ] ?? null ) !== $value ) { return $this->block( $job, 'event_journal_identity' ); }
+        }
+        $response = $this->client->site_request_bytes( 'POST', self::path( $job ) . '/events', $bytes );
+        if ( is_wp_error( $response ) ) { return $this->remote_error( $job, $response ); }
+        $accepted = Nova_Bridge_Suite_Posting_Protocol::accepted( $response, $event );
+        if ( is_wp_error( $accepted ) ) { return $this->block( $job, $accepted->get_error_code() ); }
+        $events = $job['payload']['events'] ?? [];
+        $events[ $event['kind'] ] = [ 'bytes' => $bytes, 'sha256' => hash( 'sha256', $bytes ), 'accepted' => $accepted ];
+        $continue = $job['payload']['event_continue'] ?? '';
+        if ( ! in_array( $continue, [ 'received', 'complete' ], true ) || ( 'received' === $continue ) !== ( 'received_complete' === $event['kind'] ) ) { return $this->block( $job, 'event_continuation_invalid' ); }
+        // 202/pending confirms durable acceptance only. Never label it backend-applied.
+        return $this->save_payload( $job, [ 'events' => $events ], 'complete' === $continue ? 'committed' : 'received', 'complete' === $continue ? [ 'state' => 'complete', 'last_error' => $job['payload']['failure_code'] ?? '' ] : [] );
     }
 }

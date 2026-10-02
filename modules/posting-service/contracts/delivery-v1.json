@@ -1,0 +1,608 @@
+{
+  "source_commit": "145fbcfb7319333e6369796489c068196cb68665",
+  "openapi_sha256": "ce48ded00914e595dde23d543e347bc748155a7726a108331cc051dc8246af28",
+  "schemas": {
+    "DeliverySnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "site_id",
+        "client_id",
+        "domain_id",
+        "url_id",
+        "url",
+        "page_type_frontend",
+        "language",
+        "content_item_id",
+        "content_item_version_id",
+        "version_number",
+        "source_sha256",
+        "configuration",
+        "content"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "site_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "client_id": {
+          "type": "string"
+        },
+        "domain_id": {
+          "type": "string"
+        },
+        "url_id": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string",
+          "nullable": true
+        },
+        "page_type_frontend": {
+          "type": "string",
+          "nullable": true
+        },
+        "language": {
+          "type": "string"
+        },
+        "content_item_id": {
+          "type": "string"
+        },
+        "content_item_version_id": {
+          "type": "string"
+        },
+        "version_number": {
+          "type": "integer"
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "attempt_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Original attempt at snapshot creation, retained unchanged as historical payload metadata. Not current retry authority; use the GET response X-Nova-Attempt-Id header for connector events."
+        },
+        "monthly_strategy_item_id": {
+          "type": "string"
+        },
+        "upload_date": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "schedule_id": {
+          "type": "string",
+          "nullable": true
+        },
+        "schedule_status": {
+          "type": "string",
+          "nullable": true
+        },
+        "configuration": {
+          "type": "object",
+          "nullable": true,
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "page_type",
+            "definition",
+            "mapping",
+            "revision"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "name": {
+              "type": "string"
+            },
+            "page_type": {
+              "type": "string"
+            },
+            "definition": {
+              "$ref": "#/components/schemas/PublishingTemplateDefinition"
+            },
+            "mapping": {
+              "$ref": "#/components/schemas/PublishingTemplateMapping"
+            },
+            "revision": {
+              "type": "integer"
+            }
+          }
+        },
+        "content": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "title",
+            "meta_description",
+            "h1",
+            "content",
+            "top_content",
+            "bottom_content",
+            "image_url",
+            "image_urls",
+            "image_alt"
+          ],
+          "properties": {
+            "title": {
+              "type": "string",
+              "nullable": true
+            },
+            "meta_description": {
+              "type": "string",
+              "nullable": true
+            },
+            "h1": {
+              "type": "string",
+              "nullable": true
+            },
+            "content": {
+              "type": "string",
+              "nullable": true
+            },
+            "top_content": {
+              "type": "string",
+              "nullable": true
+            },
+            "bottom_content": {
+              "type": "string",
+              "nullable": true
+            },
+            "image_url": {
+              "type": "string",
+              "nullable": true
+            },
+            "image_urls": {
+              "type": "array",
+              "nullable": true,
+              "items": {
+                "type": "string"
+              }
+            },
+            "image_alt": {
+              "type": "string",
+              "nullable": true
+            }
+          }
+        }
+      }
+    },
+    "PublishingTemplateDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "fields"
+      ],
+      "properties": {
+        "version": {
+          "type": "integer",
+          "enum": [
+            1
+          ]
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "label",
+              "kind",
+              "required"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]*$"
+              },
+              "label": {
+                "type": "string",
+                "pattern": "^\\S(?:.*\\S)?$"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "text",
+                  "rich_text",
+                  "image",
+                  "list"
+                ]
+              },
+              "required": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    },
+    "PublishingTemplateMapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "fields"
+      ],
+      "properties": {
+        "version": {
+          "type": "integer",
+          "enum": [
+            1
+          ]
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "field_id",
+              "source_field"
+            ],
+            "properties": {
+              "field_id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]*$"
+              },
+              "source_field": {
+                "type": "string",
+                "enum": [
+                  "title",
+                  "meta_description",
+                  "h1",
+                  "content",
+                  "top_content",
+                  "bottom_content",
+                  "image_url",
+                  "image_urls",
+                  "image_alt",
+                  "url",
+                  "page_type_frontend",
+                  "language"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "DeliveryPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "items",
+        "next_cursor"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "content_item_version_id",
+              "source_sha256",
+              "created_at"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "content_item_version_id": {
+                "type": "string"
+              },
+              "source_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "created_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        },
+        "next_cursor": {
+          "type": "string",
+          "nullable": true,
+          "description": "Persistent last-item polling checkpoint on every nonempty page, including the final page; empty pages echo the supplied cursor, or null without one. Continue polling this cursor for future supersessions and operator-authorized retries. A retry re-announces the same delivery ID with a new checkpoint; fetch it again to obtain the current X-Nova-Attempt-Id."
+        }
+      }
+    },
+    "ConnectorEventInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "kind",
+        "site_id",
+        "delivery_id",
+        "content_item_version_id",
+        "version_number",
+        "source_sha256",
+        "attempt_id",
+        "delivery_etag"
+      ],
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "received_complete",
+            "pull_failed",
+            "publication_succeeded",
+            "publication_failed"
+          ]
+        },
+        "site_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "delivery_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "content_item_version_id": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "version_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "attempt_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "delivery_etag": {
+          "type": "string",
+          "pattern": "^\"[0-9a-f]{64}\"$"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "description": "Required only for pull_failed or publication_failed."
+        },
+        "published_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Required only for publication_succeeded."
+        },
+        "publication_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "description": "Connector attestation reference required only for publication_succeeded."
+        }
+      }
+    },
+    "ConnectorEventAccepted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "kind",
+        "site_id",
+        "delivery_id",
+        "attempt_id",
+        "accepted_at",
+        "status"
+      ],
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "received_complete",
+            "pull_failed",
+            "publication_succeeded",
+            "publication_failed"
+          ]
+        },
+        "site_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "delivery_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "attempt_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "accepted_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending"
+          ],
+          "description": "Outgoing intent pending, not backend or CMS status."
+        }
+      }
+    },
+    "PublishingTemplate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "page_type",
+        "enabled",
+        "definition",
+        "mapping",
+        "revision",
+        "created_at",
+        "updated_at",
+        "retired_at"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "page_type": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "definition": {
+          "$ref": "#/components/schemas/PublishingTemplateDefinition"
+        },
+        "mapping": {
+          "$ref": "#/components/schemas/PublishingTemplateMapping"
+        },
+        "revision": {
+          "type": "integer"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "retired_at": {
+          "type": "string",
+          "format": "date-time",
+          "nullable": true
+        }
+      }
+    },
+    "PublishingTemplateInput": {
+      "description": "Connector-consumed metadata only; the existing Fastify 1 MiB request-body limit applies. No transformations or executable commands.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "page_type",
+        "definition",
+        "mapping",
+        "enabled"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^\\S(?:.*\\S)?$"
+        },
+        "page_type": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "definition": {
+          "$ref": "#/components/schemas/PublishingTemplateDefinition"
+        },
+        "mapping": {
+          "$ref": "#/components/schemas/PublishingTemplateMapping"
+        }
+      }
+    },
+    "PublishingTemplateDefaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "defaults",
+        "revision"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer"
+        },
+        "defaults": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      }
+    },
+    "PublishingTemplateDefaultsInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "defaults"
+      ],
+      "properties": {
+        "defaults": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      }
+    },
+    "PublishingPageSetting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "template_id",
+        "revision"
+      ],
+      "properties": {
+        "template_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "PublishingPageSettingInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "template_id"
+      ],
+      "properties": {
+        "template_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    }
+  }
+}

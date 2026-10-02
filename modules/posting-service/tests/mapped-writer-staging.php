@@ -30,7 +30,7 @@ function nova_canary_fixture( int $post_id, string $operation, string $suffix, i
     $fixture['context']['actor_user_id'] = $actor;
     return $fixture;
 }
-function nova_canary_plan( array $fixture ): array { return nova_canary_result( Nova_Bridge_Suite_Mapped_Writer::plan( $fixture['content'], $fixture['configuration'], $fixture['context'] ), 'Plan' ); }
+function nova_canary_plan( array $fixture ): array { $fixture['context']['snapshot_sha256'] = hash( 'sha256', wp_json_encode( $fixture['content'] ) ); return nova_canary_result( Nova_Bridge_Suite_Mapped_Writer::plan( $fixture['content'], $fixture['configuration'], $fixture['context'] ), 'Plan' ); }
 
 global $wpdb; $real_db = $wpdb; $created = []; $report = []; $old_actor = get_current_user_id(); $actor = $old_actor;
 if ( ! $actor ) { $admins = get_users( [ 'role' => 'administrator', 'number' => 1, 'fields' => 'ID' ] ); $actor = (int) ( $admins[0] ?? 0 ); }
@@ -49,7 +49,9 @@ try {
     nova_canary_result( Nova_Bridge_Suite_Mapped_Writer::verify( $plan, $finished ), 'Native final verify' );
     $post = get_post( $source ); nova_canary_assert( $post->post_content === 'Leave empty must retain this on update.' && $post->post_excerpt === 'Protected byte string <b>retain</b>.', 'Update preserve semantics failed.' ); $report[] = 'native update + protected + leave_empty + lost-response recovery';
 
-    $drift = nova_canary_fixture( $source, 'update', $suffix . '-drift', $actor ); $drift_plan = nova_canary_plan( $drift );
+    $drift = nova_canary_fixture( $source, 'update', $suffix . '-drift', $actor );
+    $drift['content']['url_id'] = $fixture['content']['url_id']; $drift['content']['content_item_id'] = $fixture['content']['content_item_id']; $drift['content']['content_item_version_id'] = '92'; $drift['content']['version_number'] = 2; nova_writer_fixture_refresh( $drift );
+    $drift_plan = nova_canary_plan( $drift );
     $wpdb->update( $wpdb->posts, [ 'post_title' => 'Concurrent editor ' . $suffix ], [ 'ID' => $source ] ); clean_post_cache( $source );
     $blocked = Nova_Bridge_Suite_Mapped_Writer::apply( $drift_plan, $drift['context']['operation_id'] );
     nova_canary_assert( is_wp_error( $blocked ) && 'nova_writer_native_drift' === $blocked->get_error_code(), 'Editor change must block before writer mutation.' ); $report[] = 'native editor drift blocks with zero planned writes';
@@ -58,7 +60,7 @@ try {
     $wpdb = new Nova_Writer_Canary_DB( $real_db, 'marker_insert' );
     $failed = Nova_Bridge_Suite_Mapped_Writer::apply( $clone_plan, $clone['context']['operation_id'] ); $wpdb = $real_db;
     nova_canary_assert( is_wp_error( $failed ) && 'nova_writer_marker_storage' === $failed->get_error_code(), 'Injected final marker failure must roll back clone.' );
-    $count = $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_name = %s", $clone['content']['fields']['slug'] ) ); nova_canary_assert( '0' === (string) $count, 'Failed transaction left an orphan clone.' );
+    $count = $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_name = %s", basename( rtrim( parse_url( $clone['content']['url'], PHP_URL_PATH ), '/' ) ) ) ); nova_canary_assert( '0' === (string) $count, 'Failed transaction left an orphan clone.' );
     $absent = nova_canary_result( Nova_Bridge_Suite_Mapped_Writer::recover( $clone_plan, $clone['context']['operation_id'] ), 'Rollback recovery' ); nova_canary_assert( 'not_committed' === $absent['state'] && $absent['safe_to_apply'] === true, 'Rollback must prove absence under locks.' ); $report[] = 'mid-clone failure rolls back post + all metadata + marker';
 
     $wpdb = new Nova_Writer_Canary_DB( $real_db, 'commit_ack' );
@@ -73,13 +75,11 @@ try {
     wp_delete_post( $source, true );
     $without_source = nova_canary_result( Nova_Bridge_Suite_Mapped_Writer::recover( $clone_plan, $clone['context']['operation_id'] ), 'Deleted source clone recovery' );
     nova_canary_assert( $without_source['post_id'] === $complete['post_id'], 'Recovery incorrectly depends on a deleted clone source.' ); $report[] = 'committed clone remains recoverable after its temporary source is deleted';
-    // A later version follows its durable target identity and applies update semantics.
+    // A new operation cannot follow a clone after the frozen source was removed.
     $wpdb->update( $wpdb->posts, [ 'post_content' => 'Editor restored a Leave empty field' ], [ 'ID' => $complete['post_id'] ] ); clean_post_cache( $complete['post_id'] );
-    $next = $clone; $next['content']['version'] = 2; $next['context']['version'] = 2; $next['context']['operation_id'] .= '-v2'; $next['content']['fields']['heading'] = 'Second generated version';
-    $next_plan = nova_canary_plan( $next ); nova_canary_assert( 'update' === $next_plan['operation'] && $next_plan['source_post_id'] === $complete['post_id'], 'Version two did not resolve its previously cloned target.' );
-    $next_commit = nova_canary_result( Nova_Bridge_Suite_Mapped_Writer::apply( $next_plan, $next['context']['operation_id'] ), 'Clone version two apply' );
-    $next_complete = nova_canary_result( Nova_Bridge_Suite_Mapped_Writer::finish( $next_plan, $next_commit ), 'Clone version two finish' ); nova_canary_result( Nova_Bridge_Suite_Mapped_Writer::verify( $next_plan, $next_complete ), 'Clone version two verify' );
-    nova_canary_assert( $next_complete['post_id'] === $complete['post_id'] && get_post( $complete['post_id'] )->post_content === 'Editor restored a Leave empty field', 'New clone version duplicated its target or blanked an update-only preserved field.' ); $report[] = 'version two updates the same clone and leaves existing Leave empty values untouched';
+    $next = $clone; $next['content']['version_number'] = 2; $next['content']['content_item_version_id'] = '92'; $next['context']['operation_id'] = nova_writer_fixture_uuid( $suffix . '-v2' ); $next['content']['content']['h1'] = 'Second generated version';
+    nova_writer_fixture_refresh( $next ); $next_plan = Nova_Bridge_Suite_Mapped_Writer::plan( $next['content'], $next['configuration'], $next['context'] );
+    nova_canary_assert( is_wp_error( $next_plan ) && get_post( $complete['post_id'] )->post_content === 'Editor restored a Leave empty field', 'New work silently followed a previous clone after the frozen source disappeared.' ); $report[] = 'new operation fails closed instead of following an earlier clone';
 
     if ( function_exists( 'acf_add_local_field_group' ) ) {
         $root_name = 'nova_canary_matrix_' . $suffix; $root_key = 'field_nova_canary_root_' . $suffix; $leaf_key = 'field_nova_canary_leaf_' . $suffix;
@@ -89,7 +89,7 @@ try {
         $acf = nova_canary_fixture( $acf_source, 'update', $suffix . '-acf', $actor ); $path = '/meta_all/' . $root_name . '_0_heading';
         $inventory = array_column( Nova_Bridge_Suite_Strategy::field_inventory( Nova_Bridge_Suite_Strategy::entity( 'post', $acf_source ) ), null, 'path' ); nova_canary_assert( isset( $inventory[ $path ] ), 'The installed provider did not expose its existing nested scalar writer.' );
         $descriptor = array_intersect_key( $inventory[ $path ], array_flip( [ 'path', 'transport', 'builder', 'write_mode', 'acf_key', 'binding', 'source', 'selector_data' ] ) );
-        unset( $acf['configuration']['local']['fields']['/title'] ); $acf['configuration']['local']['fields'][ $path ] = [ 'mode' => 'mapped', 'source_path' => 'heading' ]; $acf['configuration']['local']['target_descriptors'][ $path ] = $descriptor; $acf['configuration']['mapping']['bindings'][0]['target_descriptor']['target'] = $descriptor; nova_writer_fixture_policy( $acf['configuration'] );
+        unset( $acf['configuration']['local']['fields']['/title'] ); $acf['configuration']['local']['fields'][ $path ] = [ 'mode' => 'mapped', 'source_path' => 'h1' ]; $acf['configuration']['local']['target_descriptors'][ $path ] = $descriptor; nova_writer_fixture_refresh( $acf );
         $acf_plan = nova_canary_plan( $acf ); $acf_applied = nova_canary_result( Nova_Bridge_Suite_Mapped_Writer::apply( $acf_plan, $acf['context']['operation_id'] ), 'ACF apply' ); $acf_complete = nova_canary_result( Nova_Bridge_Suite_Mapped_Writer::finish( $acf_plan, $acf_applied ), 'ACF finish' ); nova_canary_result( Nova_Bridge_Suite_Mapped_Writer::verify( $acf_plan, $acf_complete ), 'ACF verify' );
         nova_canary_assert( get_post_meta( $acf_source, $root_name . '_0_heading', true ) === 'Generated fixture heading' && get_post_meta( $acf_source, $root_name, true ) === '1' && get_post_meta( $acf_source, '_' . $root_name . '_0_heading', true ) === $leaf_key && get_post_meta( $acf_source, 'nova_canary_sibling', true ) === 'Protected sibling bytes', 'Nested scalar update changed parent, hidden reference or sibling.' ); $report[] = 'installed ACF existing nested scalar preserves parent count/reference/siblings';
     } else { $report[] = 'ACF provider absent: native checks only; no ACF certification claimed'; }

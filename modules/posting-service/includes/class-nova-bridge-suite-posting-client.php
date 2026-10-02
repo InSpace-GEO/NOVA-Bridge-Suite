@@ -33,11 +33,17 @@ class Nova_Bridge_Suite_Posting_Client {
         return $this->request( $method, '/v1/sites/' . rawurlencode( $this->site_id() ) . $suffix, $body, $headers );
     }
 
-    /** Returns status/body/etag/retry_after/request_id or a safe WP_Error. No automatic retries. */
-    public function request( string $method, string $path, $body = null, array $headers = [] ) {
+    /** Sends durable connector-event bytes verbatim. Never rebuild a retry from a decoded array. */
+    public function site_request_bytes( string $method, string $suffix, string $bytes ) {
+        if ( 'POST' !== $method || '/' !== substr( $suffix, 0, 1 ) ) { return self::error( 'path', 'A site event POST is required.', 400 ); }
+        return $this->request( $method, '/v1/sites/' . rawurlencode( $this->site_id() ) . $suffix, $bytes, [], true );
+    }
+
+    /** Returns status/body/raw_body/etag/attempt_id/retry_after/request_id. No automatic retries. */
+    public function request( string $method, string $path, $body = null, array $headers = [], bool $exact_bytes = false ) {
         $error = $this->connection_error();
         if ( $error ) { return $error; }
-        if ( ! in_array( $method, [ 'GET', 'POST', 'PUT', 'DELETE' ], true ) || ! preg_match( '#^/v1/[A-Za-z0-9_/?=&%.-]+$#D', $path ) || preg_match( '/%0[ad]|%2f|%5c|\.\./i', $path ) || false !== strpos( $path, '//' ) ) { return self::error( 'path', 'Unsupported posting-service request path.', 400 ); }
+        if ( ! in_array( $method, [ 'GET', 'POST', 'PUT', 'DELETE' ], true ) || ! preg_match( '#^/v1/[A-Za-z0-9_/?=&%.-]+$#D', $path ) || preg_match( '/%0[ad]/i', $path ) || preg_match( '/%2f|%5c|\.\./i', explode( '?', $path, 2 )[0] ) || false !== strpos( $path, '//' ) ) { return self::error( 'path', 'Unsupported posting-service request path.', 400 ); }
         if ( 0 === strpos( $path, '/v1/sites/' ) && 0 !== strpos( $path, '/v1/sites/' . $this->site_id() . '/' ) ) { return self::error( 'site_scope', 'The request belongs to a different publishing site.', 403 ); }
         $request_headers = [ 'Accept' => 'application/json', 'Authorization' => 'Bearer ' . $this->connection['token'], 'X-Nova-Plugin-Version' => defined( 'NOVA_BRIDGE_SUITE_VERSION' ) ? NOVA_BRIDGE_SUITE_VERSION : '0.0.0' ];
         foreach ( $headers as $name => $value ) {
@@ -47,9 +53,10 @@ class Nova_Bridge_Suite_Posting_Client {
         }
         $args = [ 'method' => $method, 'headers' => $request_headers, 'timeout' => 15, 'redirection' => 0, 'sslverify' => true, 'reject_unsafe_urls' => true, 'limit_response_size' => self::MAX_RESPONSE + 1 ];
         if ( null !== $body ) {
-            if ( 'GET' === $method || ! is_array( $body ) ) { return self::error( 'request', 'The request body must be an object or array on a write operation.', 400 ); }
-            $json = wp_json_encode( $body );
+            if ( 'GET' === $method || ( $exact_bytes ? ! is_string( $body ) : ! is_array( $body ) ) ) { return self::error( 'request', 'The request body must be JSON on a write operation.', 400 ); }
+            $json = $exact_bytes ? $body : wp_json_encode( $body );
             if ( ! is_string( $json ) || strlen( $json ) > self::MAX_REQUEST ) { return self::error( 'request_size', 'The posting-service request exceeds 256 KiB.', 400 ); }
+            if ( $exact_bytes && ! json_decode( $json ) instanceof stdClass ) { return self::error( 'request', 'The durable event must be a JSON object.', 400 ); }
             $args['headers']['Content-Type'] = 'application/json'; $args['body'] = $json;
         }
         $response = wp_safe_remote_request( rtrim( $this->connection['base_url'], '/' ) . $path, $args );
@@ -62,7 +69,12 @@ class Nova_Bridge_Suite_Posting_Client {
         $decoded = null;
         if ( '' !== $raw && ! in_array( $status, [ 204, 304 ], true ) ) {
             $decoded = json_decode( $raw, true, 64 );
-            if ( JSON_ERROR_NONE !== json_last_error() ) { return self::error( 'response_json', 'The posting service returned an invalid JSON response.', 502, $metadata ); }
+            if ( JSON_ERROR_NONE !== json_last_error() ) {
+                // A gateway may send HTML for 401/403/429/503. Preserve the authenticated
+                // transport status so credential suspension/backoff cannot become retries.
+                if ( $status >= 400 && $status <= 599 ) { return self::error( 'http_error', 'Posting service returned ' . $status . '.', $status, $metadata ); }
+                return self::error( 'response_json', 'The posting service returned an invalid JSON response.', 502, $metadata );
+            }
         }
         if ( ( $status < 200 || $status >= 300 ) && 304 !== $status ) {
             $code = is_array( $decoded ) && is_string( $decoded['error']['code'] ?? null ) ? $decoded['error']['code'] : 'http_error';
@@ -70,7 +82,12 @@ class Nova_Bridge_Suite_Posting_Client {
             // Raw service messages can contain configuration details; expose only code and protocol metadata.
             return self::error( $code, 'Posting service returned ' . $status . ' (' . $code . ').', $status >= 400 && $status <= 599 ? $status : 502, $metadata );
         }
-        return array_merge( [ 'status' => $status, 'body' => $decoded, 'etag' => self::safe_header( wp_remote_retrieve_header( $response, 'etag' ) ) ], $metadata );
+        return array_merge( [ 'status' => $status, 'body' => $decoded, 'raw_body' => $raw, 'etag' => self::identity_header( wp_remote_retrieve_header( $response, 'etag' ) ), 'attempt_id' => self::identity_header( wp_remote_retrieve_header( $response, 'x-nova-attempt-id' ) ) ], $metadata );
+    }
+
+    /** Identity headers are rejected whole, never stripped/truncated into an apparently valid value. */
+    private static function identity_header( $value ): string {
+        return is_string( $value ) && strlen( $value ) <= 512 && ! preg_match( '/[\r\n\x00]/', $value ) ? $value : '';
     }
 
     private static function safe_header( $value ): string {

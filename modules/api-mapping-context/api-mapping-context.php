@@ -34,7 +34,7 @@ foreach ( [ 'content-transport', 'strategy', 'mapping-drafts', 'posting-settings
 	}
 }
 // Publishing is part of mapping: load all collaborators before registering hooks.
-foreach ( [ 'posting-client', 'writing-adapter', 'mapping-sync', 'taxonomy-counts', 'elementor-derived', 'mapped-writer', 'posting-jobs', 'posting-worker', 'posting-delivery' ] as $nova_posting_component ) {
+foreach ( [ 'posting-client', 'posting-protocol', 'receipt-json', 'writing-adapter', 'mapping-sync', 'taxonomy-counts', 'elementor-derived', 'mapped-writer', 'posting-jobs', 'posting-discovery', 'posting-worker', 'posting-delivery' ] as $nova_posting_component ) {
     require_once dirname( NOVA_BRIDGE_SUITE_API_MAPPING_CONTEXT_DIR ) . '/posting-service/includes/class-nova-bridge-suite-' . $nova_posting_component . '.php';
 }
 foreach ( [ 'Nova_Bridge_Suite_Content_Transport', 'Nova_Bridge_Suite_Strategy', 'Nova_Bridge_Suite_Mapping_Drafts', 'Nova_Bridge_Suite_Posting_Settings', 'Nova_Bridge_Suite_Mapping_Sync', 'Nova_Bridge_Suite_Posting_Delivery', 'Nova_Bridge_Suite_Strategy_Admin', 'Nova_Bridge_Suite_Mapping_Preview' ] as $nova_context_class ) {

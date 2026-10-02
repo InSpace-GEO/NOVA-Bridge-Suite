@@ -180,9 +180,9 @@ try {
         $input['expected_revision'] = $result['draft']['revision'];
     }
 
-    $input['repeat_slots'] = [ 'steps' => [ [ 'id' => 'existing-slot-one', 'targets' => [ 'step_heading' => $paths['step_heading'], 'step_body' => $paths['step_body'] ] ], [ 'id' => 'unfinished-slot', 'targets' => [] ] ] ];
+    $input['repeat_slots'] = [ 'steps' => [ [ 'id' => '1668a4b6-85c4-4e53-a3a6-6879d695098e', 'targets' => [ 'step_heading' => $paths['step_heading'], 'step_body' => $paths['step_body'] ], 'ordinal' => 0 ], [ 'id' => '70499276-ec04-40b0-9f57-8cf5a00e243d', 'targets' => [], 'ordinal' => 1 ] ] ];
     $repeat = $success( $call( 'POST', 'draft', $input, $admin_id ), 'Fixed repeat slots bind existing registered scalar targets and retain an unfinished local slot.' );
-    $assert( $input['repeat_slots'] === $repeat['draft']['repeat_slots'] && false !== strpos( implode( ' ', $repeat['warnings'] ), 'unfinished-slot is incomplete' ), 'Repeat member addresses and slot identities round-trip without inventing native rows.' );
+    $assert( $input['repeat_slots'] === $repeat['draft']['repeat_slots'] && false !== strpos( implode( ' ', $repeat['warnings'] ), '70499276-ec04-40b0-9f57-8cf5a00e243d is incomplete' ), 'Repeat member addresses and slot identities round-trip without inventing native rows.' );
     $input['expected_revision'] = $repeat['draft']['revision'];
     $duplicate = $input; $duplicate['repeat_slots']['steps'][1]['targets'] = [ 'step_heading' => $paths['step_heading'] ];
     $rejected( $call( 'POST', 'draft', $duplicate, $admin_id ), 400, 'repeat_target', 'A native target cannot be assigned to two repeat slots.' );

@@ -6,6 +6,9 @@ final class Nova_Bridge_Suite_Posting_Delivery {
     public const CRON_HOOK = 'nova_bridge_posting_drain';
     public const MAX_EVENT_BYTES = 16384;
     public const CLOCK_SKEW_SECONDS = 300;
+    public const SCHEMA_OPTION = 'nova_bridge_posting_schema_version';
+    public const SCHEMA_VERSION = 3;
+    private static $schema_attempted = null;
 
     public static function bootstrap(): void {
         add_action( 'rest_api_init', [ __CLASS__, 'register_routes' ] );
@@ -21,7 +24,23 @@ final class Nova_Bridge_Suite_Posting_Delivery {
 
     public static function schedule(): void {
         $connection = Nova_Bridge_Suite_Posting_Settings::connection();
-        if ( ! empty( $connection['enabled'] ) && ! wp_next_scheduled( self::CRON_HOOK ) ) { wp_schedule_event( time() + 10, 'nova_posting_minute', self::CRON_HOOK ); }
+        if ( ! empty( $connection['enabled'] ) && self::ensure_schema() && ! wp_next_scheduled( self::CRON_HOOK ) ) { wp_schedule_event( time() + 10, 'nova_posting_minute', self::CRON_HOOK ); }
+    }
+
+    /** Upgrade only an enabled connection; disabled installs perform no schema work. */
+    public static function ensure_schema(): bool {
+        if ( self::SCHEMA_VERSION === (int) get_option( self::SCHEMA_OPTION, 0 ) ) { return true; }
+        if ( null !== self::$schema_attempted ) { return self::$schema_attempted; }
+        self::$schema_attempted = false;
+        $store = new Nova_Bridge_Suite_Posting_Jobs();
+        $locked = $store->lock( 'schema' );
+        if ( is_wp_error( $locked ) ) { return false; }
+        try {
+            if ( true !== $store->install() ) { return false; }
+            update_option( self::SCHEMA_OPTION, self::SCHEMA_VERSION, false );
+            self::$schema_attempted = self::SCHEMA_VERSION === (int) get_option( self::SCHEMA_OPTION, 0 );
+            return self::$schema_attempted;
+        } finally { $store->unlock( 'schema' ); }
     }
 
     public static function drain(): void {
@@ -32,10 +51,26 @@ final class Nova_Bridge_Suite_Posting_Delivery {
         register_rest_route( 'nova-bridge/v1', '/posting/ready', [ 'methods' => 'POST', 'callback' => [ __CLASS__, 'ready' ], 'permission_callback' => '__return_true' ] );
         register_rest_route( 'nova-bridge/v1', '/posting/jobs', [ 'methods' => 'GET', 'callback' => [ __CLASS__, 'status' ], 'permission_callback' => [ __CLASS__, 'can_admin' ] ] );
         register_rest_route( 'nova-bridge/v1', '/posting/jobs/(?P<id>[1-9][0-9]*)/resume', [ 'methods' => 'POST', 'callback' => [ __CLASS__, 'resume' ], 'permission_callback' => [ __CLASS__, 'can_admin' ] ] );
+        register_rest_route( 'nova-bridge/v1', '/posting/discovery/retry', [ 'methods' => 'POST', 'callback' => [ __CLASS__, 'retry_discovery' ], 'permission_callback' => [ __CLASS__, 'can_retry_discovery' ] ] );
     }
 
     public static function can_admin() {
         return current_user_can( 'manage_options' ) ? true : new WP_Error( 'nova_posting_forbidden', 'Administrator access is required.', [ 'status' => is_user_logged_in() ? 403 : 401 ] );
+    }
+
+    public static function can_retry_discovery( $request ) {
+        $permission = self::can_admin();
+        if ( is_wp_error( $permission ) ) { return $permission; }
+        return wp_verify_nonce( (string) $request->get_header( 'x-wp-nonce' ), 'wp_rest' ) ? true : new WP_Error( 'nova_posting_nonce', 'Refresh the Mapping page before rechecking access.', [ 'status' => 403 ] );
+    }
+
+    public static function retry_discovery( $request ) {
+        $permission = self::can_retry_discovery( $request ); if ( is_wp_error( $permission ) ) { return $permission; }
+        $connection = Nova_Bridge_Suite_Posting_Settings::connection();
+        if ( empty( $connection['enabled'] ) ) { return new WP_Error( 'nova_posting_disabled', 'The connection is disabled.', [ 'status' => 503 ] ); }
+        if ( ! self::ensure_schema() ) { return new WP_Error( 'nova_posting_storage', 'Discovery storage is unavailable.', [ 'status' => 503 ] ); }
+        $result = ( new Nova_Bridge_Suite_Posting_Discovery( $connection ) )->retry_authentication();
+        return is_wp_error( $result ) ? $result : self::response( [ 'recheck_scheduled' => true, 'message' => 'Discovery will authenticate again on the next worker run. Retained work is unchanged.' ] );
     }
 
     private static function response( array $data, int $status = 200 ) {
@@ -61,18 +96,25 @@ final class Nova_Bridge_Suite_Posting_Delivery {
         $event = self::authenticate( (string) $request->get_body(), (string) $request->get_header( 'x-nova-timestamp' ), (string) $request->get_header( 'x-nova-signature' ), $connection );
         if ( is_wp_error( $event ) ) { return $event; }
         if ( empty( $connection['enabled'] ) ) { return new WP_Error( 'nova_posting_disabled', 'Delivery intake is disabled.', [ 'status' => 503 ] ); }
-        $job = ( new Nova_Bridge_Suite_Posting_Jobs() )->enqueue( $event );
-        if ( is_wp_error( $job ) ) { return $job; }
-        // Durable insert precedes acknowledgement; no fetch or CMS write runs inside this request.
-        return self::response( [ 'accepted' => true, 'job_id' => $job['id'] ], 202 );
+        if ( ! self::ensure_schema() ) { return new WP_Error( 'nova_posting_storage', 'Discovery storage is unavailable.', [ 'status' => 503 ] ); }
+        $woken = ( new Nova_Bridge_Suite_Posting_Discovery( $connection ) )->wake();
+        if ( is_wp_error( $woken ) ) { return $woken; }
+        // Only the durable wake is acknowledged. Discovery supplies authoritative work identities.
+        return self::response( [ 'accepted' => true, 'wake_accepted' => true ], 202 );
     }
 
     public static function status( $request ) {
         $permission = self::can_admin();
         if ( is_wp_error( $permission ) ) { return $permission; }
         $connection = Nova_Bridge_Suite_Posting_Settings::connection();
-        $jobs = ( new Nova_Bridge_Suite_Posting_Jobs() )->summaries( $connection['site_id'] ?? '' );
-        return is_wp_error( $jobs ) ? $jobs : self::response( [ 'enabled' => ! empty( $connection['enabled'] ), 'paused' => ! empty( $connection['paused'] ), 'next_scheduled' => wp_next_scheduled( self::CRON_HOOK ) ?: null, 'jobs' => $jobs ] );
+        if ( ! empty( $connection['enabled'] ) && ! self::ensure_schema() ) { return new WP_Error( 'nova_posting_storage', 'Discovery storage is unavailable.', [ 'status' => 503 ] ); }
+        $store = new Nova_Bridge_Suite_Posting_Jobs();
+        $exists = $store->storage_exists(); if ( is_wp_error( $exists ) ) { return $exists; }
+        $jobs = $exists ? $store->summaries( $connection['site_id'] ?? '' ) : [];
+        if ( is_wp_error( $jobs ) ) { return $jobs; }
+        $discovery = self::SCHEMA_VERSION === (int) get_option( self::SCHEMA_OPTION, 0 ) ? $store->discovery_state( $connection['site_id'] ?? '' ) : [];
+        $public_state = is_wp_error( $discovery ) ? [ 'last_error' => 'discovery_storage' ] : array_intersect_key( $discovery, array_flip( [ 'cycle_started', 'last_completed', 'next_attempt', 'failures', 'last_error', 'suspended', 'auth_status' ] ) );
+        return self::response( [ 'enabled' => ! empty( $connection['enabled'] ), 'paused' => ! empty( $connection['paused'] ), 'next_scheduled' => wp_next_scheduled( self::CRON_HOOK ) ?: null, 'jobs' => $jobs, 'discovery' => $public_state ] );
     }
 
     public static function resume( $request ) {

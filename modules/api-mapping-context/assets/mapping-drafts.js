@@ -10,9 +10,18 @@
 	function list( value ) { return Array.isArray( value ) ? value : Object.keys( value || {} ).map( function ( key ) { return Object.assign( { path: key }, value[ key ] ); } ); }
 	function sources( template ) { return list( template && template.fields ).map( function ( field ) { return Object.assign( {}, field, { source_path: field.source_path || field.key || '' } ); } ).filter( function ( field ) { return field.source_path; } ); }
 	function members( group ) { return ( group.member_keys || [] ).map( function ( member ) { return typeof member === 'string' ? member : member.key; } ).filter( Boolean ); }
+	function utf8Bytes( value ) { return new TextEncoder().encode( value || '' ).length; }
+	function slotUuid( value ) { return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test( value ); }
+	function newSlotId() {
+		if ( typeof crypto === 'undefined' || typeof crypto.getRandomValues !== 'function' ) { throw new Error( 'Secure random slot IDs are unavailable. Use a supported HTTPS browser.' ); }
+		if ( typeof crypto.randomUUID === 'function' ) { return crypto.randomUUID().toLowerCase(); }
+		var bytes = crypto.getRandomValues( new Uint8Array( 16 ) ); bytes[ 6 ] = ( bytes[ 6 ] & 15 ) | 64; bytes[ 8 ] = ( bytes[ 8 ] & 63 ) | 128;
+		var hex = Array.from( bytes, function ( byte ) { return byte.toString( 16 ).padStart( 2, '0' ); } ).join( '' );
+		return hex.slice( 0, 8 ) + '-' + hex.slice( 8, 12 ) + '-' + hex.slice( 12, 16 ) + '-' + hex.slice( 16, 20 ) + '-' + hex.slice( 20 );
+	}
 	function initialDraft( layout, saved ) {
-		if ( saved ) { var restored = copy( saved ); restored.fields = ! restored.fields || Array.isArray( restored.fields ) ? {} : restored.fields; restored.repeat_slots = ! restored.repeat_slots || Array.isArray( restored.repeat_slots ) ? {} : restored.repeat_slots; Object.values( restored.repeat_slots ).forEach( function ( slots ) { slots.forEach( function ( slot ) { if ( ! slot.targets || Array.isArray( slot.targets ) ) { slot.targets = {}; } } ); } ); restored.skipped_sources = restored.skipped_sources || []; restored.routing = restored.routing || { operation: 'update', locale: '' }; return restored; }
-		return { revision: '', signature: layout.signature, reference_type: layout.reference_type || 'post', reference_id: Number( layout.reference_id || layout.reference_post_id || layout.reference_term_id || 0 ), template: { id: '', revision: '' }, catalog_mode: 'nova', label: layout.label || layout.title || '', guidance: '', fields: {}, skipped_sources: [], repeat_slots: {}, routing: { operation: 'update', locale: '' } };
+		if ( saved ) { var restored = copy( saved ); restored.guidance_mode = restored.guidance_mode || ( restored.guidance ? 'set' : 'inherit' ); restored.fields = ! restored.fields || Array.isArray( restored.fields ) ? {} : restored.fields; restored.repeat_slots = ! restored.repeat_slots || Array.isArray( restored.repeat_slots ) ? {} : restored.repeat_slots; Object.values( restored.repeat_slots ).forEach( function ( slots ) { slots.forEach( function ( slot ) { if ( ! slot.targets || Array.isArray( slot.targets ) ) { slot.targets = {}; } } ); } ); restored.skipped_sources = restored.skipped_sources || []; restored.routing = restored.routing || { operation: 'update', locale: '' }; return restored; }
+		return { revision: '', signature: layout.signature, reference_type: layout.reference_type || 'post', reference_id: Number( layout.reference_id || layout.reference_post_id || layout.reference_term_id || 0 ), template: { id: '', revision: '' }, catalog_mode: 'nova', label: layout.label || layout.title || '', guidance_mode: 'inherit', guidance: '', fields: {}, skipped_sources: [], repeat_slots: {}, routing: { operation: 'update', locale: '' } };
 	}
 	function resolveTemplate( draft, catalog ) {
 		function exact( item ) { return draft.template && item && item.id === draft.template.id && String( item.revision ) === String( draft.template.revision ); }
@@ -20,7 +29,9 @@
 	}
 	function payload( draft, reconciliation ) {
 		var result = {};
-		[ 'signature', 'reference_type', 'reference_id', 'template', 'catalog_mode', 'label', 'guidance', 'fields', 'skipped_sources', 'repeat_slots', 'routing' ].forEach( function ( key ) { result[ key ] = copy( draft[ key ] === undefined ? ( key === 'skipped_sources' ? [] : {} ) : draft[ key ] ); } );
+		[ 'signature', 'reference_type', 'reference_id', 'template', 'catalog_mode', 'label', 'profile_page_type', 'guidance', 'fields', 'skipped_sources', 'repeat_slots', 'routing' ].forEach( function ( key ) { result[ key ] = copy( draft[ key ] === undefined ? ( key === 'skipped_sources' ? [] : {} ) : draft[ key ] ); } );
+		result.profile_page_type = draft.profile_page_type || 'page';
+		result.guidance_mode = draft.guidance_mode || ( draft.guidance ? 'set' : 'inherit' );
 		result.expected_revision = draft.revision || '';
 		if ( reconciliation ) { result.signature = reconciliation.signature || result.signature; result.confirm_reference_change = !! reconciliation.confirm_reference_change; result.discard_stale_targets = ( reconciliation.discard_stale_targets || [] ).slice(); }
 		// Only the server resolves trusted target descriptors. A stale field stays visible and in the draft.
@@ -88,7 +99,7 @@
 		callbacks = callbacks || {};
 		var document = parent.ownerDocument, host = document.createElement( 'section' ), draft = initialDraft( layout ), catalog = { origin: 'unavailable', templates: [] }, dirty = false, disposed = false, busy = false, selectedPath = '', serverWarnings = [], body, feedback, status, coverageBox, fieldsBox, repeatBox, saveButton, abort = typeof AbortController === 'function' ? new AbortController() : null;
 		var base = String( config.mappingUrl || '' ).replace( /\/$/, '' ), fieldInventory = list( layout.fields ), cards = new Map(), referenceConfirmed = false, discardedTargets = [], inventoryStale = false;
-		var syncState = null, integrationBox;
+		var syncState = null, integrationBox, urlBinding = null, bindingUrl = '', bindingRevision = '', recoveryId = '', defaultType = '', defaultRevision = '', defaultRecord = null;
 		host.className = 'nmd-editor'; parent.appendChild( host );
 		function el( tag, className, text ) { var node = document.createElement( tag ); if ( className ) { node.className = className; } if ( text !== undefined ) { node.textContent = String( text ); } return node; }
 		function button( title, action, primary ) { var node = el( 'button', 'button' + ( primary ? ' button-primary' : '' ), title ); node.type = 'button'; node.addEventListener( 'click', action ); return node; }
@@ -149,6 +160,7 @@
 					var sourceSelect = control( contents, 'NOVA source', select( [ { value: '', label: 'Choose a source…' } ].concat( sources( template() ).filter( function ( item ) { return item.source_path.indexOf( '[].' ) < 0; } ).map( function ( item ) { return { value: item.source_path, label: item.label + ' · ' + item.source_path }; } ) ), entry.source_path ) );
 					sourceSelect.disabled = !! field.stale;
 					sourceSelect.addEventListener( 'change', function () { draft.fields[ field.path ].source_path = sourceSelect.value; changed(); } );
+					var required = control( contents, 'Require a delivered value', select( [ { value: 'optional', label: 'Optional: skip a null value' }, { value: 'required', label: 'Required: block if no value is delivered' } ], entry.required ? 'required' : 'optional' ), 'This validates a delivery; it does not instruct NOVA to generate a value.' ); required.addEventListener( 'change', function () { draft.fields[ field.path ].required = required.value === 'required'; changed(); } );
 				}
 				if ( mode === 'leave_empty' ) { contents.appendChild( el( 'p', 'nmd-help', 'Existing pages: omit this field. New clones: blank this field. These are saved instructions; this editor does not change content.' ) ); }
 				if ( mode === 'protected' ) { contents.appendChild( el( 'p', 'nmd-help', 'Preserve this component on updates and clones, including its content, settings, identity and position. Writer support must be verified before publication.' ) ); }
@@ -158,14 +170,13 @@
 					protectedSlot.disabled = !! field.stale;
 					protectedSlot.addEventListener( 'change', function () { draft.fields[ field.path ].protected_slot = protectedSlot.value; changed(); } );
 				}
-				if ( mode ) { var instructions = control( contents, 'Instructions for this field', textInput( entry.instructions, true ) ); instructions.maxLength = 8000; instructions.disabled = !! field.stale; instructions.addEventListener( 'input', function () { draft.fields[ field.path ].instructions = instructions.value; changed(); } ); }
+				if ( mode ) { var instructions = control( contents, 'Human instructions for this field (local only)', textInput( entry.instructions, true ), 'For example: exactly one relevant label, a length limit or a fixed item count. Retained locally; not sent to generation by the current API.' ); instructions.maxLength = 8000; instructions.disabled = !! field.stale; instructions.addEventListener( 'input', function () { draft.fields[ field.path ].instructions = instructions.value; changed(); } ); }
 				if ( field.write_mode === 'complete_parent' ) { contents.appendChild( el( 'p', 'nmd-warning', 'Nested field: the current writer sends the complete parent. Keep this mapping; protected publication needs verification of all affected siblings.' ) ); }
 				var details = el( 'details', 'nmd-target-details' ); details.append( el( 'summary', '', 'Target details' ), el( 'code', '', field.path ) ); if ( field.transport ) { details.appendChild( el( 'p', 'nmd-help', field.transport + ( field.write_mode ? ' · ' + field.write_mode : '' ) ) ); } contents.appendChild( details );
 			}
 			redraw(); return card;
 		}
 		function renderFields() { if ( ! fieldsBox ) { return; } fieldsBox.replaceChildren(); cards.clear(); allFields().forEach( function ( field ) { fieldsBox.appendChild( renderField( field ) ); } ); if ( ! fieldInventory.length ) { fieldsBox.prepend( el( 'p', 'nmd-help', 'No target fields were discovered for this reference.' ) ); } }
-		function newSlotId() { return 'slot_' + ( typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID().replace( /-/g, '_' ) : Date.now().toString( 36 ) + '_' + Math.random().toString( 36 ).slice( 2 ) ); }
 		function renderRepeats() {
 			if ( ! repeatBox ) { return; } repeatBox.replaceChildren();
 			var groups = list( template() && template().groups ), known = new Set( groups.map( function ( group ) { return group.key; } ) );
@@ -175,7 +186,8 @@
 				var slots = draft.repeat_slots[ group.key ] || [], maximum = Math.min( 12, Number( group.max === undefined ? 12 : group.max ) );
 				section.appendChild( el( 'p', 'nmd-help', ( group.min || 0 ) + '–' + maximum + ' slots allowed. Each slot points to an existing region; adding or removing a mapping slot does not change CMS rows. These local slot IDs are not NOVA content instance IDs.' ) );
 				slots.forEach( function ( slot, index ) {
-					var row = el( 'div', 'nmd-repeat-slot' ), top = el( 'div', 'nmd-repeat-head' ); top.append( el( 'strong', '', 'Slot ' + ( index + 1 ) ), button( 'Remove mapping slot', function () { Object.values( slot.targets || {} ).forEach( discardMissing ); draft.repeat_slots[ group.key ].splice( index, 1 ); if ( ! draft.repeat_slots[ group.key ].length ) { delete draft.repeat_slots[ group.key ]; } changed(); renderRepeats(); renderFields(); } ) ); row.appendChild( top );
+					var row = el( 'div', 'nmd-repeat-slot' ), top = el( 'div', 'nmd-repeat-head' ); top.append( el( 'strong', '', 'Slot ' + ( index + 1 ) ), button( 'Remove mapping slot', function () { Object.values( slot.targets || {} ).forEach( discardMissing ); draft.repeat_slots[ group.key ].splice( index, 1 ); draft.repeat_slots[ group.key ].forEach( function ( remaining, ordinal ) { if ( slotUuid( remaining.id ) && Number.isInteger( remaining.ordinal ) ) { remaining.ordinal = ordinal; } } ); if ( ! draft.repeat_slots[ group.key ].length ) { delete draft.repeat_slots[ group.key ]; } changed(); renderRepeats(); renderFields(); } ) ); row.appendChild( top );
+					if ( ! slotUuid( slot.id ) || slot.ordinal !== index ) { row.append( el( 'p', 'nmd-warning', 'This legacy slot has no valid structural UUID/ordinal. Its historical identity is preserved; a replacement creates a new mapping identity.' ), button( 'Replace legacy slot identity', function () { try { slot.id = newSlotId(); slot.ordinal = index; changed(); renderRepeats(); } catch ( error ) { note( error.message, true ); } } ) ); }
 					members( group ).forEach( function ( member ) {
 						var current = ( slot.targets || {} )[ member ] || '', choices = [ { value: '', label: 'Choose an existing target…' } ];
 						fieldInventory.forEach( function ( field ) { choices.push( { value: field.path, label: field.label || field.path, disabled: field.path !== current && ( field.writable === false || !! draft.fields[ field.path ] || repeatUse( field.path ) ) } ); } );
@@ -185,7 +197,7 @@
 					} );
 					section.appendChild( row );
 				} );
-				var add = button( 'Add mapping slot', function () { if ( ! draft.repeat_slots[ group.key ] ) { draft.repeat_slots[ group.key ] = []; } draft.repeat_slots[ group.key ].push( { id: newSlotId(), targets: {} } ); changed(); renderRepeats(); } ); add.disabled = slots.length >= maximum || !! group.stale; section.appendChild( add ); repeatBox.appendChild( section );
+				var add = button( 'Add mapping slot', function () { try { var id = newSlotId(); if ( ! draft.repeat_slots[ group.key ] ) { draft.repeat_slots[ group.key ] = []; } draft.repeat_slots[ group.key ].push( { id: id, ordinal: draft.repeat_slots[ group.key ].length, targets: {} } ); changed(); renderRepeats(); } catch ( error ) { note( error.message, true ); } } ); add.disabled = slots.length >= maximum || !! group.stale; section.appendChild( add ); repeatBox.appendChild( section );
 				if ( group.stale && ! slots.length ) { section.appendChild( button( 'Remove unavailable empty group', function () { delete draft.repeat_slots[ group.key ]; changed(); renderRepeats(); } ) ); }
 			} );
 			if ( ! groups.length ) { repeatBox.appendChild( el( 'p', 'nmd-help', 'This template has no repeat groups.' ) ); }
@@ -208,6 +220,7 @@
 			finally { if ( active() ) { setBusy( false ); } }
 		}
 		async function save() {
+			if ( utf8Bytes( draft.guidance ) > 8000 || ( draft.guidance_mode === 'set' && ! draft.guidance.trim() ) ) { note( 'Replacement instructions must be nonempty and at most 8000 UTF-8 bytes. Choose Clear to remove inherited instructions.', true ); return; }
 			if ( busy ) { return; }
 			var check = coverage( draft, template(), fieldInventory );
 			if ( check.duplicates.length ) { note( 'Each repeat target must be unique. Resolve duplicate target bindings before saving.', true ); return; }
@@ -231,32 +244,64 @@
 			try {
 				var query = '?reference_type=' + encodeURIComponent( draft.reference_type ) + '&reference_id=' + encodeURIComponent( draft.reference_id ) + '&signature=' + encodeURIComponent( layout.signature );
 				var result = await request( base + '/sync-state' + query, config.nonce, undefined, abort && abort.signal );
-				if ( active() ) { syncState = result.state || null; renderIntegration(); }
+				if ( active() ) { syncState = result.state || null; urlBinding = result.url_binding || null; if ( urlBinding && ! bindingUrl ) { bindingUrl = urlBinding.url_id; bindingRevision = String( urlBinding.revision ); } renderIntegration(); }
 			} catch ( error ) { if ( active() && integrationBox ) { integrationBox.replaceChildren( el( 'p', 'nmd-warning', 'Synchronization status unavailable: ' + error.message ), button( 'Refresh synchronization status', loadIntegration ) ); } }
 		}
 		async function integrate( action, resume ) {
-			if ( busy ) { return; }
-			if ( dirty || ( ! resume && ( ! draft.revision || draft.catalog_mode !== 'nova' ) ) ) { note( 'Save a draft using the connected NOVA catalog before synchronization or activation.', true ); return; }
+			if ( busy || dirty || ! draft.revision || draft.catalog_mode !== 'nova' ) { note( 'Save a reviewed draft using the current NOVA catalog first.', true ); return; }
 			setBusy( true );
 			try {
-				var data = referencePayload(); if ( resume ) { data.resume_pending = true; data.expected_revision = syncState.local_revision; }
+				var data = referencePayload(); if ( resume ) { data.recover_template_id = recoveryId.trim(); }
 				var result = await request( base + '/' + action, config.nonce, data, abort && abort.signal );
 				if ( ! active() ) { return; } syncState = result.state || null; renderIntegration();
-				note( action === 'activate' ? 'Activation request completed. Review the NOVA status below.' : 'Synchronization request completed. Review the NOVA status below.' );
+				note( action === 'activate' ? 'Native profile approved locally. Human instructions remain local only.' : 'Publishing template synchronized. Instructions and native addresses remain in WordPress.' );
 			} catch ( error ) { if ( active() ) { note( error.message, true ); await loadIntegration(); } }
+			finally { if ( active() ) { setBusy( false ); } }
+		}
+		async function selectRemote( write, defaults ) {
+			if ( busy || ( ! defaults && ! /^[1-9][0-9]*$/.test( bindingUrl ) ) || ( defaults && ! /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test( defaultType ) ) ) { note( 'Enter the trusted NOVA URL ID or source page type first.', true ); return; }
+			var revision = defaults ? defaultRevision : bindingRevision;
+			if ( write && ( dirty || ! syncState || syncState.status !== 'active' || syncState.local_revision !== draft.revision || ! /^(0|[1-9][0-9]*)$/.test( revision ) || ! Number.isSafeInteger( Number( revision ) ) ) ) { note( 'Approve this exact profile, then review the current server revision before saving.', true ); return; }
+			setBusy( true );
+			try {
+				var data = referencePayload(); if ( defaults ) { data.source_page_type = defaultType; } else { data.url_id = bindingUrl; }
+				var endpoint = base + ( defaults ? '/template-default' : '/url-binding' );
+				if ( write ) { data.expected_server_revision = Number( revision ); } else { endpoint += '?' + new URLSearchParams( data ).toString(); }
+				var result = await request( endpoint, config.nonce, write ? data : undefined, abort && abort.signal );
+				if ( ! active() ) { return; }
+				if ( defaults ) { defaultRecord = result.template_default; defaultRevision = String( result.server_revision ); }
+				else { urlBinding = result.url_binding; bindingRevision = String( result.server_revision ); }
+				renderIntegration(); note( result.message );
+			} catch ( error ) { if ( active() ) { note( error.status === 412 ? 'The server selection changed. Review it again before replacing it; no overwrite was attempted.' : error.message, true ); } }
 			finally { if ( active() ) { setBusy( false ); } }
 		}
 		function renderIntegration() {
 			if ( ! integrationBox ) { return; } integrationBox.replaceChildren();
-			integrationBox.appendChild( el( 'h4', '', 'NOVA synchronization and publishing' ) );
+			integrationBox.appendChild( el( 'h4', '', 'Publishing-template setup' ) );
 			var same = syncState && syncState.local_revision === draft.revision, stateName = syncState && syncState.status || 'not_synced';
 			integrationBox.appendChild( el( 'p', 'nmd-help', 'Status: ' + stateName.replace( /_/g, ' ' ) + ( syncState && ! same ? ' (an earlier local revision)' : '' ) ) );
+			integrationBox.appendChild( el( 'p', 'nmd-warning', 'Human instructions and rules are saved locally only. The current API does not accept or apply them during generation. Publishing templates map existing delivered fields; they do not generate custom labels or repeat members.' ) );
 			if ( syncState && syncState.error ) { integrationBox.appendChild( el( 'p', 'nmd-warning', warningText( syncState.error ) ) ); }
-			var synchronize = button( 'Synchronize to NOVA', function () { integrate( 'sync', false ); } ); synchronize.disabled = dirty || ! draft.revision || draft.catalog_mode !== 'nova'; integrationBox.appendChild( synchronize );
-			if ( syncState && stateName === 'pending' ) { var resume = button( 'Resume pending synchronization', function () { integrate( 'sync', true ); } ); resume.disabled = dirty; integrationBox.appendChild( resume ); }
-			var activate = button( 'Validate and activate mapping', function () { integrate( 'activate', false ); } ); activate.disabled = dirty || ! same || [ 'synced_draft', 'sealed', 'active' ].indexOf( stateName ) < 0; integrationBox.appendChild( activate );
+			var synchronize = button( 'Synchronize publishing template', function () { integrate( 'sync', false ); } ); synchronize.disabled = dirty || ! draft.revision || draft.catalog_mode !== 'nova' || catalog.api_available === false || stateName === 'pending'; integrationBox.appendChild( synchronize );
+			if ( syncState && stateName === 'pending' ) {
+				if ( syncState.pending && syncState.pending.requires_template_id ) { var recovery = control( integrationBox, 'Created NOVA template UUID for recovery', textInput( recoveryId ), 'Creation is never retried automatically. Review the created template in NOVA; it must match this exact request.' ); recovery.addEventListener( 'input', function () { recoveryId = recovery.value; } ); }
+				var resume = button( 'Recover pending synchronization', function () { integrate( 'sync', true ); } ); resume.disabled = dirty || ! same; integrationBox.appendChild( resume );
+			}
+			var activate = button( 'Validate and approve native profile', function () { integrate( 'activate', false ); } ); activate.disabled = dirty || ! same || [ 'synced_draft', 'active' ].indexOf( stateName ) < 0; integrationBox.appendChild( activate );
 			integrationBox.appendChild( button( 'Refresh status', loadIntegration ) );
-			integrationBox.appendChild( el( 'p', 'nmd-help', 'Synchronization saves configuration in NOVA. Activation validates the mapping and available WordPress writer. Confirm service compatibility with NOVA before unpausing, then verify a controlled test delivery.' ) );
+			if ( syncState && syncState.template ) { integrationBox.appendChild( el( 'p', 'nmd-help', 'NOVA template ' + syncState.template.id + ', revision ' + syncState.template.revision + '. Native approval belongs to this exact revision.' ) ); }
+			integrationBox.appendChild( el( 'p', 'nmd-help', 'Approval validates the WordPress writer locally. Delivery is controlled by the connection pause setting. Existing deliveries keep their frozen configuration.' ) );
+			var bindingBox = el( 'fieldset', 'nmd-routing' ); bindingBox.disabled = dirty || ! same || stateName !== 'active'; bindingBox.appendChild( el( 'legend', '', 'Optional NOVA page selection' ) );
+			var url = control( bindingBox, 'Trusted NOVA URL ID', textInput( bindingUrl ), 'Distinct from a WordPress post ID. NOVA verifies ownership; native targets stay local.' ); url.inputMode = 'numeric';
+			var revision = control( bindingBox, 'Reviewed server setting revision', textInput( bindingRevision ), 'Review first. Zero creates a missing page setting; an existing revision conditionally replaces it.' ); revision.readOnly = true;
+			url.addEventListener( 'input', function () { bindingUrl = url.value.trim(); bindingRevision = ''; revision.value = ''; } );
+			bindingBox.append( button( 'Review current page setting', function () { selectRemote( false, false ); } ), button( 'Select this template for the NOVA page', function () { selectRemote( true, false ); } ) );
+			if ( urlBinding ) { bindingBox.appendChild( el( 'p', 'nmd-help', 'Selected template ' + urlBinding.template_id + ', setting revision ' + urlBinding.revision + '.' ) ); } integrationBox.appendChild( bindingBox );
+			var defaultsBox = el( 'fieldset', 'nmd-routing' ); defaultsBox.disabled = dirty || ! same || stateName !== 'active'; defaultsBox.appendChild( el( 'legend', '', 'Optional source page-type default' ) );
+			var sourceType = control( defaultsBox, 'NOVA source page type', textInput( defaultType ), 'For example service or informative. A page selection takes precedence. Other defaults are preserved.' );
+			sourceType.addEventListener( 'input', function () { defaultType = sourceType.value.trim(); defaultRevision = ''; } );
+			defaultsBox.append( button( 'Review template defaults', function () { selectRemote( false, true ); } ), button( 'Set this source-type default', function () { selectRemote( true, true ); } ) );
+			if ( defaultRecord ) { defaultsBox.appendChild( el( 'p', 'nmd-help', 'Defaults revision ' + defaultRevision + '; selected: ' + ( defaultRecord.defaults[ defaultType ] || '(none)' ) + '.' ) ); } integrationBox.appendChild( defaultsBox );
 		}
 		function render() {
 			host.replaceChildren();
@@ -265,22 +310,27 @@
 			body = el( 'fieldset', 'nmd-body' ); body.disabled = busy; var legend = el( 'legend', 'screen-reader-text', 'NOVA mapping draft settings' ); body.appendChild( legend ); host.appendChild( body );
 			var catalogNote = el( 'div', 'nmd-catalog-note' );
 			if ( catalog.origin !== 'nova' ) { catalogNote.appendChild( el( 'p', '', catalog.origin === 'preview' ? 'Documented preview catalog. These field definitions and IDs are local examples, not an active NOVA configuration.' : catalog.message || 'The NOVA catalog is not connected yet. Use the documented preview fields to prepare a local draft.' ) ); if ( catalog.origin !== 'preview' ) { catalogNote.appendChild( button( 'Use documented preview fields', choosePreview ) ); } }
-			else { catalogNote.appendChild( el( 'p', '', 'NOVA catalog loaded. Save and synchronize your mapping, then validate it for publishing.' ) ); }
+			else { catalogNote.appendChild( el( 'p', '', catalog.message || 'Current NOVA delivery fields loaded. Human instructions remain local.' ) ); }
 			body.appendChild( catalogNote );
 			if ( inventoryStale ) { body.appendChild( el( 'p', 'nmd-warning', 'The reference changed while this editor was loading. Export any edits, then refresh the layout inventory before saving.' ) ); }
 			else if ( draft.signature !== layout.signature ) { var review = el( 'div', 'nmd-warning' ), reviewLabel = el( 'label', 'nmd-checkbox' ), reviewCheck = el( 'input' ); reviewCheck.type = 'checkbox'; reviewCheck.checked = referenceConfirmed; reviewLabel.append( reviewCheck, el( 'span', '', 'I reviewed the saved targets against this changed layout.' ) ); review.append( el( 'p', '', 'This draft was saved for an earlier layout. Reconcile missing targets and verify all retained bindings.' ), reviewLabel ); reviewCheck.addEventListener( 'change', function () { referenceConfirmed = reviewCheck.checked; changed(); } ); body.appendChild( review ); }
 			var templates = ( catalog.templates || [] ).slice(), selected = draft.template && draft.template.id ? draft.template.id + '::' + draft.template.revision : '';
 			if ( template() && ! templates.some( function ( item ) { return item.id === template().id && String( item.revision ) === String( template().revision ); } ) ) { templates.push( Object.assign( {}, template(), { label: template().label + ' (cached definition)' } ) ); body.appendChild( el( 'p', 'nmd-help', 'Source choices use the saved exact template definition. The live revision is unavailable; this does not establish current NOVA support.' ) ); }
-			var templateSelect = control( body, 'Writing template', select( [ { value: '', label: 'Choose a template…' } ].concat( templates.map( function ( item ) { return { value: item.id + '::' + item.revision, label: item.label + ' · ' + item.family }; } ) ), selected ) );
-			templateSelect.addEventListener( 'change', function () { var chosen = templates.find( function ( item ) { return item.id + '::' + item.revision === templateSelect.value; } ); draft.template = chosen ? { id: chosen.id, revision: chosen.revision } : { id: '', revision: '' }; changed(); render(); note( 'Template selection changed. Existing bindings and skips are retained for review.' ); } );
+			var templateSelect = control( body, 'Delivery field catalog', select( [ { value: '', label: 'Choose a template…' } ].concat( templates.map( function ( item ) { return { value: item.id + '::' + item.revision, label: item.label + ' · ' + item.family }; } ) ), selected ) );
+			templateSelect.addEventListener( 'change', function () { var chosen = templates.find( function ( item ) { return item.id + '::' + item.revision === templateSelect.value; } ); if ( draft.guidance_mode === 'inherit' && template() && template().authoring_notes ) { draft.guidance = template().authoring_notes; draft.guidance_mode = 'set'; } draft.template = chosen ? { id: chosen.id, revision: chosen.revision } : { id: '', revision: '' }; draft.profile_page_type = chosen && chosen.family || draft.profile_page_type || 'page'; changed(); render(); note( 'Template selection changed. Existing bindings and skips are retained for review.' ); } );
 			var label = control( body, 'Mapping label', textInput( draft.label ) ); label.maxLength = 120; label.addEventListener( 'input', function () { draft.label = label.value; changed(); } );
-			var guidance = control( body, 'Instructions for this layout', textInput( draft.guidance, true ) ); guidance.maxLength = 8000; guidance.addEventListener( 'input', function () { draft.guidance = guidance.value; changed(); } );
+			var pageType = control( body, 'Publishing target page type', textInput( draft.profile_page_type || 'page' ), 'Lowercase words and hyphens. This labels the publishing template, not the WordPress post type.' ); pageType.addEventListener( 'input', function () { draft.profile_page_type = pageType.value; changed(); } );
+			body.appendChild( el( 'p', 'nmd-warning', 'Human instructions below remain local. NOVA does not currently receive or enforce them during generation.' ) );
+			var notesMode = control( body, 'Local layout instructions', select( [ { value: 'inherit', label: 'Retain inherited local instructions' }, { value: 'set', label: 'Set replacement instructions' }, { value: 'clear', label: 'Clear instructions explicitly' } ], draft.guidance_mode ) );
+			notesMode.addEventListener( 'change', function () { draft.guidance_mode = notesMode.value; if ( draft.guidance_mode !== 'set' ) { draft.guidance = ''; } changed(); render(); } );
+			if ( draft.guidance_mode === 'inherit' ) { body.appendChild( el( 'p', 'nmd-help', 'Retained local inherited instructions: ' + ( template() && template().authoring_notes || '(none)' ) ) ); }
+			if ( draft.guidance_mode === 'set' ) { var guidance = control( body, 'Local human instructions and rules', textInput( draft.guidance, true ) ), notesCount = el( 'p', 'nmd-help', utf8Bytes( draft.guidance ) + ' / 8000 UTF-8 bytes' ); body.appendChild( notesCount ); guidance.addEventListener( 'input', function () { draft.guidance = guidance.value; notesCount.textContent = utf8Bytes( draft.guidance ) + ' / 8000 UTF-8 bytes'; changed(); } ); }
 			coverageBox = el( 'div', 'nmd-coverage' ); coverageBox.setAttribute( 'aria-live', 'polite' ); body.appendChild( coverageBox );
 			body.appendChild( el( 'h4', '', 'Page and template fields' ) ); body.appendChild( el( 'p', 'nmd-help', 'Select a field here or on the page preview. Nested ACF fields remain available.' ) );
 			var search = el( 'input', 'nmd-search' ); search.type = 'search'; search.placeholder = 'Find a target field…'; search.setAttribute( 'aria-label', 'Find a target field' ); body.appendChild( search );
 			fieldsBox = el( 'div', 'nmd-fields' ); body.appendChild( fieldsBox ); renderFields(); search.addEventListener( 'input', function () { var query = search.value.toLowerCase().trim(); cards.forEach( function ( card, path ) { card.hidden = ( card.textContent + ' ' + path ).toLowerCase().indexOf( query ) < 0; } ); } );
 			renderSkips( body );
-			var repeats = el( 'details', 'nmd-advanced' ); repeats.appendChild( el( 'summary', '', 'Fixed repeat slots' ) ); repeatBox = el( 'div' ); repeats.appendChild( repeatBox ); body.appendChild( repeats ); renderRepeats();
+			var repeats = el( 'details', 'nmd-advanced' ); repeats.appendChild( el( 'summary', '', 'Fixed repeat slots' ) ); repeats.appendChild( el( 'p', 'nmd-warning', 'Historical repeat mappings remain local. The current delivery API has no generated repeat-member contract; explicitly reconcile them before synchronization.' ) ); repeatBox = el( 'div' ); repeats.appendChild( repeatBox ); body.appendChild( repeats ); renderRepeats();
 			var routing = el( 'details', 'nmd-advanced' ); routing.appendChild( el( 'summary', '', 'Target and routing' ) ); routing.appendChild( el( 'p', 'nmd-help', 'Reference: ' + draft.reference_type + ' #' + draft.reference_id + ( layout.path ? ' · ' + layout.path : '' ) ) ); routing.appendChild( el( 'code', 'nmd-signature', 'Layout: ' + draft.signature ) );
 			var operations = [ { value: 'update', label: draft.reference_type === 'term' ? 'Update an existing category or term' : 'Update an existing page' } ]; if ( draft.reference_type !== 'term' ) { operations.push( { value: 'clone', label: 'Clone this reference as a new page' } ); }
 			var operation = control( routing, 'Intended operation', select( operations, draft.routing.operation ), draft.reference_type === 'term' ? 'Cloning category and term references is not supported.' : '' ); operation.addEventListener( 'change', function () { draft.routing.operation = operation.value; changed(); } );
@@ -308,5 +358,5 @@
 		controller.ready = loadDraft().then( loadIntegration );
 		return controller;
 	}
-	return { mount: mount, initialDraft: initialDraft, payload: payload, coverage: coverage, request: request, saveResult: saveResult, resolveTemplate: resolveTemplate };
+	return { mount: mount, initialDraft: initialDraft, payload: payload, coverage: coverage, request: request, saveResult: saveResult, resolveTemplate: resolveTemplate, utf8Bytes: utf8Bytes, newSlotId: newSlotId };
 } ) );

@@ -173,8 +173,23 @@ $option_name       = class_exists( 'Nova_Bridge_Suite_Content_Context' )
 	? Nova_Bridge_Suite_Content_Context::OPTION_NAME
 	: 'nova_bridge_suite_content_contexts';
 $option_existed    = false !== get_option( $option_name, false );
-$old_option        = $option_existed ? get_option( $option_name ) : null;
 $rest_init_at_start = did_action( 'rest_api_init' );
+// Settings API registration adds sanitizers, so update_option() is not an exact restore.
+global $wpdb;
+if ( 'nova_bridge_settings' !== NOVA_BRIDGE_SUITE_OPTION || 'nova_bridge_suite_content_contexts' !== $option_name ) {
+	throw new RuntimeException( 'Unexpected option identity; the canary will not write settings.' );
+}
+$raw_option_rows = [];
+foreach ( [ NOVA_BRIDGE_SUITE_OPTION, $option_name ] as $snapshot_name ) {
+	$raw_option_rows[ $snapshot_name ] = $wpdb->get_row(
+		$wpdb->prepare( "SELECT option_value, autoload FROM {$wpdb->options} WHERE option_name = %s", $snapshot_name ),
+		ARRAY_A
+	);
+	if ( '' !== $wpdb->last_error ) {
+		throw new RuntimeException( 'Cannot snapshot the canary option: ' . $snapshot_name );
+	}
+}
+$settings_updated_priority = has_action( 'update_option_' . NOVA_BRIDGE_SUITE_OPTION, 'nova_bridge_suite_settings_updated' );
 
 $admins = get_users(
 	[
@@ -192,6 +207,10 @@ $admin_id = (int) $admins[0];
 wp_set_current_user( $admin_id );
 
 try {
+	// Module-toggle assertions must not activate/deactivate the site's CPT modules.
+	if ( false !== $settings_updated_priority ) {
+		remove_action( 'update_option_' . NOVA_BRIDGE_SUITE_OPTION, 'nova_bridge_suite_settings_updated', $settings_updated_priority );
+	}
 	nova_content_context_test_assert( class_exists( 'Nova_Bridge_Suite_Content_Context' ), 'The API Mapping Context class is loaded.' );
 	// A stale opt-in value must not restore generic REST guidance; do not persist it.
 	add_filter( 'pre_option_' . Nova_Bridge_Suite_Content_Context::GUIDANCE_OPTION, $rest_guidance_override );
@@ -1721,82 +1740,105 @@ try {
 } catch ( Throwable $error ) {
 	$failure = $error;
 } finally {
-	remove_filter( 'pre_option_nova_bridge_mapping_rest_guidance', $rest_guidance_override );
-	if ( $template_filter_added && is_callable( $template_filter ) ) {
-		remove_filter( $template_filter_hook, $template_filter, 10 );
-	}
-	if ( $fixture_post_id > 0 ) {
-		wp_delete_post( $fixture_post_id, true );
-	}
-	if ( $hidden_post_id > 0 ) {
-		wp_delete_post( $hidden_post_id, true );
-	}
-	if ( $collision_post_id > 0 ) {
-		wp_delete_post( $collision_post_id, true );
-	}
-	if ( $service_post_id > 0 ) {
-		wp_delete_post( $service_post_id, true );
-	}
-	foreach ( $blog_post_ids as $blog_post_id ) {
-		if ( $blog_post_id > 0 ) {
-			wp_delete_post( $blog_post_id, true );
+	try {
+		remove_filter( 'pre_option_nova_bridge_mapping_rest_guidance', $rest_guidance_override );
+		if ( $template_filter_added && is_callable( $template_filter ) ) {
+			remove_filter( $template_filter_hook, $template_filter, 10 );
+		}
+		if ( $fixture_post_id > 0 ) {
+			wp_delete_post( $fixture_post_id, true );
+		}
+		if ( $hidden_post_id > 0 ) {
+			wp_delete_post( $hidden_post_id, true );
+		}
+		if ( $collision_post_id > 0 ) {
+			wp_delete_post( $collision_post_id, true );
+		}
+		if ( $service_post_id > 0 ) {
+			wp_delete_post( $service_post_id, true );
+		}
+		foreach ( $blog_post_ids as $blog_post_id ) {
+			if ( $blog_post_id > 0 ) {
+				wp_delete_post( $blog_post_id, true );
+			}
+		}
+
+		unregister_post_meta( $visible_post_type, $subtitle_meta );
+		unregister_post_meta( $visible_post_type, $faq_meta );
+		unregister_post_meta( $visible_post_type, $hidden_meta );
+		if ( $acf_fixture_added && function_exists( 'acf_remove_local_field_group' ) ) {
+			acf_remove_local_field_group( $acf_fixture_group_key );
+		}
+
+		if ( taxonomy_exists( $private_taxonomy ) ) {
+			unregister_taxonomy( $private_taxonomy );
+		}
+		if ( taxonomy_exists( $locked_taxonomy ) ) {
+			unregister_taxonomy( $locked_taxonomy );
+		}
+		if ( post_type_exists( $visible_post_type ) ) {
+			unregister_post_type( $visible_post_type );
+		}
+		if ( post_type_exists( $hidden_post_type ) ) {
+			unregister_post_type( $hidden_post_type );
+		}
+		if ( post_type_exists( $collision_post_type ) ) {
+			unregister_post_type( $collision_post_type );
+		}
+		if ( post_type_exists( $application_post_type ) ) {
+			unregister_post_type( $application_post_type );
+		}
+		if ( post_type_exists( $infrastructure_post_type ) ) {
+			unregister_post_type( $infrastructure_post_type );
+		}
+		if ( post_type_exists( $private_post_type ) ) {
+			unregister_post_type( $private_post_type );
+		}
+		if ( post_type_exists( $private_hidden_post_type ) ) {
+			unregister_post_type( $private_hidden_post_type );
+		}
+		$cleanup_server = rest_get_server();
+		if ( method_exists( $cleanup_server, 'remove_route' ) ) {
+			$cleanup_server->remove_route( $opaque_namespace, $opaque_path );
+			$cleanup_server->remove_route( $editable_namespace, $editable_path );
+		}
+		global $wp_rest_additional_fields;
+		unset( $wp_rest_additional_fields[ $collision_post_type ] );
+
+	} finally {
+		$restore_errors = [];
+		foreach ( $raw_option_rows as $restore_name => $original_row ) {
+			try {
+				if ( null === $original_row ) {
+					$restored = $wpdb->delete( $wpdb->options, [ 'option_name' => $restore_name ], [ '%s' ] );
+				} else {
+					$restored = $wpdb->query( $wpdb->prepare(
+						"INSERT INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE option_value = %s, autoload = %s",
+						$restore_name, $original_row['option_value'], $original_row['autoload'], $original_row['option_value'], $original_row['autoload']
+					) );
+				}
+				if ( false === $restored ) { throw new RuntimeException( 'Raw option restoration failed: ' . $restore_name ); }
+				$actual_row = $wpdb->get_row( $wpdb->prepare( "SELECT option_value, autoload FROM {$wpdb->options} WHERE option_name = %s", $restore_name ), ARRAY_A );
+				if ( '' !== $wpdb->last_error || $actual_row !== $original_row ) { throw new RuntimeException( 'Raw option bytes/autoload did not restore exactly: ' . $restore_name ); }
+			} catch ( Throwable $restore_error ) {
+				$restore_errors[] = $restore_error->getMessage();
+			} finally {
+				wp_cache_delete( $restore_name, 'options' );
+			}
+		}
+		wp_cache_delete( 'alloptions', 'options' );
+		wp_cache_delete( 'notoptions', 'options' );
+		if ( class_exists( 'Nova_Bridge_Suite_Content_Context' ) ) { Nova_Bridge_Suite_Content_Context::flush_config_cache(); }
+		if ( false !== $settings_updated_priority ) {
+			add_action( 'update_option_' . NOVA_BRIDGE_SUITE_OPTION, 'nova_bridge_suite_settings_updated', $settings_updated_priority, 3 );
+		}
+		wp_set_current_user( $old_user_id );
+		if ( $restore_errors ) {
+			$failure = new RuntimeException( ( $failure ? $failure->getMessage() . ' ' : '' ) . implode( ' ', $restore_errors ) );
+		} else {
+			WP_CLI::line( 'PASS  Original suite/context option bytes, existence and autoload restored exactly.' );
 		}
 	}
-
-	unregister_post_meta( $visible_post_type, $subtitle_meta );
-	unregister_post_meta( $visible_post_type, $faq_meta );
-	unregister_post_meta( $visible_post_type, $hidden_meta );
-	if ( $acf_fixture_added && function_exists( 'acf_remove_local_field_group' ) ) {
-		acf_remove_local_field_group( $acf_fixture_group_key );
-	}
-
-	if ( taxonomy_exists( $private_taxonomy ) ) {
-		unregister_taxonomy( $private_taxonomy );
-	}
-	if ( taxonomy_exists( $locked_taxonomy ) ) {
-		unregister_taxonomy( $locked_taxonomy );
-	}
-	if ( post_type_exists( $visible_post_type ) ) {
-		unregister_post_type( $visible_post_type );
-	}
-	if ( post_type_exists( $hidden_post_type ) ) {
-		unregister_post_type( $hidden_post_type );
-	}
-	if ( post_type_exists( $collision_post_type ) ) {
-		unregister_post_type( $collision_post_type );
-	}
-	if ( post_type_exists( $application_post_type ) ) {
-		unregister_post_type( $application_post_type );
-	}
-	if ( post_type_exists( $infrastructure_post_type ) ) {
-		unregister_post_type( $infrastructure_post_type );
-	}
-	if ( post_type_exists( $private_post_type ) ) {
-		unregister_post_type( $private_post_type );
-	}
-	if ( post_type_exists( $private_hidden_post_type ) ) {
-		unregister_post_type( $private_hidden_post_type );
-	}
-	$cleanup_server = rest_get_server();
-	if ( method_exists( $cleanup_server, 'remove_route' ) ) {
-		$cleanup_server->remove_route( $opaque_namespace, $opaque_path );
-		$cleanup_server->remove_route( $editable_namespace, $editable_path );
-	}
-	global $wp_rest_additional_fields;
-	unset( $wp_rest_additional_fields[ $collision_post_type ] );
-
-	if ( $option_existed ) {
-		update_option( $option_name, $old_option );
-	} else {
-		delete_option( $option_name );
-	}
-	if ( $suite_settings_existed ) {
-		update_option( NOVA_BRIDGE_SUITE_OPTION, $old_suite_settings, false );
-	} else {
-		delete_option( NOVA_BRIDGE_SUITE_OPTION );
-	}
-
-	wp_set_current_user( $old_user_id );
 }
 
 if ( $failure instanceof Throwable ) {

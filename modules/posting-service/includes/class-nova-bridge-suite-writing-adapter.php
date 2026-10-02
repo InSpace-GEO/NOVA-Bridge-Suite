@@ -1,5 +1,5 @@
 <?php
-/** Converts verified local mappings to the posting service's canonical writing objects. */
+/** Projects local native profiles onto the delivery-only publishing-template contract. */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 final class Nova_Bridge_Suite_Writing_Adapter {
@@ -7,134 +7,97 @@ final class Nova_Bridge_Suite_Writing_Adapter {
         return new WP_Error( 'nova_writing_' . $code, $message, [ 'status' => $status ] );
     }
 
-    /** Object keys sort recursively; arrays retain order. No floats/native objects enter policy. */
     public static function canonical_json( $value ): string {
         $normalize = function ( $item ) use ( &$normalize ) {
             if ( is_float( $item ) || is_resource( $item ) || is_object( $item ) ) { throw new InvalidArgumentException( 'Unsupported policy value.' ); }
             if ( is_array( $item ) ) {
-                if ( array_keys( $item ) !== range( 0, count( $item ) - 1 ) && [] !== $item ) { ksort( $item, SORT_STRING ); }
+                if ( [] !== $item && array_keys( $item ) !== range( 0, count( $item ) - 1 ) ) { ksort( $item, SORT_STRING ); }
                 foreach ( $item as $key => $child ) { $item[ $key ] = $normalize( $child ); }
             }
             return $item;
         };
         $json = wp_json_encode( $normalize( $value ), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
-        if ( ! is_string( $json ) ) { throw new InvalidArgumentException( 'Policy is not valid UTF8 JSON.' ); }
+        if ( ! is_string( $json ) ) { throw new InvalidArgumentException( 'Profile is not valid UTF8 JSON.' ); }
         return $json;
     }
 
-    public static function template_record( $record ): bool {
-        return is_array( $record ) && Nova_Bridge_Suite_Posting_Client::id( $record['template_id'] ?? null ) && Nova_Bridge_Suite_Posting_Client::id( $record['template_version'] ?? null ) && in_array( $record['family'] ?? null, [ 'service', 'category', 'informative' ], true ) && is_array( $record['fields'] ?? null ) && is_array( $record['groups'] ?? null ) && is_array( $record['layout'] ?? null ) && is_array( $record['protected_identities'] ?? null ) && is_string( $record['etag'] ?? null );
+    /** The twelve source names in PublishingTemplateMapping, not generated custom fields. */
+    public static function source_fields(): array {
+        $types = [ 'title' => 'text', 'meta_description' => 'text', 'h1' => 'text', 'content' => 'rich_text', 'top_content' => 'rich_text', 'bottom_content' => 'rich_text', 'image_url' => 'image', 'image_urls' => 'list', 'image_alt' => 'text', 'url' => 'text', 'page_type_frontend' => 'text', 'language' => 'text' ];
+        $fields = [];
+        foreach ( $types as $key => $type ) { $fields[ $key ] = [ 'source_path' => $key, 'label' => ucwords( str_replace( '_', ' ', $key ) ), 'type' => $type ]; }
+        return $fields;
+    }
+
+    public static function stock_catalog(): array {
+        return [ 'id' => 'nova-delivery-fields-v1', 'revision' => '1', 'label' => 'Current NOVA delivery fields', 'family' => 'page', 'authoring_notes' => '', 'fields' => array_values( self::source_fields() ), 'groups' => [], 'protected_slots' => [] ];
+    }
+
+    public static function template_record( $value ): bool {
+        return is_array( $value ) && Nova_Bridge_Suite_Posting_Protocol::uuid( $value['id'] ?? null ) && is_int( $value['revision'] ?? null ) && $value['revision'] > 0 && true === Nova_Bridge_Suite_Posting_Protocol::validate( $value, 'PublishingTemplate' );
     }
 
     public static function catalog_template( array $record ): array {
-        $fields = []; $groups = []; $protected = [];
-        foreach ( $record['fields'] as $field ) { $fields[] = [ 'source_path' => $field['field_key'], 'label' => $field['label'], 'type' => $field['field_type'] ]; }
-        foreach ( $record['groups'] as $group ) {
-            $members = [];
-            foreach ( $group['fields'] as $field ) { $members[] = $field['field_key']; $fields[] = [ 'source_path' => $group['group_key'] . '[].' . $field['field_key'], 'label' => $field['label'], 'type' => $field['field_type'] ]; }
-            $groups[] = [ 'key' => $group['group_key'], 'label' => $group['label'], 'min' => $group['minItems'], 'max' => $group['maxItems'], 'member_keys' => $members ];
-        }
-        foreach ( $record['protected_identities'] as $key ) { $protected[] = [ 'key' => $key, 'label' => ucwords( str_replace( '_', ' ', $key ) ) ]; }
-        return [ 'id' => $record['template_id'], 'revision' => $record['template_version'], 'label' => ucfirst( $record['family'] ) . ' — ' . $record['template_id'] . '/' . $record['template_version'], 'family' => $record['family'], 'fields' => $fields, 'groups' => $groups, 'protected_slots' => $protected ];
+        $item = self::stock_catalog();
+        $item['id'] = $record['id']; $item['revision'] = (string) $record['revision']; $item['label'] = $record['name']; $item['family'] = $record['page_type'];
+        return $item;
     }
 
-    /** Returns template PUT fields and mapping bindings. Does not claim writer capability. */
-    public static function prepare( array $draft, array $source ) {
-        if ( ! self::template_record( $source ) || 'nova' !== ( $draft['catalog_mode'] ?? '' ) || $source['template_id'] !== ( $draft['template']['id'] ?? null ) || $source['template_version'] !== ( $draft['template']['revision'] ?? null ) ) { return self::error( 'template_identity', 'An exact canonical NOVA template revision is required.', 409 ); }
-        $guidance = $draft['guidance'] ?? '';
-        if ( ! is_string( $guidance ) || strlen( $guidance ) > 8000 ) { return self::error( 'notes_size', 'Layout instructions exceed the NOVA limit of 8000 UTF8 bytes.' ); }
-        $known = []; $skips = []; $notes = []; $mapped = [];
-        foreach ( $source['fields'] as $field ) { $known[ $field['field_key'] ] = $field; }
-        foreach ( $source['groups'] as $group ) { foreach ( $group['fields'] as $field ) { $known[ $group['group_key'] . '[].' . $field['field_key'] ] = $field; } }
-        foreach ( $draft['skipped_sources'] as $skip ) {
-            if ( ! isset( $known[ $skip['source_path'] ] ) ) { return self::error( 'source_changed', 'A skipped source no longer belongs to the selected canonical template.', 409 ); }
-            $skips[ $skip['source_path'] ] = true;
+    public static function field_id( string $path ): string { return 'field_' . substr( hash( 'sha256', $path ), 0, 24 ); }
+    public static function slot_uuid( $value ): bool { return is_string( $value ) && 1 === preg_match( '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D', $value ); }
+
+    /** Validate retained instructions. They never become unsupported API properties. */
+    public static function authoring_notes( array $draft ) {
+        $notes = $draft['guidance'] ?? ''; $mode = $draft['guidance_mode'] ?? ( '' === $notes ? 'inherit' : 'set' );
+        if ( ! is_string( $notes ) || strlen( $notes ) > 8000 || 1 !== preg_match( '//u', $notes ) || ! in_array( $mode, [ 'inherit', 'set', 'clear' ], true ) || ( 'set' === $mode && '' === trim( $notes ) ) ) { return self::error( 'notes_size', 'Local layout instructions allow 8000 UTF-8 bytes; choose inherit, set or clear explicitly.' ); }
+        foreach ( $draft['fields'] ?? [] as $field ) {
+            if ( ! is_string( $field['instructions'] ?? '' ) || strlen( $field['instructions'] ?? '' ) > 8000 ) { return self::error( 'notes_size', 'Local field instructions allow 8000 UTF-8 bytes.' ); }
         }
-        foreach ( $draft['fields'] as $path => $field ) {
-            if ( 'mapped' !== $field['mode'] ) { continue; }
-            $key = $field['source_path'];
-            if ( ! isset( $known[ $key ] ) || false !== strpos( $key, '[].' ) || isset( $skips[ $key ] ) || isset( $mapped[ $key ] ) ) { return self::error( 'source_changed', 'Each individual generated source must have one supported destination and cannot also be skipped.', 409 ); }
-            $mapped[ $key ] = $path;
-            if ( '' !== $field['instructions'] ) { $notes[ $key ] = $field['instructions']; }
-        }
-        $fields = []; $groups = []; $removed = [];
-        foreach ( $source['fields'] as $field ) {
-            $key = $field['field_key'];
-            if ( isset( $skips[ $key ] ) ) { $removed[ $key ] = true; continue; }
-            if ( isset( $notes[ $key ] ) ) { $field['notes'] = $notes[ $key ]; }
-            $fields[] = $field;
-        }
-        foreach ( $source['groups'] as $group ) {
-            $members = [];
-            foreach ( $group['fields'] as $field ) { if ( ! isset( $skips[ $group['group_key'] . '[].' . $field['field_key'] ] ) ) { $members[] = $field; } }
-            if ( ! $members ) { $removed[ $group['group_key'] ] = true; continue; }
-            $group['fields'] = $members;
-            $slots = $draft['repeat_slots'][ $group['group_key'] ] ?? [];
-            if ( $slots ) {
-                // A fixed-size schema prevents NOVA from generating rows the native layout cannot hold.
-                $count = count( $slots );
-                if ( $count > 12 || $count < $group['minItems'] || $count > $group['maxItems'] ) { return self::error( 'repeat_count', 'Existing repeat slots do not fit the canonical group bounds. Adjust the selected layout before synchronizing.' ); }
-                $group['minItems'] = $count; $group['maxItems'] = $count;
-            }
-            $groups[] = $group;
-        }
-        $layout = array_values( array_filter( $source['layout'], static function ( $member ) use ( $removed ) { return 'protected_slot' === $member['kind'] || ! isset( $removed[ $member['key'] ] ); } ) );
-        foreach ( $groups as &$group ) {
-            // Recompute optional adjacency anchors after explicitly omitted generated members.
-            foreach ( $layout as $index => $member ) {
-                if ( 'repeat_group' !== $member['kind'] || $member['key'] !== $group['group_key'] ) { continue; }
-                foreach ( [ 'preceding_anchor' => -1, 'following_anchor' => 1 ] as $anchor => $offset ) {
-                    unset( $group[ $anchor ] ); $adjacent = $layout[ $index + $offset ] ?? null;
-                    if ( $adjacent && in_array( $adjacent['kind'], [ 'field', 'protected_slot' ], true ) ) { $group[ $anchor ] = [ 'kind' => 'field' === $adjacent['kind'] ? 'field' : 'protected', 'key' => $adjacent['key'] ]; }
-                }
-            }
-        }
-        unset( $group );
-        foreach ( $fields as $field ) { if ( strlen( $field['notes'] ) > 8000 ) { return self::error( 'notes_size', 'A field instruction exceeds the NOVA limit of 8000 UTF8 bytes.' ); } }
-        $descriptors = $draft['target_descriptors']; $bindings = []; $used = [];
-        $identity = [ 'reference_type' => $draft['reference_type'], 'reference_id' => $draft['reference_id'], 'signature' => $draft['signature'], 'local_revision' => $draft['revision'] ];
-        foreach ( $mapped as $key => $path ) {
-            if ( ! isset( $descriptors[ $path ] ) ) { return self::error( 'target_missing', 'A native target is missing. Reconcile the local draft.', 409 ); }
-            $target = $descriptors[ $path ]; $used[ $path ] = true;
-            $bindings[] = self::binding( $key, $known[ $key ], null, [ 'format' => 'nova_bridge_target_v1', 'target' => $target ], $identity, $target['write_mode'] ?? 'replace' );
-        }
-        foreach ( $groups as $group ) {
-            $key = $group['group_key']; $slots = $draft['repeat_slots'][ $key ] ?? [];
-            foreach ( $group['fields'] as $field ) {
-                $targets = []; $seen_slots = [];
-                foreach ( $slots as $slot ) {
-                    $path = $slot['targets'][ $field['field_key'] ] ?? null;
-                    if ( ! $path || ! isset( $descriptors[ $path ] ) || isset( $used[ $path ] ) || isset( $seen_slots[ $slot['id'] ] ) ) { return self::error( 'repeat_incomplete', 'Every existing repeat slot needs a distinct destination for each generated member before synchronization.' ); }
-                    $seen_slots[ $slot['id'] ] = true; $used[ $path ] = true;
-                    $targets[] = [ 'slot_id' => $slot['id'], 'target' => $descriptors[ $path ] ];
-                }
-                if ( $targets ) { $bindings[] = self::binding( $key . '[].' . $field['field_key'], $field, $key, [ 'format' => 'nova_bridge_target_v1', 'slots' => $targets ], $identity, 'fixed_slots' ); }
-            }
-        }
-        $policy = self::policy( $draft );
-        try { $policy_json = self::canonical_json( $policy ); } catch ( InvalidArgumentException $error ) { return self::error( 'policy', $error->getMessage() ); }
-        $policy_digest = hash( 'sha256', $policy_json );
-        foreach ( $bindings as $index => &$binding ) { $binding['expected_identity']['plugin_policy_digest'] = $policy_digest; if ( 0 === $index ) { $binding['expected_identity']['plugin_policy_json'] = $policy_json; } }
-        unset( $binding );
-        $warnings = [];
-        $covered = array_column( $bindings, 'source_path' );
-        foreach ( $known as $key => $field ) { if ( ! isset( $skips[ $key ] ) && ! in_array( $key, $covered, true ) ) { $warnings[] = 'Generated source ' . $key . ' has no destination. NOVA cannot seal this configuration.'; } }
-        if ( $skips ) { $warnings[] = 'Explicitly skipped sources are omitted from this site-owned template. The original stock template is unchanged.'; }
-        if ( ! $bindings ) { $warnings[] = 'No generated source bindings exist; this configuration cannot be activated.'; }
-        return [ 'template' => [ 'fields' => $fields, 'groups' => $groups, 'layout' => $layout, 'examples' => null, 'authoring_notes' => $guidance ], 'bindings' => $bindings, 'policy_json' => $policy_json, 'policy_digest' => $policy_digest, 'warnings' => $warnings ];
+        return [ 'guidance_mode' => $mode, 'guidance' => $notes ];
     }
 
-    private static function binding( string $source, array $field, ?string $group, array $target, array $identity, string $write_mode ): array {
-        return [ 'source_path' => $source, 'field_key' => $field['field_key'], 'group_key' => $group, 'source_type' => $field['field_type'], 'target_type' => $field['field_type'], 'write_mode' => $write_mode, 'target_descriptor' => $target, 'expected_identity' => $identity ];
+    /** Exact wire input only. Descriptors, notes, native IDs and guards stay in WordPress. */
+    public static function template_input( array $draft ) {
+        $notes = self::authoring_notes( $draft ); if ( is_wp_error( $notes ) ) { return $notes; }
+        if ( 'nova' !== ( $draft['catalog_mode'] ?? '' ) ) { return self::error( 'preview', 'Choose the current NOVA delivery catalog before synchronization.', 409 ); }
+        if ( 'nova-delivery-fields-v1' !== ( $draft['template']['id'] ?? '' ) && ! Nova_Bridge_Suite_Posting_Protocol::uuid( $draft['template']['id'] ?? null ) ) { return self::error( 'legacy_catalog', 'The historical writing template is retained. Select the current delivery catalog and review its source mappings before synchronizing.', 409 ); }
+        foreach ( $draft['repeat_slots'] ?? [] as $slots ) { if ( $slots ) { return self::error( 'repeat_unsupported', 'Saved repeat mappings are retained locally. This posting API supplies no generated repeat members or slot contract; explicitly review them before using scalar delivery fields.', 409 ); } }
+        $known = self::source_fields(); $skipped = []; $fields = []; $mapping = []; $seen = [];
+        foreach ( $draft['skipped_sources'] ?? [] as $skip ) {
+            if ( ! isset( $known[ $skip['source_path'] ?? '' ] ) ) { return self::error( 'source_unsupported', 'A retained skipped source is outside the current twelve-field delivery contract. Review it explicitly.', 409 ); }
+            $skipped[ $skip['source_path'] ] = true;
+        }
+        $selected = $draft['fields'] ?? []; ksort( $selected, SORT_STRING );
+        foreach ( $selected as $path => $field ) {
+            if ( 'mapped' !== ( $field['mode'] ?? '' ) ) { continue; }
+            $source = $field['source_path'] ?? '';
+            if ( ! isset( $known[ $source ] ) || isset( $skipped[ $source ] ) ) { return self::error( 'source_unsupported', 'A selected source must belong to the current delivery contract and cannot also be skipped. Custom generated sources are not supported by this posting API.', 409 ); }
+            if ( ! isset( $draft['target_descriptors'][ $path ] ) ) { return self::error( 'target_missing', 'Reconcile the missing native target before synchronization.', 409 ); }
+            $seen[ $source ] = true;
+            $id = self::field_id( $path );
+            // Stock content is nullable. Required is a local explicit choice, never inferred from a prompt.
+            $fields[] = [ 'id' => $id, 'label' => $known[ $source ]['label'], 'kind' => $known[ $source ]['type'], 'required' => true === ( $field['required'] ?? false ) ];
+            $mapping[] = [ 'field_id' => $id, 'source_field' => $source ];
+        }
+        if ( ! $fields ) { return self::error( 'empty_mapping', 'Map at least one supported delivery field before synchronization.', 409 ); }
+        $page_type = $draft['profile_page_type'] ?? $draft['catalog_snapshot']['family'] ?? 'page';
+        $name = trim( $draft['label'] ?? '' ); if ( '' === $name ) { $name = 'WordPress ' . ( $draft['reference_type'] ?? 'page' ) . ' ' . ( $draft['reference_id'] ?? '' ); }
+        $input = [ 'name' => $name, 'page_type' => $page_type, 'definition' => [ 'version' => 1, 'fields' => $fields ], 'mapping' => [ 'version' => 1, 'fields' => $mapping ], 'enabled' => true ];
+        $valid = Nova_Bridge_Suite_Posting_Protocol::validate( $input, 'PublishingTemplateInput' );
+        return is_wp_error( $valid ) ? $valid : $input;
     }
 
-    public static function policy( array $draft ): array {
-        $protected = []; $empty = []; $instructions = [];
-        foreach ( $draft['fields'] as $path => $field ) {
-            $instructions[ $path ] = $field['instructions'] ?? '';
-            if ( 'protected' === $field['mode'] ) { $protected[] = [ 'slot_key' => $field['protected_slot'] ?? '', 'target' => $draft['target_descriptors'][ $path ] ]; }
-            if ( 'leave_empty' === $field['mode'] ) { $empty[] = $draft['target_descriptors'][ $path ]; }
-        }
-        return [ 'schema_version' => 1, 'reference_type' => $draft['reference_type'], 'reference_id' => $draft['reference_id'], 'signature' => $draft['signature'], 'label' => $draft['label'] ?? '', 'field_instructions' => $instructions, 'protected_bindings' => $protected, 'leave_empty' => $empty, 'repeat_slots' => $draft['repeat_slots'], 'routing' => $draft['routing'], 'skipped_sources' => $draft['skipped_sources'] ];
+    public static function prepare( array $draft, array $source = [] ) {
+        $input = self::template_input( $draft ); if ( is_wp_error( $input ) ) { return $input; }
+        return [ 'template' => $input, 'warnings' => self::warnings( $draft ) ];
     }
+
+    public static function warnings( array $draft ): array {
+        $warnings = [ 'Human instructions and rules are retained in WordPress only. The current posting API does not accept them or apply them during generation.', 'Publishing templates map existing delivered fields; they do not generate extra labels, shorten text or create repeat content.' ];
+        if ( ! empty( $draft['skipped_sources'] ) ) { $warnings[] = 'Skipped sources are omitted from this publishing mapping. NOVA may still deliver them; their generation is unchanged.'; }
+        return $warnings;
+    }
+
+    /** Used by local diagnostics only; never sent to NOVA. */
+    public static function policy( array $draft ): array { return $draft; }
 }

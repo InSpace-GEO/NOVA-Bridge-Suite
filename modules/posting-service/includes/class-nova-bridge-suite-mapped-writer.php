@@ -8,7 +8,7 @@ final class Nova_Bridge_Suite_Writer_Failure extends RuntimeException {
 }
 
 final class Nova_Bridge_Suite_Mapped_Writer {
-    public const WRITER_ID = 'nova_verified_rows_v1';
+    public const WRITER_ID = 'nova_verified_rows_v3';
     private const MAX_SNAPSHOT_BYTES = 8388608;
     private static $elementor_derived = null;
 
@@ -36,11 +36,18 @@ final class Nova_Bridge_Suite_Mapped_Writer {
     }
     public static function digest( $value ): string { return hash( 'sha256', self::json( self::sorted( $value ) ) ); }
     private static function same( $first, $second ): bool { return self::digest( $first ) === self::digest( $second ); }
+    private static function uuid( $value ): bool { return is_string( $value ) && 1 === preg_match( '/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iD', $value ); }
+    private static function delivery_identity( array $content, array $context ): array {
+        if ( ! self::uuid( $content['id'] ?? null ) || ! self::uuid( $context['attempt_id'] ?? null ) || ! is_string( $context['snapshot_sha256'] ?? null ) || ! preg_match( '/^[a-f0-9]{64}$/D', $context['snapshot_sha256'] ) || ! preg_match( '/^[a-f0-9]{64}$/D', $content['source_sha256'] ?? '' ) ) { self::fail( 'snapshot_identity', 'The verified delivery hash and current response-header attempt UUID are required.' ); }
+        foreach ( [ 'url_id', 'content_item_id', 'content_item_version_id' ] as $key ) { if ( ! is_string( $content[ $key ] ?? null ) || ! preg_match( '/^[1-9][0-9]{0,18}$/D', $content[ $key ] ) || ( isset( $context[ $key ] ) && $context[ $key ] !== $content[ $key ] ) ) { self::fail( 'snapshot_identity', 'The verified delivery and journal content identities disagree.' ); } }
+        if ( isset( $context['delivery_id'] ) && $context['delivery_id'] !== $content['id'] ) { self::fail( 'snapshot_identity', 'The delivery UUID differs from its journal.' ); }
+        if ( isset( $context['source_sha256'] ) && $context['source_sha256'] !== $content['source_sha256'] ) { self::fail( 'snapshot_identity', 'The canonical source hash differs from its journal.' ); }
+        return [ 'site_id' => $content['site_id'], 'delivery_id' => $content['id'], 'url_id' => $content['url_id'], 'content_id' => $content['content_item_id'], 'content_item_version_id' => $content['content_item_version_id'], 'version' => $content['version_number'], 'attempt_id' => $context['attempt_id'], 'snapshot_sha256' => $context['snapshot_sha256'], 'source_sha256' => $content['source_sha256'], 'template_id' => $content['configuration']['id'], 'template_revision' => $content['configuration']['revision'] ];
+    }
     private static function actor( array $context, callable $operation ) {
         $id = (int) ( $context['actor_user_id'] ?? 0 );
         if ( $id < 1 || ! get_userdata( $id ) ) { self::fail( 'actor', 'A valid locally authorized publishing user is required.' ); }
-        $previous = get_current_user_id();
-        wp_set_current_user( $id );
+        $previous = get_current_user_id(); wp_set_current_user( $id );
         try { return $operation(); } finally { wp_set_current_user( $previous ); }
     }
     private static function meta_rows( array $snapshot, string $key ): array { return array_values( array_filter( $snapshot['meta'], static function ( $row ) use ( $key ) { return $row['meta_key'] === $key; } ) ); }
@@ -59,125 +66,73 @@ final class Nova_Bridge_Suite_Mapped_Writer {
         return self::guard( static function () use ( $content, $configuration, $context ) {
             return self::actor( $context, static function () use ( $content, $configuration, $context ) {
                 $local = $configuration['local'] ?? [];
-                $operation = $local['routing']['operation'] ?? '';
-                $post_id = 'clone' === $operation ? (int) ( $local['reference_id'] ?? 0 ) : (int) ( $context['target_post_id'] ?? $local['reference_id'] ?? 0 );
-                if ( 'clone' === $operation ) {
-                    $existing = self::marker( self::content_key( (string) ( $context['site_id'] ?? '' ), (string) ( $content['content_id'] ?? '' ) ) );
-                    if ( $existing ) { $post_id = (int) $existing['post_id']; $context['effective_operation'] = 'update'; }
-                }
+                if ( isset( $context['target_post_id'] ) && (int) $context['target_post_id'] !== (int) ( $local['reference_id'] ?? 0 ) ) { self::fail( 'target_changed', 'The frozen native reference differs from the approved local mapping.' ); }
+                $post_id = (int) ( $local['reference_id'] ?? 0 );
                 if ( ! current_user_can( 'edit_post', $post_id ) ) { self::fail( 'permission', 'The publishing user cannot edit this native document.' ); }
                 $entity = Nova_Bridge_Suite_Strategy::entity( 'post', $post_id );
                 if ( ! $entity ) { self::fail( 'target', 'The selected document is not an eligible local publishing target.' ); }
-                $fingerprint = Nova_Bridge_Suite_Strategy::fingerprint( $entity );
-                $context['layout_signature'] = $fingerprint['signature'];
-                $context['source_post_id'] = $post_id;
-                $context['provider_tuple'] = self::runtime_tuple();
+                $context['layout_signature'] = Nova_Bridge_Suite_Strategy::fingerprint( $entity )['signature'];
+                $context['source_post_id'] = $post_id; $context['provider_tuple'] = self::runtime_tuple();
                 $inventory = array_column( Nova_Bridge_Suite_Strategy::field_inventory( $entity ), null, 'path' );
                 $plan = self::build_plan( $content, $configuration, $context, self::snapshot( $post_id ), $inventory );
                 self::check_row_permissions( $plan, $post_id );
                 $type = get_post_type_object( $plan['snapshot']['post']['post_type'] );
                 if ( ! $type || ( 'clone' === $plan['operation'] && ! current_user_can( $type->cap->create_posts ) ) || ( 'publish' === $plan['desired_status'] && ! current_user_can( $type->cap->publish_posts ) ) ) { self::fail( 'permission', 'The publishing user lacks the required create or publication capability.' ); }
-                self::database_capability();
-                self::check_provider_capability( $plan );
-                return $plan;
+                self::database_capability(); self::check_provider_capability( $plan ); return $plan;
             } );
         } );
     }
 
-    /** Pure plan construction over a fresh raw snapshot; throws a Writer_Failure on unsafe input. */
+    /** Pure plan construction over a fresh raw snapshot; rejects unsafe input before native writes. */
     public static function build_plan( array $content, array $configuration, array $context, array $snapshot, array $inventory ): array {
-        $pin = $configuration['pin'] ?? $configuration;
-        $template = $configuration['template'] ?? [];
-        $mapping = $configuration['mapping'] ?? [];
+        $template = $configuration['template'] ?? $configuration['remote'] ?? [];
         $local = $configuration['local'] ?? [];
-        foreach ( [ 'pin_id', 'digest' ] as $key ) {
-            if ( ! is_string( $pin[ $key ] ?? null ) || '' === $pin[ $key ] || ( $content[ $key ] ?? null ) !== $pin[ $key ] ) { self::fail( 'pin_mismatch', 'The content does not name the exact retained publishing pin and digest.' ); }
-        }
-        if ( ! preg_match( '/^[a-f0-9]{64}$/D', $pin['digest'] ) || ( $pin['site_id'] ?? null ) !== ( $context['site_id'] ?? null ) || empty( $context['site_id'] ) ) { self::fail( 'site_mismatch', 'The publishing pin does not belong to this installation.' ); }
-        foreach ( [ 'template_id', 'template_version' ] as $key ) {
-            if ( empty( $template[ $key ] ) || ( $pin[ $key ] ?? null ) !== $template[ $key ] || ( $content[ $key ] ?? null ) !== $template[ $key ] || ( $mapping[ $key ] ?? null ) !== $template[ $key ] ) { self::fail( 'template_mismatch', 'The exact content, mapping and template revisions do not agree.' ); }
-        }
-        foreach ( [ 'mapping_id', 'mapping_revision_id' ] as $key ) { if ( empty( $mapping[ $key ] ) || ( $pin[ $key ] ?? null ) !== $mapping[ $key ] ) { self::fail( 'mapping_mismatch', 'The pin does not identify this exact mapping revision.' ); } }
-        if ( 'sealed' !== ( $mapping['state'] ?? '' ) || 'sealed' !== ( $template['state'] ?? '' ) || empty( $local['revision'] ) || ( $local['reference_type'] ?? '' ) !== 'post' ) { self::fail( 'configuration', 'Execution requires sealed exact revisions and their retained concrete post mapping.' ); }
+        if ( ! is_array( $content['configuration'] ?? null ) || ! self::same( $content['configuration'], $template ) || ! self::uuid( $template['id'] ?? null ) || ! is_int( $template['revision'] ?? null ) || $template['revision'] < 1 ) { self::fail( 'configuration', 'Execution requires the exact frozen delivery template and a retained local profile.' ); }
+        if ( ! self::uuid( $context['site_id'] ?? null ) || ( $configuration['site_id'] ?? null ) !== $context['site_id'] || ( $content['site_id'] ?? null ) !== $context['site_id'] ) { self::fail( 'site_mismatch', 'The delivery does not belong to this installation.' ); }
+        if ( empty( $local['revision'] ) || ( $local['reference_type'] ?? '' ) !== 'post' ) { self::fail( 'configuration', 'Execution requires an immutable retained concrete post profile.' ); }
+        if ( (int) ( $snapshot['post']['ID'] ?? 0 ) !== (int) ( $local['reference_id'] ?? 0 ) || ( isset( $context['target_post_id'] ) && (int) $context['target_post_id'] !== (int) $local['reference_id'] ) ) { self::fail( 'target_changed', 'The native plan cannot retarget the frozen mapping to a different document.' ); }
         if ( ( $local['signature'] ?? null ) !== ( $context['layout_signature'] ?? null ) ) { self::fail( 'layout_drift', 'The native layout changed since this mapping was approved.' ); }
-        self::verify_policy( $mapping, $local );
-        if ( ! is_int( $content['version'] ?? null ) || $content['version'] < 1 || ! is_string( $content['content_id'] ?? null ) || '' === $content['content_id'] || ( $context['version'] ?? $content['version'] ) !== $content['version'] || ( $context['content_id'] ?? $content['content_id'] ) !== $content['content_id'] ) { self::fail( 'version', 'The worker and fetched content identities do not agree.' ); }
-        if ( ( $local['routing']['locale'] ?? '' ) !== '' && ( $content['locale'] ?? null ) !== $local['routing']['locale'] ) { self::fail( 'locale', 'The content locale does not match the retained mapping.' ); }
-        if ( ! is_string( $context['operation_id'] ?? null ) || ! preg_match( '/^[A-Za-z0-9_-]{1,128}$/D', $context['operation_id'] ) ) { self::fail( 'operation', 'A stable local operation identity is required before execution.' ); }
-        $configured_operation = $local['routing']['operation'] ?? '';
-        $operation = $context['effective_operation'] ?? $configured_operation;
-        if ( ! in_array( $operation, [ 'update', 'clone' ], true ) || ! in_array( $configured_operation, [ 'update', 'clone' ], true ) || ( isset( $context['operation'] ) && $context['operation'] !== $configured_operation ) ) { self::fail( 'operation', 'The worker operation differs from the approved local mapping.' ); }
+        self::verify_policy( $template, $local );
+        $profile_digest = hash( 'sha256', Nova_Bridge_Suite_Writing_Adapter::canonical_json( $local ) );
+        if ( ! is_string( $configuration['profile_digest'] ?? null ) || ! hash_equals( $profile_digest, $configuration['profile_digest'] ) ) { self::fail( 'policy', 'The retained local routing, instructions or protection policy changed.' ); }
+        if ( ! is_int( $content['version_number'] ?? null ) || $content['version_number'] < 1 || ( $context['version'] ?? $content['version_number'] ) !== $content['version_number'] ) { self::fail( 'version', 'The worker and fetched content versions do not agree.' ); }
+        if ( ( $local['routing']['locale'] ?? '' ) !== '' && ( $content['language'] ?? null ) !== $local['routing']['locale'] ) { self::fail( 'locale', 'The content locale does not match the retained mapping.' ); }
+        if ( ! self::uuid( $context['operation_id'] ?? null ) || ( isset( $context['business_result_id'] ) && $context['business_result_id'] !== $context['operation_id'] ) ) { self::fail( 'operation', 'A durable business-result UUID is required before execution.' ); }
+        $delivery_identity = self::delivery_identity( $content, $context );
+        $operation = $local['routing']['operation'] ?? '';
+        if ( ! in_array( $operation, [ 'update', 'clone' ], true ) || ( isset( $context['effective_operation'] ) && $context['effective_operation'] !== $operation ) || ( isset( $context['operation'] ) && $context['operation'] !== $operation ) ) { self::fail( 'operation', 'The worker operation differs from the approved local mapping.' ); }
         $publication = $local['routing']['publication'] ?? 'preserve';
         if ( ! in_array( $publication, [ 'preserve', 'draft', 'publish' ], true ) ) { self::fail( 'publication', 'The approved publication policy is unsupported.' ); }
         $desired = 'preserve' === $publication ? ( 'clone' === $operation ? 'draft' : $snapshot['post']['post_status'] ) : $publication;
-        if ( ! in_array( $snapshot['post']['post_status'], [ 'publish', 'draft', 'private', 'pending' ], true ) || ! in_array( $desired, [ 'publish', 'draft', 'private', 'pending' ], true ) ) { self::fail( 'publication', 'This native post state is outside the direct writer scope.' ); }
+        if ( ! in_array( $snapshot['post']['post_status'], [ 'publish', 'draft', 'private', 'pending', 'future' ], true ) || ! in_array( $desired, [ 'publish', 'draft', 'private', 'pending', 'future' ], true ) ) { self::fail( 'publication', 'This native post state is outside the direct writer scope.' ); }
         $taxonomy = self::taxonomy_plan( $snapshot, $operation, $desired );
         if ( isset( $local['routing']['post_type'] ) && $local['routing']['post_type'] !== $snapshot['post']['post_type'] ) { self::fail( 'post_type', 'The document post type changed.' ); }
-        if ( ( $mapping['cpt'] ?? null ) !== $snapshot['post']['post_type'] ) { self::fail( 'post_type', 'The exact mapping is assigned to a different post type.' ); }
         if ( strlen( self::json( $snapshot ) ) > self::MAX_SNAPSHOT_BYTES ) { self::fail( 'snapshot_size', 'This document exceeds the bounded writer snapshot size.' ); }
-        $values = $content['fields'] ?? null;
-        if ( ! is_array( $values ) ) { self::fail( 'values', 'Generated values must be a closed object.' ); }
-        $definitions = [];
-        foreach ( $template['fields'] ?? [] as $field ) { $definitions[ $field['field_key'] ] = $field; }
-        $groups = [];
-        foreach ( $template['groups'] ?? [] as $group ) { $groups[ $group['group_key'] ] = $group; foreach ( $group['fields'] as $field ) { $definitions[ $group['group_key'] . '[].' . $field['field_key'] ] = $field; } }
-        foreach ( $values as $key => $value ) { if ( ! isset( $definitions[ $key ] ) && ! isset( $groups[ $key ] ) ) { self::fail( 'unknown_value', 'Generated values contain an unknown or protected source key.' ); } }
-        foreach ( $template['fields'] ?? [] as $field ) { if ( array_key_exists( $field['field_key'], $values ) ) { self::validate_value( $values[ $field['field_key'] ], $field ); } elseif ( $field['required'] ) { self::fail( 'missing_value', 'A required generated field is missing.' ); } }
-        foreach ( $groups as $key => $group ) {
-            if ( ! array_key_exists( $key, $values ) ) { if ( $group['required'] ) { self::fail( 'missing_value', 'A required repeat group is missing.' ); } continue; }
-            $rows = $values[ $key ];
-            if ( ! is_array( $rows ) || ( $rows && array_keys( $rows ) !== range( 0, count( $rows ) - 1 ) ) || count( $rows ) < $group['minItems'] || count( $rows ) > $group['maxItems'] ) { self::fail( 'repeat_bounds', 'A generated group does not satisfy its exact template bounds.' ); }
-            $allowed = array_column( $group['fields'], null, 'field_key' );
-            foreach ( $rows as $row ) {
-                if ( ! is_array( $row ) || array_diff( array_keys( $row ), array_keys( $allowed ) ) ) { self::fail( 'repeat_shape', 'A repeat member has unknown fields.' ); }
-                foreach ( $allowed as $member => $field ) { if ( array_key_exists( $member, $row ) ) { self::validate_value( $row[ $member ], $field ); } elseif ( $field['required'] ) { self::fail( 'missing_value', 'A required repeat member is missing.' ); } }
-            }
-        }
-        $writes = []; $guards = []; $protected_slots = []; $seen_sources = [];
+        $values = $content['content'] ?? null;
+        if ( ! is_array( $values ) ) { self::fail( 'values', 'Delivery content must be an object of canonical source values.' ); }
+        foreach ( [ 'url', 'page_type_frontend', 'language' ] as $source ) { $values[ $source ] = $content[ $source ] ?? null; }
+        $definitions = array_column( $template['definition']['fields'] ?? [], null, 'id' );
+        $bindings = array_column( $template['mapping']['fields'] ?? [], 'source_field', 'field_id' );
+        $writes = []; $guards = [];
         foreach ( $local['fields'] ?? [] as $path => $field ) {
             $descriptor = $local['target_descriptors'][ $path ] ?? null;
-            if ( ! is_array( $descriptor ) ) { self::fail( 'local_descriptor', 'A retained local target descriptor is missing.' ); }
-            if ( 'protected' === $field['mode'] ) {
-                $guards[] = self::resolve_target( $descriptor, $snapshot, $inventory, true );
-                if ( ! empty( $field['protected_slot'] ) ) {
-                    if ( isset( $protected_slots[ $field['protected_slot'] ] ) ) { self::fail( 'protected_identity', 'A canonical protected slot has more than one local identity.' ); }
-                    $protected_slots[ $field['protected_slot'] ] = true;
-                }
-            } elseif ( 'leave_empty' === $field['mode'] && 'clone' === $operation ) { $writes[] = [ 'target' => self::resolve_target( $descriptor, $snapshot, $inventory ), 'value' => '', 'source_path' => null ]; }
-        }
-        if ( array_diff( $template['protected_identities'] ?? [], array_keys( $protected_slots ) ) || array_diff( array_keys( $protected_slots ), $template['protected_identities'] ?? [] ) ) { self::fail( 'protected_identity', 'Every canonical protected slot needs its exact retained native binding.' ); }
-        foreach ( $mapping['bindings'] ?? [] as $binding ) {
-            $source = $binding['source_path'] ?? '';
-            if ( ! isset( $definitions[ $source ] ) || isset( $seen_sources[ $source ] ) ) { self::fail( 'binding', 'Mapping bindings contain an unknown or duplicate generated source.' ); }
-            $seen_sources[ $source ] = true;
-            $identity = $binding['expected_identity'] ?? [];
-            foreach ( [ 'reference_type', 'reference_id', 'signature' ] as $key ) { if ( (string) ( $identity[ $key ] ?? '' ) !== (string) ( $local[ $key ] ?? '' ) ) { self::fail( 'binding_identity', 'A canonical mapping binding differs from the approved reference.' ); } }
-            if ( ( $identity['local_revision'] ?? null ) !== $local['revision'] || ( $binding['source_type'] ?? '' ) !== $definitions[ $source ]['field_type'] ) { self::fail( 'binding_identity', 'A canonical binding does not match the retained local revision or source type.' ); }
-            $target = $binding['target_descriptor'] ?? [];
-            if ( ( $target['format'] ?? '' ) !== 'nova_bridge_target_v1' ) { self::fail( 'descriptor_version', 'This mapping uses an unsupported native descriptor format.' ); }
-            if ( false === strpos( $source, '[].' ) ) {
-                $descriptor = $target['target'] ?? [];
-                $path = $descriptor['path'] ?? '';
-                $local_field = $local['fields'][ $path ] ?? [];
-                if ( ( $local_field['mode'] ?? '' ) !== 'mapped' || ( $local_field['source_path'] ?? '' ) !== $source || ! self::same( $descriptor, $local['target_descriptors'][ $path ] ?? null ) ) { self::fail( 'binding_identity', 'The canonical target differs from the retained local source binding.' ); }
-                if ( array_key_exists( $source, $values ) ) { $writes[] = [ 'target' => self::resolve_target( $descriptor, $snapshot, $inventory ), 'value' => $values[ $source ], 'source_path' => $source ]; }
-            } else {
-                list( $key, $member ) = explode( '[].', $source, 2 );
-                $slots = $local['repeat_slots'][ $key ] ?? [];
-                $expected = [];
-                foreach ( $slots as $slot ) { if ( ! isset( $slot['targets'][ $member ] ) ) { self::fail( 'repeat_binding', 'An approved fixed slot has no member target.' ); } $expected[] = [ 'slot_id' => $slot['id'], 'target' => $local['target_descriptors'][ $slot['targets'][ $member ] ] ]; }
-                if ( ! self::same( $target['slots'] ?? null, $expected ) ) { self::fail( 'repeat_binding', 'Canonical repeat slots differ from the approved existing native slots.' ); }
-                if ( ! array_key_exists( $key, $values ) ) { continue; }
-                if ( count( $values[ $key ] ) !== count( $slots ) ) { self::fail( 'repeat_capacity', 'Generation must exactly fit the approved existing slot count; native rows cannot be created or removed.' ); }
-                $instances = $context['repeat_instances'][ $key ] ?? [];
-                if ( count( $instances ) !== count( $slots ) || count( array_unique( array_column( $instances, 'instance_id' ) ) ) !== count( $slots ) ) { self::fail( 'repeat_identity', 'Execution requires verified repeat-instance correspondence for every fixed slot.' ); }
-                foreach ( $expected as $index => $slot ) {
-                    if ( ( $instances[ $index ]['slot_id'] ?? '' ) !== $slot['slot_id'] || ! is_string( $instances[ $index ]['instance_id'] ?? null ) || '' === $instances[ $index ]['instance_id'] ) { self::fail( 'repeat_identity', 'Repeat-instance identity or ordering changed.' ); }
-                    if ( array_key_exists( $member, $values[ $key ][ $index ] ) ) { $writes[] = [ 'target' => self::resolve_target( $slot['target'], $snapshot, $inventory ), 'value' => $values[ $key ][ $index ][ $member ], 'source_path' => $source ]; }
-                }
+            if ( ! is_array( $descriptor ) || ( $descriptor['path'] ?? '' ) !== $path ) { self::fail( 'local_descriptor', 'A retained local target descriptor is missing or changed.' ); }
+            if ( 'protected' === ( $field['mode'] ?? '' ) ) { $guards[] = self::resolve_target( $descriptor, $snapshot, $inventory, true ); continue; }
+            if ( 'leave_empty' === ( $field['mode'] ?? '' ) ) { if ( 'clone' === $operation ) { $writes[] = [ 'target' => self::resolve_target( $descriptor, $snapshot, $inventory ), 'value' => '', 'source_path' => null ]; } continue; }
+            if ( 'mapped' !== ( $field['mode'] ?? '' ) ) { self::fail( 'configuration', 'The retained field policy is unsupported.' ); }
+            $id = Nova_Bridge_Suite_Writing_Adapter::field_id( $path );
+            $definition = $definitions[ $id ] ?? null; $source = $bindings[ $id ] ?? null;
+            if ( ! is_array( $definition ) || ! is_string( $source ) || $source !== ( $field['source_path'] ?? '' ) ) { self::fail( 'binding_identity', 'The frozen source binding differs from the retained native target.' ); }
+            $target = self::resolve_target( $descriptor, $snapshot, $inventory );
+            if ( ! array_key_exists( $source, $values ) || null === $values[ $source ] ) { if ( ! empty( $definition['required'] ) ) { self::fail( 'missing_value', 'A required mapped source has no generated value.' ); } continue; }
+            $value = $values[ $source ];
+            self::validate_value( $value, $definition );
+            if ( 'post' === $target['kind'] && 'post_name' === $target['column'] ) {
+                if ( 'url' !== $source ) { self::fail( 'slug', 'Native slugs must be explicitly mapped from the delivery URL.' ); }
+                $value = self::url_slug( $value );
             }
+            $writes[] = [ 'target' => $target, 'value' => $value, 'source_path' => $source ];
         }
-        if ( array_diff( array_keys( $definitions ), array_keys( $seen_sources ) ) ) { self::fail( 'coverage', 'The sealed mapping does not cover every generated source in this exact template.' ); }
         $changes = [ 'post' => [], 'meta' => [] ]; $footprints = []; $elementor = []; $uses_acf = false;
         foreach ( $writes as $write ) {
             $target = $write['target']; $value = $write['value'];
@@ -196,47 +151,36 @@ final class Nova_Bridge_Suite_Mapped_Writer {
         if ( 'clone' === $operation && empty( $changes['post']['post_name'] ) ) { self::fail( 'clone_slug', 'A new clone requires an explicit generated slug bound to its native slug target.' ); }
         $is_elementor = count( self::meta_rows( $snapshot, '_elementor_data' ) ) > 0;
         if ( $is_elementor ) { self::one_meta( $snapshot, '_elementor_data' ); self::one_meta( $snapshot, '_elementor_page_settings' ); }
-        $plan = [ 'format' => self::WRITER_ID, 'context' => $context, 'operation' => $operation, 'desired_status' => $desired, 'site_id' => $context['site_id'], 'content_id' => $content['content_id'], 'version' => $content['version'], 'pin_id' => $pin['pin_id'], 'digest' => $pin['digest'], 'source_post_id' => (int) $snapshot['post']['ID'], 'snapshot' => $snapshot, 'snapshot_digest' => self::digest( $snapshot ), 'changes' => $changes, 'protected' => $guards, 'uses_acf' => $uses_acf, 'uses_elementor' => $is_elementor, 'taxonomy' => $taxonomy ];
+        $clone_ids = [];
+        if ( $is_elementor && 'clone' === $operation ) { $clone_ids = self::prepare_elementor_clone( $snapshot, $changes, $guards, $context['operation_id'] ); }
+        $plan = [ 'format' => self::WRITER_ID, 'context' => $context, 'operation' => $operation, 'desired_status' => $desired, 'site_id' => $context['site_id'], 'content_id' => $content['content_item_id'], 'version' => $content['version_number'], 'template_id' => $template['id'], 'template_revision' => $template['revision'], 'profile_digest' => $profile_digest, 'source_post_id' => (int) $snapshot['post']['ID'], 'snapshot' => $snapshot, 'snapshot_digest' => self::digest( $snapshot ), 'changes' => $changes, 'protected' => $guards, 'uses_acf' => $uses_acf, 'uses_elementor' => $is_elementor, 'taxonomy' => $taxonomy ];
+        $plan['delivery_identity'] = $delivery_identity; $plan['elementor_id_map'] = $clone_ids;
         $plan['plan_digest'] = self::digest( $plan );
         return $plan;
     }
 
-    private static function verify_policy( array $mapping, array $local ): void {
-        if ( ! class_exists( 'Nova_Bridge_Suite_Writing_Adapter' ) ) { self::fail( 'policy', 'The canonical local policy adapter is unavailable.' ); }
-        $json = Nova_Bridge_Suite_Writing_Adapter::canonical_json( Nova_Bridge_Suite_Writing_Adapter::policy( $local ) );
-        $digest = hash( 'sha256', $json );
-        $bindings = $mapping['bindings'] ?? [];
-        if ( ! $bindings || ( $bindings[0]['expected_identity']['plugin_policy_json'] ?? null ) !== $json ) { self::fail( 'policy', 'The canonical mapping does not contain the exact approved local policy.' ); }
-        foreach ( $bindings as $binding ) { if ( ( $binding['expected_identity']['plugin_policy_digest'] ?? null ) !== $digest ) { self::fail( 'policy', 'The canonical mapping policy digest differs from the retained policy.' ); } }
+    private static function verify_policy( array $template, array $local ): void {
+        if ( ! class_exists( 'Nova_Bridge_Suite_Writing_Adapter' ) ) { self::fail( 'policy', 'The local policy adapter is unavailable.' ); }
+        $input = Nova_Bridge_Suite_Writing_Adapter::template_input( $local );
+        if ( is_wp_error( $input ) ) { self::fail( 'configuration', $input->get_error_message() ); }
+        foreach ( [ 'definition', 'mapping', 'page_type', 'name' ] as $key ) { if ( ! self::same( $template[ $key ] ?? null, $input[ $key ] ) ) { self::fail( 'binding_identity', 'The frozen template differs from the exact retained local mapping.' ); } }
     }
 
     private static function validate_value( $value, array $field ): void {
-        $type = $field['field_type'] ?? '';
-        if ( in_array( $type, [ 'heading', 'plain_text', 'rich_text', 'meta' ], true ) ) {
-            if ( ! is_string( $value ) || preg_match( '//u', $value ) !== 1 || false !== strpos( $value, "\0" ) ) { self::fail( 'value_type', 'A generated scalar has the wrong value type or encoding.' ); }
-            $length = preg_match_all( '/./us', $value, $ignored );
-            $minimum = $field['minLength'] ?? ( 'rich_text' === $type ? 0 : 1 );
-            $maximum = $field['maxLength'] ?? ( 'rich_text' === $type ? ( $field['html']['max_utf8_bytes'] ?? 0 ) : ( 'heading' === $type ? 200 : ( 'meta' === $type ? ( 'title' === ( $field['semantic'] ?? '' ) ? 60 : ( 'description' === ( $field['semantic'] ?? '' ) ? 160 : 200 ) ) : 4000 ) ) );
-            if ( $length < $minimum || $length > $maximum ) { self::fail( 'value_length', 'A generated scalar violates its pinned length limits.' ); }
-            if ( 'rich_text' === $type ) {
-                $policy = $field['html'] ?? [];
-                if ( ! isset( $policy['max_utf8_bytes'], $policy['allowed_tags'], $policy['allowed_url_protocols'] ) || strlen( $value ) > $policy['max_utf8_bytes'] || ! function_exists( 'wp_kses' ) ) { self::fail( 'html_policy', 'The exact rich-text policy cannot be validated.' ); }
-                $tags = [];
-                foreach ( $policy['allowed_tags'] as $tag => $attributes ) {
-                    $tags[ $tag ] = [];
-                    foreach ( $attributes as $attribute ) {
-                        $forbidden = false;
-                        foreach ( $policy['forbidden_attributes'] ?? [] as $pattern ) { if ( preg_match( '/^' . str_replace( '\\*', '.*', preg_quote( $pattern, '/' ) ) . '$/iD', $attribute ) ) { $forbidden = true; break; } }
-                        if ( ! $forbidden ) { $tags[ $tag ][ $attribute ] = true; }
-                    }
-                }
-                if ( wp_kses( $value, $tags, $policy['allowed_url_protocols'] ) !== $value ) { self::fail( 'html_policy', 'Generated HTML violates the exact pinned allowlist.' ); }
-            } elseif ( preg_match( '/<[^>]*>/', $value ) ) { self::fail( 'html_policy', 'A text-only source contains HTML.' ); }
-            if ( 'meta' === $type && 'slug' === ( $field['semantic'] ?? '' ) && ! preg_match( '/^[a-z0-9]+(?:-[a-z0-9]+)*$/D', $value ) ) { self::fail( 'slug', 'A generated slug violates the pinned format.' ); }
-            return;
-        }
-        // These types have no direct-row value adapter; reject before any CMS mutation.
-        self::fail( 'value_adapter', 'A generated field requires an image, link or list adapter outside this scalar writer scope.' );
+        if ( ! in_array( $field['kind'] ?? '', [ 'text', 'rich_text' ], true ) ) { self::fail( 'value_adapter', 'Image and list destinations need a verified typed native adapter.' ); }
+        if ( ! is_string( $value ) || preg_match( '//u', $value ) !== 1 || false !== strpos( $value, "\0" ) ) { self::fail( 'value_type', 'A generated scalar has the wrong value type or encoding.' ); }
+        if ( strlen( $value ) > self::MAX_SNAPSHOT_BYTES ) { self::fail( 'value_length', 'The generated scalar exceeds the bounded writer size.' ); }
+        if ( 'rich_text' === $field['kind'] ) {
+            if ( ! function_exists( 'wp_kses_post' ) || wp_kses_post( $value ) !== $value ) { self::fail( 'html_policy', 'Generated HTML cannot be applied without changing its content under WordPress HTML rules.' ); }
+        } elseif ( preg_match( '/<[^>]*>/', $value ) ) { self::fail( 'html_policy', 'A text-only source contains HTML.' ); }
+    }
+
+    private static function url_slug( string $url ): string {
+        $parts = parse_url( $url ); $home = parse_url( home_url( '/' ) );
+        if ( ! is_array( $parts ) || ! is_array( $home ) || ! in_array( $parts['scheme'] ?? '', [ 'http', 'https' ], true ) || strtolower( $parts['host'] ?? '' ) !== strtolower( $home['host'] ?? '' ) || ( $parts['port'] ?? null ) !== ( $home['port'] ?? null ) || isset( $parts['user'] ) || isset( $parts['pass'] ) || isset( $parts['query'] ) || isset( $parts['fragment'] ) ) { self::fail( 'slug', 'The mapped delivery URL must be an unambiguous URL on this WordPress site.' ); }
+        $slug = basename( rtrim( $parts['path'] ?? '', '/' ) );
+        if ( ! preg_match( '/^[a-z0-9]+(?:-[a-z0-9]+)*$/D', $slug ) ) { self::fail( 'slug', 'The delivery URL does not identify a supported canonical native slug.' ); }
+        return $slug;
     }
 
     private static function resolve_target( array $descriptor, array $snapshot, array $inventory, bool $protected = false ): array {
@@ -296,6 +240,77 @@ final class Nova_Bridge_Suite_Mapped_Writer {
             $path = array_merge( $prefix, [ (string) $index ] ); $result[ $node['id'] ][] = [ 'path' => $path, 'node' => $node ];
             if ( isset( $node['elements'] ) ) { if ( ! is_array( $node['elements'] ) ) { self::fail( 'elementor_document', 'An Elementor child region is incomplete.' ); } self::elementor_nodes( $node['elements'], array_merge( $path, [ 'elements' ] ), $result ); }
         }
+    }
+    private static function clone_references( string $value, array $ids, string $pattern ): string {
+        if ( '' === $pattern ) { return $value; }
+        if ( preg_match( '/(?:' . $pattern . ')/', $value ) && preg_match( '/(?:[a-z][a-z0-9+.-]*:\/\/|^\s*\/|(?:href|src)\s*=\s*["\'](?!#)|url\(\s*["\']?(?!#))/i', $value ) ) { self::fail( 'clone_reference', 'A node reference may address another document; the clone cannot safely retarget it.' ); }
+        // These are native Elementor DOM/CSS identities, not arbitrary text or custom CSS IDs.
+        $value = preg_replace_callback( '/elementor-element-(' . $pattern . ')(?![A-Za-z0-9_-])/', static function ( $match ) use ( $ids ) { return 'elementor-element-' . $ids[ $match[1] ]; }, $value );
+        if ( ! is_string( $value ) ) { self::fail( 'clone_reference', 'The document exceeds the supported clone-reference matcher.' ); }
+        $value = preg_replace_callback( '/(data-id\s*=\s*)(["\'])(' . $pattern . ')\2/', static function ( $match ) use ( $ids ) { return $match[1] . $match[2] . $ids[ $match[3] ] . $match[2]; }, $value );
+        if ( ! is_string( $value ) || 0 !== preg_match( '/(?:' . $pattern . ')/', $value ) ) { self::fail( 'clone_reference', 'A source node identity occurs outside a reviewed Elementor DOM/CSS reference. Review this clone before publishing.' ); }
+        return $value;
+    }
+    private static function clone_reference_values( $value, array $ids, string $pattern, array $path, array &$replacements, array $node_id_paths = [], int $depth = 0 ) {
+        if ( $depth > 64 || is_object( $value ) ) { self::fail( 'clone_reference', 'The clone contains unsupported nested native references.' ); }
+        if ( is_array( $value ) ) {
+            foreach ( $value as $key => $item ) {
+                if ( '' !== $pattern && is_string( $key ) && 0 !== preg_match( '/(?:' . $pattern . ')/', $key ) ) { self::fail( 'clone_reference', 'A native setting key contains an unsupported source node reference.' ); }
+                $value[ $key ] = self::clone_reference_values( $item, $ids, $pattern, array_merge( $path, [ (string) $key ] ), $replacements, $node_id_paths, $depth + 1 );
+            }
+        }
+        elseif ( is_string( $value ) ) {
+            $pointer = self::pointer( $path );
+            if ( isset( $node_id_paths[ $pointer ] ) ) { return $value; }
+            $changed = self::clone_references( $value, $ids, $pattern );
+            if ( $changed !== $value ) { $replacements[ $pointer ] = $changed; $value = $changed; }
+        }
+        return $value;
+    }
+    /** Clone-only identity transform; the persisted operation determines every replacement ID. */
+    private static function prepare_elementor_clone( array $snapshot, array &$changes, array $guards, string $operation_id ): array {
+        $row = self::one_meta( $snapshot, '_elementor_data' );
+        $json = $changes['meta'][ $row['meta_id'] ] ?? $row['meta_value'];
+        $document = json_decode( $json, true );
+        if ( ! is_array( $document ) || json_last_error() !== JSON_ERROR_NONE ) { self::fail( 'elementor_document', 'The complete clone document is invalid.' ); }
+        $nodes = []; self::elementor_nodes( $document, [], $nodes );
+        $ids = []; $used = array_fill_keys( array_keys( $nodes ), true ); $id_paths = []; $replacements = [];
+        foreach ( $nodes as $old => $matches ) {
+            if ( ! preg_match( '/^[a-f0-9]{7}$/D', (string) $old ) ) { self::fail( 'clone_identity', 'Clone identity regeneration supports standard seven-hex-digit Elementor node IDs only.' ); }
+            $attempt = 0;
+            do { $new = substr( hash( 'sha256', 'nova-elementor-clone-v1' . "\0" . $operation_id . "\0" . $old . "\0" . $attempt++ ), 0, 7 ); } while ( isset( $used[ $new ] ) );
+            $used[ $new ] = true; $ids[ $old ] = $new;
+            $pointer = self::pointer( array_merge( $matches[0]['path'], [ 'id' ] ) ); $id_paths[ $pointer ] = true; $replacements[ $pointer ] = $new;
+        }
+        $pattern = implode( '|', array_keys( $ids ) );
+        $references = []; self::clone_reference_values( $document, $ids, $pattern, [], $references, $id_paths );
+        foreach ( $references as $pointer => $value ) {
+            foreach ( $guards as $guard ) { if ( 'elementor' === $guard['kind'] && ( $pointer === $guard['pointer'] || 0 === strpos( $pointer, $guard['pointer'] . '/' ) ) ) { self::fail( 'clone_protected_reference', 'A protected value contains a node reference that would need changing in a clone.' ); } }
+            $replacements[ $pointer ] = $value;
+        }
+        $changes['meta'][ $row['meta_id'] ] = self::replace_json_scalars( $json, $replacements );
+        $settings = self::one_meta( $snapshot, '_elementor_page_settings' );
+        $raw = $changes['meta'][ $settings['meta_id'] ] ?? $settings['meta_value'];
+        $settings_value = @unserialize( $raw, [ 'allowed_classes' => false ] );
+        if ( ! is_array( $settings_value ) ) { self::fail( 'clone_reference', 'Elementor page settings must be a complete native serialized array.' ); }
+        $settings_edits = []; $new_settings = self::clone_reference_values( $settings_value, $ids, $pattern, [], $settings_edits );
+        if ( $settings_edits ) {
+            foreach ( $guards as $guard ) { if ( ( $guard['key'] ?? null ) === '_elementor_page_settings' ) { self::fail( 'clone_protected_reference', 'Protected page settings contain a clone reference.' ); } }
+            $changes['meta'][ $settings['meta_id'] ] = serialize( $new_settings );
+        }
+        foreach ( [ 'post_title', 'post_content', 'post_excerpt' ] as $column ) {
+            $value = $changes['post'][ $column ] ?? $snapshot['post'][ $column ]; $changed = self::clone_references( $value, $ids, $pattern );
+            if ( $value !== $changed ) {
+                foreach ( $guards as $guard ) { if ( 'post' === $guard['kind'] && $guard['column'] === $column ) { self::fail( 'clone_protected_reference', 'A protected native value contains a clone reference.' ); } }
+                $changes['post'][ $column ] = $changed;
+            }
+        }
+        foreach ( $snapshot['meta'] as $other ) {
+            if ( self::operational_meta( $other['meta_key'] ) || in_array( $other['meta_key'], [ '_elementor_data', '_elementor_page_settings' ], true ) ) { continue; }
+            $value = $changes['meta'][ $other['meta_id'] ] ?? $other['meta_value'];
+            if ( '' !== $pattern && ( 0 !== preg_match( '/(?:' . $pattern . ')/', $value ) || 0 !== preg_match( '/(?:' . $pattern . ')/', $other['meta_key'] ) ) ) { self::fail( 'clone_reference', 'Additional native metadata contains a source node reference without a reviewed clone adapter.' ); }
+        }
+        return $ids;
     }
     private static function overlaps( array $first, array $second ): bool {
         if ( 'post' === $first['kind'] || 'post' === $second['kind'] ) { return 'post' === $first['kind'] && 'post' === $second['kind'] && $first['column'] === $second['column']; }
@@ -454,7 +469,7 @@ final class Nova_Bridge_Suite_Mapped_Writer {
                 if ( ! current_user_can( 'edit_post', $post_id ) ) { self::fail( 'permission', 'The configured publishing user cannot edit the selected native document.' ); }
                 $entity = Nova_Bridge_Suite_Strategy::entity( 'post', $post_id );
                 if ( ! $entity || Nova_Bridge_Suite_Strategy::fingerprint( $entity )['signature'] !== $local['signature'] ) { self::fail( 'layout_drift', 'Reconcile the approved local layout before activation.' ); }
-                self::verify_policy( $mapping, $local );
+                self::verify_policy( $template, $local );
                 $inventory = array_column( Nova_Bridge_Suite_Strategy::field_inventory( $entity ), null, 'path' );
                 $snapshot = self::snapshot( $post_id );
                 $operation = $local['routing']['operation'] ?? '';
@@ -463,35 +478,20 @@ final class Nova_Bridge_Suite_Mapped_Writer {
                 if ( ! in_array( $operation, [ 'update', 'clone' ], true ) || ! in_array( $publication, [ 'preserve', 'draft', 'publish' ], true ) || ! $type || ( 'clone' === $operation && ! current_user_can( $type->cap->create_posts ) ) || ( 'publish' === $publication && ! current_user_can( $type->cap->publish_posts ) ) ) { self::fail( 'permission', 'The approved routing exceeds the publishing user capabilities.' ); }
                 $desired = 'preserve' === $publication ? ( 'clone' === $operation ? 'draft' : $snapshot['post']['post_status'] ) : $publication;
                 self::taxonomy_plan( $snapshot, $operation, $desired );
-                $definitions = [];
-                foreach ( $template['fields'] as $field ) { $definitions[ $field['field_key'] ] = $field; }
-                foreach ( $template['groups'] as $group ) {
-                    $slots = $local['repeat_slots'][ $group['group_key'] ] ?? [];
-                    if ( ! $slots || count( $slots ) !== $group['minItems'] || count( $slots ) !== $group['maxItems'] ) { self::fail( 'repeat_capacity', 'A contracted repeat group must exactly fit the approved existing native slots.' ); }
-                    foreach ( $group['fields'] as $field ) { $definitions[ $group['group_key'] . '[].' . $field['field_key'] ] = $field; }
-                }
-                $guards = []; $protected_slots = []; $targets = []; $coverage = []; $uses_acf = false; $slug = false;
+                $definitions = array_column( $template['definition']['fields'] ?? [], null, 'id' );
+                $bindings = array_column( $template['mapping']['fields'] ?? [], 'source_field', 'field_id' );
+                $guards = []; $targets = []; $coverage = []; $uses_acf = false; $slug = false;
                 foreach ( $local['fields'] as $path => $field ) {
-                    if ( 'protected' === $field['mode'] ) {
-                        $guards[] = self::resolve_target( $local['target_descriptors'][ $path ], $snapshot, $inventory, true );
-                        if ( ! empty( $field['protected_slot'] ) ) { if ( isset( $protected_slots[ $field['protected_slot'] ] ) ) { self::fail( 'protected_identity', 'A protected slot has duplicate native identities.' ); } $protected_slots[ $field['protected_slot'] ] = true; }
-                    } elseif ( 'leave_empty' === $field['mode'] && 'clone' === $operation ) { $targets[] = self::resolve_target( $local['target_descriptors'][ $path ], $snapshot, $inventory ); }
+                    $descriptor = $local['target_descriptors'][ $path ] ?? null;
+                    if ( ! is_array( $descriptor ) ) { self::fail( 'local_descriptor', 'A retained native descriptor is missing.' ); }
+                    if ( 'protected' === $field['mode'] ) { $guards[] = self::resolve_target( $descriptor, $snapshot, $inventory, true ); continue; }
+                    if ( 'leave_empty' === $field['mode'] ) { if ( 'clone' === $operation ) { $targets[] = self::resolve_target( $descriptor, $snapshot, $inventory ); } continue; }
+                    $id = Nova_Bridge_Suite_Writing_Adapter::field_id( $path );
+                    if ( 'mapped' !== $field['mode'] || ! isset( $definitions[ $id ], $bindings[ $id ] ) || $bindings[ $id ] !== ( $field['source_path'] ?? '' ) || ! in_array( $definitions[ $id ]['kind'], [ 'text', 'rich_text' ], true ) ) { self::fail( 'value_adapter', 'Every mapped destination needs a supported scalar source before activation.' ); }
+                    $coverage[ $id ] = true;
+                    $target = self::resolve_target( $descriptor, $snapshot, $inventory ); $targets[] = $target;
+                    if ( 'post' === $target['kind'] && 'post_name' === $target['column'] ) { if ( 'url' !== $bindings[ $id ] ) { self::fail( 'slug', 'Native slugs must be mapped from the delivery URL.' ); } $slug = true; }
                 }
-                if ( array_diff( $template['protected_identities'], array_keys( $protected_slots ) ) || array_diff( array_keys( $protected_slots ), $template['protected_identities'] ) ) { self::fail( 'protected_identity', 'Canonical protected slots require exact local bindings.' ); }
-                foreach ( $mapping['bindings'] as $binding ) {
-                    $source = $binding['source_path'];
-                    if ( ! isset( $definitions[ $source ] ) || isset( $coverage[ $source ] ) || ! in_array( $definitions[ $source ]['field_type'], [ 'heading', 'plain_text', 'rich_text', 'meta' ], true ) ) { self::fail( 'value_adapter', 'Every generated source needs one supported scalar binding before activation.' ); }
-                    $coverage[ $source ] = true; $descriptor = $binding['target_descriptor'];
-                    if ( 'nova_bridge_target_v1' !== ( $descriptor['format'] ?? '' ) ) { self::fail( 'descriptor_version', 'A target descriptor uses an unsupported format.' ); }
-                    $items = isset( $descriptor['target'] ) ? [ $descriptor['target'] ] : array_column( $descriptor['slots'] ?? [], 'target' );
-                    if ( ! $items ) { self::fail( 'repeat_binding', 'A generated source has no concrete native destination.' ); }
-                    foreach ( $items as $item ) {
-                        if ( ! self::same( $item, $local['target_descriptors'][ $item['path'] ?? '' ] ?? null ) ) { self::fail( 'binding_identity', 'A canonical binding differs from the approved native descriptor.' ); }
-                        $target = self::resolve_target( $item, $snapshot, $inventory ); $targets[] = $target;
-                        $slug = $slug || ( 'post' === $target['kind'] && 'post_name' === $target['column'] );
-                    }
-                }
-                if ( array_diff( array_keys( $definitions ), array_keys( $coverage ) ) ) { self::fail( 'coverage', 'A generated source has no verified native destination.' ); }
                 foreach ( $targets as $index => $target ) {
                     $uses_acf = $uses_acf || ! empty( $target['acf'] );
                     foreach ( $guards as $protected ) { if ( self::overlaps( $target, $protected ) ) { self::fail( 'protected_overlap', 'A destination overlaps protected native content.' ); } }
@@ -499,7 +499,10 @@ final class Nova_Bridge_Suite_Mapped_Writer {
                 }
                 if ( 'clone' === $operation && ! $slug ) { self::fail( 'clone_slug', 'Clone activation requires a generated field mapped to native slug.' ); }
                 $elementor = (bool) self::meta_rows( $snapshot, '_elementor_data' );
-                if ( $elementor ) { self::one_meta( $snapshot, '_elementor_page_settings' ); }
+                if ( $elementor ) {
+                    self::one_meta( $snapshot, '_elementor_page_settings' );
+                    if ( 'clone' === $operation ) { $probe_changes = [ 'post' => [], 'meta' => [] ]; self::prepare_elementor_clone( $snapshot, $probe_changes, $guards, '00000000-0000-4000-8000-000000000001' ); }
+                }
                 $engines = self::database_capability(); $tuple = self::runtime_tuple();
                 self::check_provider_capability( [ 'context' => [ 'provider_tuple' => $tuple ], 'uses_acf' => $uses_acf, 'uses_elementor' => $elementor, 'snapshot' => $snapshot ] );
                 return [ 'writer_id' => self::WRITER_ID, 'provider' => $elementor ? 'elementor:' . $tuple['elementor'] : ( $uses_acf ? 'acf:' . $tuple['acf'] : 'wordpress:' . $tuple['wordpress'] ), 'plugin_version' => $tuple['plugin'], 'db_engine' => 'InnoDB', 'coverage' => array_keys( $coverage ), 'provider_tuple' => $tuple, 'expires_at' => gmdate( 'Y-m-d\TH:i:s\Z', time() + HOUR_IN_SECONDS ), 'evidence' => [ 'reference_id' => $post_id, 'snapshot_digest' => self::digest( $snapshot ), 'engines' => $engines, 'target_count' => count( $targets ), 'protected_count' => count( $guards ), 'repeat_policy' => 'existing_fixed_slots_only', 'save_hooks' => 'bypassed', 'query_filters' => 'reviewed_core_placeholder_escape_only', 'database_triggers' => 'absent', 'elementor_adapter_evidence' => self::$elementor_derived['evidence_id'] ?? null ] ];
@@ -511,7 +514,33 @@ final class Nova_Bridge_Suite_Mapped_Writer {
         if ( ( $plan['format'] ?? '' ) !== self::WRITER_ID || ! is_string( $digest ) || ! hash_equals( $digest, self::digest( $unsigned ) ) || ( $plan['context']['operation_id'] ?? null ) !== $operation_id ) { self::fail( 'plan_integrity', 'The persisted plan or its operation identity changed.' ); }
     }
     private static function operation_key( string $operation_id ): string { return '_nova_writer_op_' . hash( 'sha256', $operation_id ); }
+    private static function clone_witness_key( string $operation_id ): string { return '_nova_writer_clone_' . hash( 'sha256', $operation_id ); }
     private static function content_key( string $site_id, string $content_id ): string { return '_nova_writer_content_' . hash( 'sha256', $site_id . "\0" . $content_id ); }
+    private static function target_fence( int $post_id ): ?array {
+        global $wpdb;
+        $rows = self::rows( $wpdb->prepare( 'SELECT meta_id, post_id, meta_value FROM ' . self::table( 'postmeta' ) . ' WHERE post_id = %d AND meta_key = %s ORDER BY meta_id FOR UPDATE', $post_id, '_nova_writer_target_fence_v1' ) );
+        if ( count( $rows ) > 1 ) { self::fail( 'target_fence', 'The native target has ambiguous version fences.' ); }
+        if ( ! $rows ) { return null; }
+        $record = json_decode( $rows[0]['meta_value'], true );
+        if ( ! is_array( $record ) || ( $record['fence_post_id'] ?? null ) !== $post_id || ! is_array( $record['delivery_identity'] ?? null ) || empty( $record['operation_id'] ) ) { self::fail( 'target_fence', 'The persisted native version fence is invalid.' ); }
+        return [ 'post_id' => $post_id, 'meta_id' => (int) $rows[0]['meta_id'], 'raw' => $rows[0]['meta_value'], 'record' => $record ];
+    }
+    /** The delivery inventory cursor is not an ordering key for native mutations. */
+    public static function assert_target_fence( array $identity, string $operation_id, ?array $record ): void {
+        if ( ! $record ) { return; }
+        $previous = $record['delivery_identity'] ?? [];
+        foreach ( [ 'site_id', 'url_id', 'content_id' ] as $member ) { if ( ( $previous[ $member ] ?? null ) !== ( $identity[ $member ] ?? null ) ) { self::fail( 'target_conflict', 'A different site, NOVA URL or content item already owns this native target.' ); } }
+        if ( ! is_int( $previous['version'] ?? null ) ) { self::fail( 'target_fence', 'The retained native version fence is incomplete.' ); }
+        if ( $identity['version'] <= $previous['version'] ) {
+            if ( self::same( $identity, $previous ) && ( $record['operation_id'] ?? null ) === $operation_id ) { self::fail( 'ambiguous_marker', 'The exact delivery has a native fence but its operation marker is missing; reconcile without rewriting.' ); }
+            self::fail( 'older_version', 'An equal or older version, or a new attempt after a commit, cannot replace committed native work.' );
+        }
+        if ( 'complete' !== ( $record['state'] ?? null ) ) { self::fail( 'recovery_pending', 'The earlier native operation still needs recovery before newer work can mutate this target.' ); }
+    }
+    private static function save_target_fence( int $post_id, array $record, ?array $existing ): void {
+        $record['fence_post_id'] = $post_id;
+        self::save_marker( $post_id, '_nova_writer_target_fence_v1', $record, $existing );
+    }
     private static function marker( string $key, bool $lock = false ): ?array {
         global $wpdb;
         $rows = self::rows( $wpdb->prepare( 'SELECT meta_id, post_id, meta_value FROM ' . self::table( 'postmeta' ) . ' WHERE meta_key = %s ORDER BY meta_id' . ( $lock ? ' FOR UPDATE' : '' ), $key ) );
@@ -540,10 +569,15 @@ final class Nova_Bridge_Suite_Mapped_Writer {
         usort( $meta, static function ( $a, $b ) { return strcmp( self::json( $a ), self::json( $b ) ); } );
         return self::digest( [ 'post' => $snapshot['post'], 'meta' => $meta, 'terms' => $snapshot['terms'] ] );
     }
+    /** Publication may change native status/dates, never the verified document or routing. */
+    private static function publication_digest( array $snapshot ): string {
+        foreach ( [ 'post_status', 'post_date', 'post_date_gmt', 'post_modified', 'post_modified_gmt' ] as $column ) { unset( $snapshot['post'][ $column ] ); }
+        return self::state_digest( $snapshot );
+    }
     private static function save_marker( int $post_id, string $key, array $record, ?array $existing = null ): void {
         global $wpdb; $value = self::json( $record );
         if ( $existing ) {
-            $changed = self::execute( $wpdb->prepare( 'UPDATE ' . self::table( 'postmeta' ) . ' SET meta_value = %s WHERE meta_id = %d AND BINARY meta_value = BINARY %s', $value, $existing['meta_id'], $existing['raw'] ) );
+            $changed = self::execute( $wpdb->prepare( 'UPDATE ' . self::table( 'postmeta' ) . ' SET post_id = %d, meta_value = %s WHERE meta_id = %d AND BINARY meta_value = BINARY %s', $post_id, $value, $existing['meta_id'], $existing['raw'] ) );
             if ( 1 !== $changed && $value !== $existing['raw'] ) { self::fail( 'marker_conflict', 'The durable writer marker changed concurrently.' ); }
         } else {
             if ( false === $wpdb->insert( $wpdb->postmeta, [ 'post_id' => $post_id, 'meta_key' => $key, 'meta_value' => $value ], [ '%d', '%s', '%s' ] ) ) { self::fail( 'marker_storage', 'The CMS mutation marker could not be persisted.' ); }
@@ -566,12 +600,13 @@ final class Nova_Bridge_Suite_Mapped_Writer {
                     $existing = self::marker( self::operation_key( $operation_id ), true );
                     if ( $existing ) { $result = self::verified_marker( $plan, $existing ); self::commit(); $started = false; return $result; }
                     $current = self::snapshot( $plan['source_post_id'], true );
+                    if ( 'clone' === $plan['operation'] && self::marker( self::clone_witness_key( $operation_id ), true ) ) { self::fail( 'ambiguous_marker', 'The source records a committed clone whose operation marker is missing; reconcile without creating another copy.' ); }
+                    $source_fence = 'update' === $plan['operation'] ? self::target_fence( $plan['source_post_id'] ) : null;
+                    if ( 'update' === $plan['operation'] ) { self::assert_target_fence( $plan['delivery_identity'], $operation_id, $source_fence['record'] ?? null ); }
                     $content_key = self::content_key( $plan['site_id'], $plan['content_id'] ); $content_marker = self::marker( $content_key, true );
                     if ( $content_marker ) {
                         if ( (int) $content_marker['record']['version'] >= $plan['version'] ) { self::fail( 'older_version', 'An equal or newer version already committed to this content target.' ); }
                         if ( 'complete' !== $content_marker['record']['state'] ) { self::fail( 'recovery_pending', 'The previous version still needs derived-work recovery.' ); }
-                        if ( 'clone' === $plan['operation'] || $content_marker['post_id'] !== $plan['source_post_id'] ) { self::fail( 'target_changed', 'A retained content target already exists. Rebuild the plan for that target.' ); }
-                        if ( ! self::same( $content_marker['record']['repeat_instances'] ?? [], $plan['context']['repeat_instances'] ?? [] ) ) { self::fail( 'repeat_identity', 'Generated repeat-instance correspondence changed for an existing content target.' ); }
                     }
                     if ( ! hash_equals( $plan['snapshot_digest'], self::digest( $current ) ) ) { self::fail( 'native_drift', 'The locked native document changed after planning; no CMS writes were applied.' ); }
                     if ( ! current_user_can( 'edit_post', $plan['source_post_id'] ) ) { self::fail( 'permission', 'Native edit permission was revoked.' ); }
@@ -618,9 +653,15 @@ final class Nova_Bridge_Suite_Mapped_Writer {
                     $after = self::snapshot( $post_id, true );
                     if ( ! hash_equals( self::state_digest( $expected ), self::state_digest( $after ) ) ) { self::fail( 'verification', 'The complete native post, metadata or term state differs from the approved scalar plan. The transaction was rolled back.' ); }
                     self::taxonomy_apply( $plan, 'clone' === $plan['operation'] ? null : $current, $after );
-                    $record = [ 'state' => 'cms_committed', 'operation_id' => $operation_id, 'plan_digest' => $plan['plan_digest'], 'post_id' => $post_id, 'remote_post_id' => (string) $post_id, 'cms_post_status' => $after['post']['post_status'], 'content_id' => $plan['content_id'], 'version' => $plan['version'], 'pin_id' => $plan['pin_id'], 'digest' => $plan['digest'], 'site_id' => $plan['site_id'], 'derived_pending' => true, 'desired_status' => $plan['desired_status'], 'expected_state_digest' => self::state_digest( $after ), 'committed_at' => gmdate( 'c' ) ];
-                    $record['repeat_instances'] = $plan['context']['repeat_instances'] ?? [];
+                    $record = [ 'state' => 'cms_committed', 'operation_id' => $operation_id, 'plan_digest' => $plan['plan_digest'], 'post_id' => $post_id, 'remote_post_id' => (string) $post_id, 'cms_post_status' => $after['post']['post_status'], 'content_id' => $plan['content_id'], 'version' => $plan['version'], 'template_id' => $plan['template_id'], 'template_revision' => $plan['template_revision'], 'profile_digest' => $plan['profile_digest'], 'site_id' => $plan['site_id'], 'derived_pending' => true, 'desired_status' => $plan['desired_status'], 'expected_state_digest' => self::state_digest( $after ), 'committed_at' => gmdate( 'c' ) ];
+                    $record['delivery_identity'] = $plan['delivery_identity']; $record['elementor_id_map'] = $plan['elementor_id_map'];
+                    $record['publication_state_digest'] = self::publication_digest( $after );
                     self::save_marker( $post_id, self::operation_key( $operation_id ), $record ); self::save_marker( $post_id, $content_key, $record, $content_marker );
+                    self::save_target_fence( $post_id, $record, $source_fence );
+                    if ( 'clone' === $plan['operation'] ) {
+                        // ponytail: retain one source witness per clone until journal retirement defines safe pruning.
+                        self::save_marker( $plan['source_post_id'], self::clone_witness_key( $operation_id ), [ 'state' => 'cms_committed', 'operation_id' => $operation_id, 'post_id' => $plan['source_post_id'], 'clone_post_id' => $post_id, 'plan_digest' => $plan['plan_digest'], 'delivery_identity' => $plan['delivery_identity'] ] );
+                    }
                     self::commit(); $started = false;
                     try { self::cache( $post_id, $plan['taxonomy'] ?? [] ); } catch ( Throwable $ignored ) { /* The durable derived phase retries cache work. */ }
                     return $record;
@@ -631,12 +672,26 @@ final class Nova_Bridge_Suite_Mapped_Writer {
 
     private static function verified_marker( array $plan, array $marker ): array {
         $record = $marker['record'];
-        if ( ( $record['plan_digest'] ?? '' ) !== $plan['plan_digest'] || ( $record['operation_id'] ?? '' ) !== $plan['context']['operation_id'] || ( $record['pin_id'] ?? '' ) !== $plan['pin_id'] || ( $record['version'] ?? null ) !== $plan['version'] ) { self::fail( 'ambiguous_marker', 'A durable operation marker names a different plan or content identity.' ); }
+        if ( ( $record['plan_digest'] ?? '' ) !== $plan['plan_digest'] || ( $record['operation_id'] ?? '' ) !== $plan['context']['operation_id'] || ( $record['template_id'] ?? '' ) !== $plan['template_id'] || ( $record['template_revision'] ?? null ) !== $plan['template_revision'] || ( $record['profile_digest'] ?? '' ) !== $plan['profile_digest'] || ( $record['version'] ?? null ) !== $plan['version'] || ! self::same( $record['delivery_identity'] ?? null, $plan['delivery_identity'] ) ) { self::fail( 'ambiguous_marker', 'A durable operation marker names a different plan or snapshot identity.' ); }
         $current = self::snapshot( $marker['post_id'], true );
+        $latest = self::target_fence( $marker['post_id'] );
+        if ( ! $latest ) { self::fail( 'target_fence', 'The committed native target has lost its ordering fence.' ); }
+        $latest_identity = $latest['record']['delivery_identity'] ?? [];
+        foreach ( [ 'site_id', 'url_id', 'content_id' ] as $member ) { if ( ( $latest_identity[ $member ] ?? null ) !== ( $plan['delivery_identity'][ $member ] ?? null ) ) { self::fail( 'target_fence', 'The committed native target has a different content identity.' ); } }
+        $order = ( $latest_identity['version'] ?? 0 ) <=> $plan['version'];
+        if ( $order < 0 || ( 0 === $order && ( ! self::same( $latest_identity, $plan['delivery_identity'] ) || $latest['record']['operation_id'] !== $record['operation_id'] ) ) ) { self::fail( 'target_fence', 'The native fence disagrees with the committed delivery identity.' ); }
+        if ( $order > 0 ) { if ( 'complete' !== $record['state'] ) { self::fail( 'recovery_pending', 'An unfinished operation was superseded without verified completion.' ); } $record['superseded'] = true; return $record; }
         if ( ! hash_equals( $record['expected_state_digest'] ?? '', self::state_digest( $current ) ) ) {
-            $latest = self::marker( self::content_key( $plan['site_id'], $plan['content_id'] ), true );
-            if ( 'complete' === $record['state'] && $latest && (int) $latest['record']['version'] > $plan['version'] ) { $record['superseded'] = true; return $record; }
-            self::fail( 'recovery_drift', 'The committed native state changed. Preserve the marker and reconcile before retrying.' );
+            if ( 'complete' !== ( $record['state'] ?? '' ) || ! empty( $record['derived_pending'] ) || ! in_array( $record['cms_post_status'] ?? '', [ 'draft', 'future', 'pending', 'private' ], true ) || ! in_array( $current['post']['post_status'], [ 'draft', 'future', 'pending', 'private', 'publish' ], true ) || ! hash_equals( $record['publication_state_digest'] ?? '', self::publication_digest( $current ) ) ) { self::fail( 'recovery_drift', 'The committed native content or structure changed. Preserve the marker and reconcile before retrying.' ); }
+            // WordPress changed only the publication envelope. Attest it without replaying writes.
+            $content_key = self::content_key( $plan['site_id'], $plan['content_id'] );
+            $content_marker = self::marker( $content_key, true );
+            if ( ! $content_marker || ( $content_marker['record']['operation_id'] ?? null ) !== $record['operation_id'] ) { self::fail( 'marker_conflict', 'A different operation owns the content during publication verification.' ); }
+            $record['publication_transition'] = [ 'from' => $record['cms_post_status'], 'to' => $current['post']['post_status'], 'verified_at' => gmdate( 'c' ), 'post_date_gmt' => $current['post']['post_date_gmt'] ?? null ];
+            $record['cms_post_status'] = $current['post']['post_status']; $record['expected_state_digest'] = self::state_digest( $current );
+            self::save_marker( $marker['post_id'], self::operation_key( $record['operation_id'] ), $record, $marker );
+            self::save_marker( $marker['post_id'], $content_key, $record, $content_marker );
+            self::save_target_fence( $marker['post_id'], $record, $latest );
         }
         return $record;
     }
@@ -647,7 +702,24 @@ final class Nova_Bridge_Suite_Mapped_Writer {
                 self::begin(); $started = true;
                 $marker = self::marker( self::operation_key( $operation_id ), true );
                 if ( $marker ) { $result = self::verified_marker( $plan, $marker ); }
-                else { self::snapshot( $plan['source_post_id'], true ); $result = [ 'state' => 'not_committed', 'safe_to_apply' => true ]; }
+                else {
+                    if ( 'clone' === $plan['operation'] ) {
+                        $prior_content = self::marker( self::content_key( $plan['site_id'], $plan['content_id'] ), true );
+                        if ( self::marker( self::clone_witness_key( $operation_id ), true ) || ( $prior_content && ( $prior_content['record']['operation_id'] ?? null ) === $operation_id ) ) { self::fail( 'ambiguous_marker', 'Native clone evidence remains without this operation marker. Reconcile without declaring absence or creating another copy.' ); }
+                    }
+                    $fence = 'update' === $plan['operation'] ? self::target_fence( $plan['source_post_id'] ) : null;
+                    if ( $fence && $fence['record']['operation_id'] === $operation_id ) { self::fail( 'ambiguous_marker', 'The native fence names this operation but its durable operation marker is missing.' ); }
+                    try {
+                        $current = self::snapshot( $plan['source_post_id'], true );
+                        if ( 'update' === $plan['operation'] ) { self::assert_target_fence( $plan['delivery_identity'], $operation_id, $fence['record'] ?? null ); }
+                        if ( ! hash_equals( $plan['snapshot_digest'], self::digest( $current ) ) ) { self::fail( 'native_drift', 'The target changed after planning; reconcile without replaying the old plan.' ); }
+                        $result = [ 'state' => 'not_committed', 'no_native_commit' => true, 'safe_to_apply' => true ];
+                    } catch ( Nova_Bridge_Suite_Writer_Failure $error ) {
+                        if ( 'target' === $error->reason ) { self::fail( 'ambiguous_target', 'The native target is missing. Its post-local operation marker and fence may have been deleted after a commit; reconcile without declaring failure or replaying.' ); }
+                        if ( ! in_array( $error->reason, [ 'target_conflict', 'older_version', 'recovery_pending', 'native_drift' ], true ) ) { throw $error; }
+                        $result = [ 'state' => 'not_committed', 'no_native_commit' => true, 'safe_to_apply' => false, 'failure_code' => 'nova_writer_' . $error->reason ];
+                    }
+                }
                 self::commit(); $started = false; return $result;
             } finally { if ( $started ) { self::rollback(); } }
         } );
@@ -667,6 +739,13 @@ final class Nova_Bridge_Suite_Mapped_Writer {
                     $record = self::verified_marker( $plan, $marker );
                     if ( 'complete' === $record['state'] ) { self::commit(); $started = false; self::cache( $record['post_id'], $plan['taxonomy'] ?? [] ); return $record; }
                     $post_id = $record['post_id'];
+                    $fences = [];
+                    foreach ( [ $post_id ] as $fence_id ) {
+                        $fence = self::target_fence( $fence_id );
+                        if ( ! $fence && $fence_id !== $post_id && ! self::rows( $wpdb->prepare( 'SELECT * FROM ' . self::table( 'posts' ) . ' WHERE ID = %d FOR UPDATE', $fence_id ) ) ) { continue; }
+                        if ( ! $fence || $fence['record']['operation_id'] !== $record['operation_id'] || ! self::same( $fence['record']['delivery_identity'], $plan['delivery_identity'] ) ) { self::fail( 'target_fence', 'A different snapshot owns the target during derived recovery.' ); }
+                        $fences[ $fence_id ] = $fence;
+                    }
                     if ( ! current_user_can( 'edit_post', $post_id ) ) { self::fail( 'permission', 'Native edit permission was revoked during recovery.' ); }
                     self::cache( $post_id, $plan['taxonomy'] ?? [] );
                     if ( $plan['uses_elementor'] ) {
@@ -682,10 +761,12 @@ final class Nova_Bridge_Suite_Mapped_Writer {
                     $after = self::snapshot( $post_id, true );
                     self::taxonomy_apply( $plan, $before, $after );
                     $record['cms_post_status'] = $after['post']['post_status']; $record['state'] = 'complete'; $record['derived_pending'] = false; $record['expected_state_digest'] = self::state_digest( $after ); $record['completed_at'] = gmdate( 'c' );
+                    $record['publication_state_digest'] = self::publication_digest( $after );
                     self::save_marker( $post_id, self::operation_key( $record['operation_id'] ), $record, $marker );
                     $key = self::content_key( $plan['site_id'], $plan['content_id'] ); $content_marker = self::marker( $key, true );
                     if ( ! $content_marker || $content_marker['record']['operation_id'] !== $record['operation_id'] ) { self::fail( 'marker_conflict', 'A different content version owns the native target during recovery.' ); }
                     self::save_marker( $post_id, $key, $record, $content_marker );
+                    foreach ( $fences as $fence_id => $fence ) { self::save_target_fence( $fence_id, $record, $fence ); }
                     self::commit(); $started = false; self::cache( $post_id, $plan['taxonomy'] ?? [] ); return $record;
                 } finally { if ( $started ) { self::rollback(); } }
             } );

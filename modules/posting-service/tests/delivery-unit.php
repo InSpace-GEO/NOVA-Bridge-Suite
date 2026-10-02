@@ -1,192 +1,182 @@
 <?php
-/** Run directly with PHP; no WordPress, network or existing site content is accessed. */
-define( 'ABSPATH', __DIR__ . '/' );
-define( 'DAY_IN_SECONDS', 86400 );
-define( 'ARRAY_A', 'ARRAY_A' );
+/** Exercises the production client/worker against a deterministic current API, without a CMS. */
+define( 'ABSPATH', __DIR__ . '/' ); define( 'NOVA_BRIDGE_SUITE_VERSION', '3.0.0' );
 class WP_Error {
     private $code; private $message; private $data;
     public function __construct( $code, $message = '', $data = [] ) { $this->code = $code; $this->message = $message; $this->data = $data; }
     public function get_error_code() { return $this->code; }
     public function get_error_data() { return $this->data; }
+    public function get_error_message() { return $this->message; }
 }
-function is_wp_error( $value ) { return $value instanceof WP_Error; }
-function wp_json_encode( $value, $flags = 0 ) { return json_encode( $value, $flags ); }
-function wp_generate_uuid4() { static $next = 0; return 'test-uuid-' . ++$next; }
-function get_current_user_id() { return $GLOBALS['test_user'] ?? 0; }
-function wp_set_current_user( $id ) { $GLOBALS['test_user'] = $id; }
+function is_wp_error( $v ) { return $v instanceof WP_Error; }
+function wp_json_encode( $v, $flags = 0 ) { return json_encode( $v, $flags ); }
+function wp_parse_url( $url ) { return parse_url( $url ); }
+function wp_safe_remote_request( $url, $args ) { return $GLOBALS['server']->request( $url, $args ); }
+function wp_remote_retrieve_body( $r ) { return $r['body']; }
+function wp_remote_retrieve_response_code( $r ) { return $r['response']['code']; }
+function wp_remote_retrieve_header( $r, $key ) { return $r['headers'][$key] ?? ''; }
+function wp_generate_uuid4() { static $n = 100; return '11111111-1111-4111-8111-' . sprintf( '%012d', ++$n ); }
+function get_current_user_id() { return $GLOBALS['actor'] ?? 0; }
+function wp_set_current_user( $id ) { $GLOBALS['actor'] = $id; }
 function get_post_status( $id ) { return 'publish'; }
-require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-posting-jobs.php';
-require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-posting-worker.php';
-require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-posting-delivery.php';
-
+foreach ( [ 'posting-client', 'posting-protocol', 'receipt-json', 'posting-discovery', 'posting-worker' ] as $file ) { require dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-' . $file . '.php'; }
+require __DIR__ . '/contract-fixture.php';
 $checks = 0;
-function check_delivery( $condition, string $message ): void {
-    global $checks; ++$checks;
-    if ( ! $condition ) { throw new RuntimeException( $message ); }
-}
-
-class Delivery_Test_Store {
-    public $saved; public $history = []; public $newer = false; public $uncertain = false; public $fail_phase = ''; public $fail_code = 'journal_fail'; public $locks = [];
+function delivery_check( $condition, $message ) { ++$GLOBALS['checks']; if ( ! $condition ) { throw new RuntimeException( $message ); } }
+class Contract_Test_Store {
+    public $saved; public $history = []; public $locks = []; public $fail_phase = ''; public $fail_state = ''; public $uncertain = false;
     public function save( $job, $changes ) {
-        if ( $this->fail_phase && ( $changes['phase'] ?? '' ) === $this->fail_phase ) { return new WP_Error( $this->fail_code ); }
-        $this->saved = array_merge( $job, $changes ); $this->history[] = $this->saved; return $this->saved;
+        $next = array_merge( $job, $changes );
+        if ( $this->fail_phase === $next['phase'] || $this->fail_state === $next['state'] ) { return new WP_Error( 'fixture_journal_failure' ); }
+        $this->history[] = $next; return $this->saved = $next;
     }
-    public function lock( $name ) { $this->locks[ $name ] = true; return true; }
-    public function unlock( $name ) { unset( $this->locks[ $name ] ); }
-    public function newer_committed( $job ) { return $this->newer; }
+    public function lock( $key ) { $this->locks[$key] = true; return true; }
+    public function unlock( $key ) { unset( $this->locks[$key] ); }
     public function uncertain_target( $job ) { return $this->uncertain; }
 }
-
-class Delivery_Test_Client {
-    public $content; public $remote = null; public $calls = []; public $lost_ack = false; public $get_error = false; public $conflict = false;
-    public function __construct( $content ) { $this->content = $content; }
-    public function request( $method, $path, $body = null ) {
-        $this->calls[] = [ $method, $path, $body ];
-        if ( 'GET' === $method && false !== strpos( $path, '/result?' ) ) {
-            if ( $this->get_error ) { return new WP_Error( 'outage', '', [ 'status' => 503 ] ); }
-            return null === $this->remote ? new WP_Error( 'missing', '', [ 'status' => 404 ] ) : [ 'status' => 200, 'body' => $this->remote ];
+class Contract_Test_Writer {
+    public static $apply = 0; public static $recover = 0; public static $finish = 0; public static $crash = false; public static $plan_error = false; public static $apply_error = null; public static $recover_value = null; public static $status = 'publish'; public static $context;
+    public static function reset() { self::$apply = self::$recover = self::$finish = 0; self::$crash = self::$plan_error = false; self::$apply_error = self::$recover_value = null; self::$status = 'publish'; }
+    public static function plan( $snapshot, $config, $context ) { self::$context = $context; return self::$plan_error ? new WP_Error( 'fixture_plan_failed' ) : [ 'context' => $context ]; }
+    public static function result( $plan ) { return [ 'post_id' => $plan['context']['target_post_id'], 'cms_post_status' => self::$status ]; }
+    public static function apply( $plan, $operation ) { ++self::$apply; if ( self::$crash ) { throw new RuntimeException( 'Process lost after commit' ); } return self::$apply_error ?? self::result( $plan ); }
+    public static function recover( $plan, $operation ) { ++self::$recover; return self::$recover_value ?? self::result( $plan ); }
+    public static function finish( $plan, $result ) { ++self::$finish; return $result; }
+    public static function verify( $plan, $result ) { return self::result( $plan ); }
+}
+class Contract_Test_Server {
+    public $fixture; public $calls = []; public $posts = []; public $accepted = []; public $lose = ''; public $throw_after = ''; public $read_status = 200; public $post_status = 0; public $raw; public $etag; public $attempt; public $wrong_ack = false;
+    public function __construct( $fixture ) { $this->fixture = $fixture; $this->raw = $fixture['raw']; $this->etag = $fixture['etag']; $this->attempt = $fixture['attempt_id']; }
+    public static function reply( $code, $body, $headers = [] ) { return [ 'response' => [ 'code' => $code ], 'body' => $body, 'headers' => $headers ]; }
+    public function request( $url, $args ) {
+        $this->calls[] = [ $url, $args ];
+        delivery_check( $args['sslverify'] && 0 === $args['redirection'] && $args['reject_unsafe_urls'], 'HTTP safety settings retained.' );
+        $path = '/v1/sites/' . $this->fixture['job']['site_id'] . '/deliveries/' . $this->fixture['item']['id'];
+        delivery_check( false !== strpos( $url, $path ), 'Only current delivery routes used.' );
+        if ( 'GET' === $args['method'] ) {
+            delivery_check( ! isset( $args['headers']['If-None-Match'] ), 'GET must return full bytes and current attempt.' );
+            return 200 === $this->read_status ? self::reply( 200, $this->raw, [ 'etag' => $this->etag, 'x-nova-attempt-id' => $this->attempt ] ) : self::reply( $this->read_status, '{"error":{"code":"fixture_read_error"}}' );
         }
-        if ( 'GET' === $method ) { return [ 'status' => 200, 'body' => $this->content ]; }
-        $this->remote = array_merge( [ 'content_id' => '123' ], $body );
-        if ( $this->conflict ) { $this->remote['remote_post_id'] = '999'; }
-        if ( $this->lost_ack ) { $this->lost_ack = false; return new WP_Error( 'timeout' ); }
-        return [ 'status' => 201, 'body' => $this->remote ];
+        delivery_check( substr( $url, -7 ) === '/events', 'Current event endpoint selected.' );
+        $bytes = $args['body']; $event = json_decode( $bytes, true );
+        delivery_check( ! is_wp_error( Nova_Bridge_Suite_Posting_Protocol::event_input( $event ) ), 'Exact conditional event schema.' );
+        $this->posts[] = $bytes;
+        if ( $this->post_status ) { return self::reply( $this->post_status, '{"error":{"code":"fixture_event_error"}}' ); }
+        $id = $event['event_id'];
+        if ( isset( $this->accepted[$id] ) && $this->accepted[$id]['bytes'] !== $bytes ) { return self::reply( 409, '{"error":{"code":"conflict"}}' ); }
+        $this->accepted[$id] = $this->accepted[$id] ?? [ 'bytes' => $bytes, 'ack' => nova_contract_fixture_event_accept( $bytes ) ];
+        if ( $this->throw_after === $event['kind'] ) { $this->throw_after = ''; throw new RuntimeException( 'Process exception after event acceptance' ); }
+        if ( $this->lose === $event['kind'] ) { $this->lose = ''; return new WP_Error( 'fixture_ack_lost' ); }
+        $ack = $this->accepted[$id]['ack']; if ( $this->wrong_ack ) { $ack['attempt_id'] = '00000000-0000-4000-8000-000000000099'; }
+        return self::reply( 202, json_encode( $ack ) );
     }
 }
-
-class Delivery_Test_Writer {
-    public static $apply = 0; public static $recover = 0; public static $finish = 0; public static $verify = 0;
-    public static $throw_after_commit = false; public static $finish_error = false; public static $recovery = null; public static $contexts = [];
-    public static function reset(): void { self::$apply = self::$recover = self::$finish = self::$verify = 0; self::$throw_after_commit = self::$finish_error = false; self::$recovery = null; self::$contexts = []; }
-    public static function result() { return [ 'state' => 'complete', 'post_id' => 77, 'cms_post_status' => 'publish', 'operation_id' => 'operation-1' ]; }
-    public static function plan( $content, $configuration, $context ) { self::$contexts[] = $context; return [ 'target_post_id' => 77, 'site_id' => $context['site_id'], 'operation_id' => $context['operation_id'] ]; }
-    public static function apply( $plan, $operation ) { ++self::$apply; if ( self::$throw_after_commit ) { throw new RuntimeException( 'Simulated crash after transactional commit' ); } return self::result(); }
-    public static function recover( $plan, $operation ) { ++self::$recover; return self::$recovery ?? self::result(); }
-    public static function finish( $plan, $result ) { ++self::$finish; return self::$finish_error ? new WP_Error( 'derived_pending' ) : $result; }
-    public static function verify( $plan, $result ) { ++self::$verify; return $result; }
+function delivery_fixture( $patch = [] ) {
+    Contract_Test_Writer::reset(); $f = nova_contract_fixture(); $f['connection'] = array_merge( $f['connection'], $patch );
+    $s = new Contract_Test_Store(); $server = new Contract_Test_Server( $f ); $GLOBALS['server'] = $server;
+    $configuration = static function ( $snapshot, $site ) use ( $f ) { return $f['configuration']; };
+    $policy = static function () use ( $f ) { return [ 'reference' => [ 'reference_type' => 'post', 'reference_id' => 77 ], 'routing' => [ 'operation' => 'update', 'publication' => 'publish' ] ]; };
+    $w = new Nova_Bridge_Suite_Posting_Worker( $f['connection'], $s, new Nova_Bridge_Suite_Posting_Client( $f['connection'] ), $configuration, 'Contract_Test_Writer', $policy );
+    return [ $f['job'], $s, $server, $w ];
 }
+function delivery_resume( $job ) { $job['state'] = 'running'; return $job; }
 
-function delivery_fixture( array $content_overrides = [], array $connection_overrides = [] ): array {
-    Delivery_Test_Writer::reset();
-    $connection = array_merge( [ 'site_id' => 'a14ba9d3-6af5-4c7f-841a-f588561c71bd', 'enabled' => true, 'paused' => false, 'actor_user_id' => 42, 'webhook_secret' => 'fixture-secret' ], $connection_overrides );
-    $job = [ 'id' => 1, 'site_id' => $connection['site_id'], 'content_id' => '123', 'version' => 2, 'state' => 'running', 'phase' => 'accepted', 'target_id' => 0, 'operation_id' => 'operation-1', 'attempts' => 1, 'next_attempt' => 0, 'last_error' => '', 'lease_token' => 'owned', 'lease_until' => time() + 300, 'payload' => [] ];
-    $content = array_merge( [ 'content_id' => '123', 'version' => 2, 'status' => 'ready', 'template_id' => 'template-1', 'template_version' => 'revision-1', 'pin_id' => 'pin-1', 'digest' => 'digest-1', 'fields' => [ 'heading' => 'New' ] ], $content_overrides );
-    $store = new Delivery_Test_Store(); $client = new Delivery_Test_Client( $content );
-    $configuration = static function ( $pin, $digest, $site ) { return [ 'site_id' => $site, 'pin_id' => $pin, 'digest' => $digest, 'local' => [ 'reference_type' => 'post', 'reference_id' => 77, 'routing' => [ 'operation' => 'update', 'publication' => 'preserve' ] ] ]; };
-    $worker = new Nova_Bridge_Suite_Posting_Worker( $connection, $store, $client, $configuration, 'Delivery_Test_Writer' );
-    return [ $job, $store, $client, $worker, $connection ];
-}
-
-[ $job, $store, $client, $worker, $connection ] = delivery_fixture();
-$raw = json_encode( [ 'event' => 'content.ready', 'content_id' => '123', 'site' => $connection['site_id'], 'version' => 2 ] );
-$timestamp = '2000000000';
-$signature = 'sha256=' . hash_hmac( 'sha256', $timestamp . '.' . $raw, $connection['webhook_secret'] );
-check_delivery( is_array( Nova_Bridge_Suite_Posting_Delivery::authenticate( $raw, $timestamp, $signature, $connection, 2000000000 ) ), 'Correct raw-body signature accepted.' );
-check_delivery( is_wp_error( Nova_Bridge_Suite_Posting_Delivery::authenticate( $raw . ' ', $timestamp, $signature, $connection, 2000000000 ) ), 'Byte alteration fails authentication.' );
-check_delivery( is_wp_error( Nova_Bridge_Suite_Posting_Delivery::authenticate( $raw, $timestamp, $signature, $connection, 2000000301 ) ), 'Expired timestamp fails authentication.' );
-check_delivery( is_wp_error( Nova_Bridge_Suite_Posting_Delivery::authenticate( $raw, $timestamp, $signature, $connection, 1999999699 ) ), 'Too-far future timestamp fails authentication.' );
-check_delivery( is_wp_error( Nova_Bridge_Suite_Posting_Delivery::authenticate( str_repeat( 'a', 16385 ), $timestamp, $signature, $connection, 2000000000 ) ), 'Oversize body bounded before decode.' );
-foreach ( [ [ 'extra' => true ], [ 'version' => '2' ], [ 'version' => 0 ], [ 'content_id' => 123 ], [ 'site' => 'other-site' ], [ 'event' => 'diagnostic.challenge' ] ] as $patch ) {
-    $bad = json_encode( array_merge( json_decode( $raw, true ), $patch ) );
-    $sig = 'sha256=' . hash_hmac( 'sha256', $timestamp . '.' . $bad, $connection['webhook_secret'] );
-    check_delivery( is_wp_error( Nova_Bridge_Suite_Posting_Delivery::authenticate( $bad, $timestamp, $sig, $connection, 2000000000 ) ), 'Signed unsupported shape rejected.' );
-}
-
-$GLOBALS['test_user'] = 9;
+[ $job, $store, $server, $worker ] = delivery_fixture(); $GLOBALS['actor'] = 9;
 $result = $worker->process( $job );
-check_delivery( 'complete' === $result['state'] && 1 === Delivery_Test_Writer::$apply, 'Normal exact delivery applies and acknowledges once.' );
-check_delivery( [] === $store->locks && 9 === get_current_user_id(), 'Target locks and original user restored.' );
-check_delivery( '/v1/content/123?version=2' === $client->calls[1][1], 'Fetch always explicitly requests notified exact version.' );
-check_delivery( 'publish' === Delivery_Test_Writer::$contexts[0]['desired_status'], 'Preserve policy keeps current published status.' );
-$phases = array_column( $store->history, 'phase' );
-check_delivery( array_search( 'applying', $phases, true ) < array_search( 'committed', $phases, true ), 'Mutation boundary is persisted before committed state.' );
+delivery_check( 'complete' === $result['state'] && 1 === Contract_Test_Writer::$apply && [] === $store->locks && 9 === get_current_user_id(), 'One native write, locks and actor restored.' );
+$events = array_map( static function ( $b ) { return json_decode( $b, true ); }, $server->posts );
+delivery_check( [ 'received_complete', 'publication_succeeded' ] === array_column( $events, 'kind' ) && $events[0]['event_id'] !== $events[1]['event_id'], 'Separate persisted IDs for receipt and publication.' );
+delivery_check( 'pending' === $result['payload']['events']['publication_succeeded']['accepted']['status'], 'Acceptance does not claim backend application.' );
+delivery_check( $result['payload']['snapshot_raw'] === $server->raw && $events[1]['delivery_etag'] === $server->etag && $events[1]['source_sha256'] !== hash( 'sha256', $server->raw ), 'Raw delivery and backend source hash remain separate.' );
 
-foreach ( [ [ 'version' => 3 ], [ 'content_id' => '124' ], [ 'status' => 'pending' ], [ 'site_id' => 'wrong' ] ] as $patch ) {
-    [ $job, $store, $client, $worker ] = delivery_fixture( $patch ); $result = $worker->process( $job );
-    check_delivery( 'blocked' === $result['state'] && 0 === Delivery_Test_Writer::$apply, 'Exact identity mismatch never mutates.' );
+foreach ( [ 'received_complete', 'publication_succeeded' ] as $lost ) {
+    [ $job, $store, $server, $worker ] = delivery_fixture(); $server->lose = $lost;
+    $result = $worker->process( $job );
+    delivery_check( 'event_pending' === $result['phase'] && 'ready' === $result['state'], 'Lost acknowledgement retains durable event bytes.' );
+    $pending = $result['payload']['event_bytes']; $result = $worker->process( delivery_resume( $result ) );
+    delivery_check( 'complete' === $result['state'] && 1 === Contract_Test_Writer::$apply && count( $server->accepted ) === 2, 'Exact event replay continues once without repeating native write.' );
+    delivery_check( count( array_filter( $server->posts, static function ( $b ) use ( $pending ) { return $pending === $b; } ) ) === 2, 'Lost response replays identical event ID and bytes.' );
 }
-[ $job, $store, $client, $worker ] = delivery_fixture(); $job['site_id'] = 'other-installation'; $result = $worker->process( $job );
-check_delivery( 'installation_mismatch' === $result['last_error'] && 0 === Delivery_Test_Writer::$apply && [] === $client->calls, 'Changing configured site never processes a retained foreign-site job.' );
-[ $job, $store, $client, $worker ] = delivery_fixture( [ 'repeat_instances' => [ 'steps' => [ [ 'slot_id' => 'one', 'instance_id' => 'a' ], [ 'slot_id' => 'one', 'instance_id' => 'b' ] ] ] ] ); $result = $worker->process( $job );
-check_delivery( 'blocked' === $result['state'] && 0 === Delivery_Test_Writer::$apply, 'Duplicate repeat native slots stop before writer planning.' );
-[ $job, $store, $client, $worker ] = delivery_fixture( [ 'repeat_instances' => [ 'steps' => [ [ 'slot_id' => 'one', 'instance_id' => 'a' ], [ 'slot_id' => 'two', 'instance_id' => 'a' ] ] ] ] ); $result = $worker->process( $job );
-check_delivery( 'blocked' === $result['state'] && 0 === Delivery_Test_Writer::$apply, 'Duplicate repeat generated identities stop before writer planning.' );
-$repeat = [ 'steps' => [ [ 'slot_id' => 'one', 'instance_id' => 'a' ], [ 'slot_id' => 'two', 'instance_id' => 'b' ] ] ];
-[ $job, $store, $client, $worker ] = delivery_fixture( [ 'repeat_instances' => $repeat ] ); $result = $worker->process( $job );
-check_delivery( $repeat === Delivery_Test_Writer::$contexts[0]['repeat_instances'], 'Exact fetched repeat identities are passed intact to pinned planner validation.' );
-[ $job, $store, $client, $worker ] = delivery_fixture( [ 'pin_id' => null ] ); $result = $worker->process( $job );
-check_delivery( 'validated' === $result['phase'] && 'blocked' === $result['state'] && isset( $result['payload']['content'] ) && 0 === Delivery_Test_Writer::$apply, 'Unpinned current-service payload is retained and blocked, not assigned latest config.' );
-[ $job, $store, $client, $worker ] = delivery_fixture(); $client->get_error = true; $result = $worker->process( $job );
-check_delivery( 'ready' === $result['state'] && 0 === Delivery_Test_Writer::$apply && count( $client->calls ) === 1, 'Ambiguous receipt lookup blocks all CMS work.' );
-[ $job, $store, $client, $worker ] = delivery_fixture(); $store->fail_phase = 'applying'; $result = $worker->process( $job );
-check_delivery( is_wp_error( $result ) && 0 === Delivery_Test_Writer::$apply, 'Journal failure before mutation prevents write.' );
-[ $job, $store, $client, $worker ] = delivery_fixture(); $store->fail_phase = 'planned'; $store->fail_code = 'nova_posting_journal_size'; $result = $worker->process( $job );
-check_delivery( is_wp_error( $result ) && 'blocked' === $store->saved['state'] && 'journal_size' === $store->saved['last_error'] && 0 === Delivery_Test_Writer::$apply, 'Oversized plan is visibly blocked instead of entering an endless lease retry.' );
-[ $job, $store, $client, $worker ] = delivery_fixture(); $store->newer = true; $result = $worker->process( $job );
-check_delivery( 'newer_version_already_committed' === $result['last_error'] && 0 === Delivery_Test_Writer::$apply, 'Older delayed version cannot overwrite newer committed version.' );
-[ $job, $store, $client, $worker ] = delivery_fixture(); $store->uncertain = true; $result = $worker->process( $job );
-check_delivery( 'other_mutation_unreconciled' === $result['last_error'] && 0 === Delivery_Test_Writer::$apply, 'Other ambiguous job prevents overwrite before reconciliation.' );
-
-[ $job, $store, $client, $worker ] = delivery_fixture(); $client->lost_ack = true; $result = $worker->process( $job );
-check_delivery( 'receipt_pending' === $result['phase'] && 'ready' === $result['state'] && 1 === Delivery_Test_Writer::$apply, 'Lost acknowledgement retains exact receipt after single mutation.' );
-$result['state'] = 'running'; ++$result['attempts']; $recovered = $worker->process( $result );
-check_delivery( 'complete' === $recovered['state'] && 1 === Delivery_Test_Writer::$apply && 1 === Delivery_Test_Writer::$finish, 'Receipt recovery never repeats mutation or derived work.' );
-check_delivery( count( array_filter( $client->calls, static function ( $call ) { return 'POST' === $call[0]; } ) ) === 1, 'Lost acknowledgement is resolved by reading stored winner.' );
-
-[ $job, $store, $client, $worker ] = delivery_fixture(); Delivery_Test_Writer::$throw_after_commit = true; $result = $worker->process( $job );
-check_delivery( 'applying' === $result['phase'] && 'ready' === $result['state'], 'Crash after commit retains recover-only phase.' );
-$result['state'] = 'running'; ++$result['attempts']; Delivery_Test_Writer::$throw_after_commit = false; $recovered = $worker->process( $result );
-check_delivery( 'complete' === $recovered['state'] && 1 === Delivery_Test_Writer::$apply && 1 === Delivery_Test_Writer::$recover, 'Crash recovery finds committed operation and does not clone twice.' );
-
-[ $job, $store, $client, $worker ] = delivery_fixture(); Delivery_Test_Writer::$finish_error = true; $result = $worker->process( $job );
-check_delivery( 'committed' === $result['phase'] && 'ready' === $result['state'], 'Derived failure is retained postcommit.' );
-$result['state'] = 'running'; ++$result['attempts']; Delivery_Test_Writer::$finish_error = false; $recovered = $worker->process( $result );
-check_delivery( 'complete' === $recovered['state'] && 1 === Delivery_Test_Writer::$apply && 2 === Delivery_Test_Writer::$finish, 'Derived retry only finishes committed operation.' );
-
-[ $job, $store, $client, $worker ] = delivery_fixture(); $client->conflict = true; $result = $worker->process( $job );
-check_delivery( 'receipt_conflict' === $result['last_error'] && 'blocked' === $result['state'], 'Conflicting immutable remote winner is surfaced.' );
-[ $job, $store, $client, $worker ] = delivery_fixture(); $client->remote = [ 'content_id' => '123', 'version' => 2, 'outcome' => 'posted', 'remote_post_id' => '999' ]; $result = $worker->process( $job );
-check_delivery( 'blocked' === $result['state'] && 0 === Delivery_Test_Writer::$apply, 'Unknown preexisting remote winner never authorizes overwrite.' );
-[ $job, $store, $client, $worker ] = delivery_fixture( [], [ 'paused' => true ] ); $result = $worker->process( $job );
-check_delivery( 'paused' === $result['last_error'] && 0 === Delivery_Test_Writer::$apply, 'Paused worker does no new CMS mutation.' );
-$job['phase'] = 'applying'; $job['target_id'] = 77; $job['payload']['plan'] = []; $result = $worker->process( $job );
-check_delivery( 'complete' === $result['state'] && 0 === Delivery_Test_Writer::$apply && 1 === Delivery_Test_Writer::$recover, 'Paused worker reconciles a previously committed operation and drains its receipt.' );
-[ $job, $store, $client, $worker ] = delivery_fixture( [], [ 'paused' => true ] ); $job['phase'] = 'applying'; $job['target_id'] = 77; $job['payload']['plan'] = []; Delivery_Test_Writer::$recovery = [ 'state' => 'not_committed', 'safe_to_apply' => true ]; $result = $worker->process( $job );
-check_delivery( 'paused' === $result['last_error'] && 0 === Delivery_Test_Writer::$apply, 'Paused recovery proof of no commit does not authorize a new mutation.' );
-[ $job, $store, $client, $worker ] = delivery_fixture(); $job['phase'] = 'applying'; $job['target_id'] = 77; $job['payload']['plan'] = []; Delivery_Test_Writer::$recovery = new WP_Error( 'ambiguous' ); $result = $worker->process( $job );
-check_delivery( 'blocked' === $result['state'] && 0 === Delivery_Test_Writer::$apply, 'Ambiguous marker recovery requires review, never a new clone.' );
-[ $job, $store, $client, $worker ] = delivery_fixture(); $job['phase'] = 'applying'; $job['target_id'] = 77; $job['payload']['plan'] = []; Delivery_Test_Writer::$recovery = [ 'state' => 'not_committed', 'safe_to_apply' => true ]; $result = $worker->process( $job );
-check_delivery( 'complete' === $result['state'] && 1 === Delivery_Test_Writer::$apply, 'Proven atomic absence can safely resume application.' );
-[ $job, $store, $client, $worker ] = delivery_fixture(); $job['phase'] = 'applying'; $job['target_id'] = 77; $job['payload']['plan'] = []; Delivery_Test_Writer::$recovery = [ 'state' => 'not_committed', 'safe_to_apply' => true ]; $client->remote = [ 'content_id' => '123', 'version' => 2, 'outcome' => 'posted', 'remote_post_id' => '999', 'cms_post_status' => 'publish' ]; $result = $worker->process( $job );
-check_delivery( 'blocked' === $result['state'] && 0 === Delivery_Test_Writer::$apply, 'A remote winner prevents absent-local-marker recovery from creating another page.' );
-[ $job, $store, $client, $worker ] = delivery_fixture(); $job['phase'] = 'applying'; $job['target_id'] = 77; $job['payload']['plan'] = []; $client->remote = [ 'content_id' => '123', 'version' => 2, 'outcome' => 'posted', 'remote_post_id' => '999', 'cms_post_status' => 'publish' ]; $result = $worker->process( $job );
-check_delivery( 'receipt_conflict' === $result['last_error'] && 0 === Delivery_Test_Writer::$finish, 'Conflicting receipt is found before derived work or publication status promotion.' );
-[ $job, $store, $client, $worker ] = delivery_fixture(); $job['attempts'] = 8; $client->get_error = true; $result = $worker->process( $job );
-check_delivery( 'blocked' === $result['state'] && false !== strpos( $result['last_error'], 'retry_limit' ), 'Transient retry limit is bounded and visible.' );
-
-class Delivery_SQL_Probe {
-    public $prefix = 'wp_'; public $last_error = ''; public $sql = ''; public $args; public $change = 1;
-    public function prepare( $query, ...$args ) { $this->sql = $query; $this->args = $args; return $query; }
-    public function query( $query ) { $this->sql = $query; return $this->change; }
+foreach ( [ 'received_complete', 'publication_succeeded' ] as $kind ) {
+    [ $job, $store, $server, $worker ] = delivery_fixture(); $server->throw_after = $kind;
+    $result = $worker->process( $job );
+    delivery_check( 'event_pending' === $result['phase'] && isset( $result['payload']['event_bytes'] ), 'Thrown exception preserves the newly saved event journal.' );
+    $pending = $result['payload']['event_bytes']; $result = $worker->process( delivery_resume( $result ) );
+    delivery_check( 'complete' === $result['state'] && 1 === Contract_Test_Writer::$apply && count( $server->accepted ) === 2, 'Exception recovery creates no new event identity or native write.' );
+    delivery_check( 2 === count( array_filter( $server->posts, static function ( $bytes ) use ( $pending ) { return $bytes === $pending; } ) ), 'Exception recovery replays the exact accepted event bytes.' );
 }
-$db = new Delivery_SQL_Probe(); $journal = new Nova_Bridge_Suite_Posting_Jobs( $db );
-[ $job ] = delivery_fixture(); $journal->save( $job, [ 'state' => 'blocked', 'last_error' => 'fixture' ] );
-check_delivery( false !== strpos( $db->sql, "state='running' AND lease_token=%s AND lease_until >= %d" ), 'Database transition checks ownership and unexpired lease atomically.' );
-$db->change = 0; check_delivery( is_wp_error( $journal->save( $job, [ 'phase' => 'applying' ] ) ), 'Lost CAS lease is an error, not permission to mutate.' );
-$job['payload'] = [ 'large' => str_repeat( 'x', Nova_Bridge_Suite_Posting_Jobs::MAX_PAYLOAD_BYTES ) ]; check_delivery( is_wp_error( $journal->save( $job, [] ) ), 'Persisted plan size is bounded.' );
-class Delivery_Scope_Probe {
-    public $prefix = 'wp_'; public $last_error = ''; public $values = []; public $queries = [];
-    public function prepare( $query, ...$args ) { $this->queries[] = $query; return $query; }
-    public function esc_like( $value ) { return $value; }
-    public function get_var( $query ) { return array_shift( $this->values ); }
+[ $job, $store, $server, $worker ] = delivery_fixture(); Contract_Test_Writer::$crash = true;
+$result = $worker->process( $job );
+delivery_check( 'applying' === $result['phase'] && 'ready' === $result['state'], 'Process loss retains uncertain mutation phase.' );
+Contract_Test_Writer::$crash = false; $result = $worker->process( delivery_resume( $result ) );
+delivery_check( 'complete' === $result['state'] && 1 === Contract_Test_Writer::$apply && 1 === Contract_Test_Writer::$recover, 'Native commit is recovered without a second write.' );
+
+foreach ( [ 'tampered_bytes', 'weak_etag', 'missing_attempt', 'wrong_site', 'legacy_member', 'unexpected_304' ] as $case ) {
+    [ $job, $store, $server, $worker ] = delivery_fixture();
+    if ( 'tampered_bytes' === $case ) { $server->raw .= ' '; }
+    elseif ( 'weak_etag' === $case ) { $server->etag = 'W/' . $server->etag; }
+    elseif ( 'missing_attempt' === $case ) { $server->attempt = ''; }
+    elseif ( 'unexpected_304' === $case ) { $server->read_status = 304; }
+    else {
+        $body = json_decode( $server->raw, true );
+        if ( 'wrong_site' === $case ) { $body['site_id'] = '00000000-0000-4000-8000-000000000099'; }
+        else { $body['pin'] = []; }
+        $server->raw = json_encode( $body ); $server->etag = '"' . hash( 'sha256', $server->raw ) . '"';
+    }
+    $result = $worker->process( $job );
+    delivery_check( 'blocked' === $result['state'] && 0 === Contract_Test_Writer::$apply && [] === $server->posts, $case . ' stops before any event/write.' );
 }
-$GLOBALS['wpdb'] = new Delivery_Scope_Probe(); $GLOBALS['wpdb']->values = [ 'wp_nova_posting_jobs', '1' ];
-check_delivery( true === Nova_Bridge_Suite_Posting_Jobs::has_unfinished_for_site( 'fixture-site' ), 'Accepted work prevents changing installation scope.' );
-check_delivery( false !== strpos( implode( ' ', $GLOBALS['wpdb']->queries ), "state<>'complete'" ), 'Scope guard includes blocked recovery jobs.' );
-$GLOBALS['wpdb']->values = [ 'wp_nova_posting_jobs', '0' ];
-check_delivery( false === Nova_Bridge_Suite_Posting_Jobs::has_unfinished_for_site( 'fixture-site' ), 'Only completed work permits intentional reconnection.' );
-$GLOBALS['wpdb']->values = [ null ];
-check_delivery( false === Nova_Bridge_Suite_Posting_Jobs::has_unfinished_for_site( 'fixture-site' ), 'A never-installed journal has no unfinished deliveries.' );
-$GLOBALS['wpdb']->last_error = 'fixture database outage'; $GLOBALS['wpdb']->values = [ null ];
-check_delivery( is_wp_error( Nova_Bridge_Suite_Posting_Jobs::has_unfinished_for_site( 'fixture-site' ) ), 'Scope guard fails closed on journal lookup error.' );
-echo "PASS: {$checks} delivery checks\n";
+[ $job, $store, $server, $worker ] = delivery_fixture(); $server->attempt = '00000000-0000-4000-8000-000000000099';
+$result = $worker->process( $job );
+delivery_check( 'complete' === $result['state'] && json_decode( $server->posts[0], true )['attempt_id'] === $server->attempt, 'Header attempt is authoritative over historical body attempt.' );
+[ $job, $store, $server, $worker ] = delivery_fixture(); Contract_Test_Writer::$crash = true;
+$result = $worker->process( $job ); Contract_Test_Writer::$crash = false; $server->attempt = '00000000-0000-4000-8000-000000000099';
+$result = $worker->process( delivery_resume( $result ) );
+delivery_check( 'blocked' === $result['state'] && 1 === Contract_Test_Writer::$apply && 0 === Contract_Test_Writer::$recover, 'Changed attempt cannot replay uncertain native write.' );
+
+foreach ( [ 'draft', 'future', 'pending', 'private' ] as $waiting_status ) {
+    [ $job, $store, $server, $worker ] = delivery_fixture(); Contract_Test_Writer::$status = $waiting_status;
+    $job['attempts'] = 19;
+    $result = $worker->process( $job );
+    delivery_check( 'awaiting_publication' === $result['last_error'] && 'committed' === $result['phase'] && count( $server->posts ) === 1, $waiting_status . ' produces receipt only and awaits actual publication.' );
+    delivery_check( 0 === $result['attempts'], 'Successful publication waiting resets the consecutive retry budget.' );
+    $server->read_status = 503; $next = delivery_resume( $result ); $next['attempts'] = 1;
+    $result = $worker->process( $next );
+    delivery_check( 'ready' === $result['state'] && 'committed' === $result['phase'], 'One transient failure after long publication waiting remains retryable.' );
+    $server->read_status = 200;
+    Contract_Test_Writer::$status = 'publish'; $result = $worker->process( delivery_resume( $result ) );
+    delivery_check( 'complete' === $result['state'] && 1 === Contract_Test_Writer::$apply && count( $server->posts ) === 2, 'Later publication is verified and reported without another content write.' );
+}
+
+[ $job, $store, $server, $worker ] = delivery_fixture(); Contract_Test_Writer::$plan_error = true;
+$result = $worker->process( $job );
+delivery_check( 'complete' === $result['state'] && 0 === Contract_Test_Writer::$apply && json_decode( $server->posts[1], true )['kind'] === 'publication_failed', 'Proven pre-write failure is reported separately from receipt.' );
+$failed = $result; $failed['phase'] = 'attempt_check'; $server->attempt = '00000000-0000-4000-8000-000000000099'; Contract_Test_Writer::$plan_error = false;
+$result = $worker->process( delivery_resume( $failed ) );
+delivery_check( 'complete' === $result['state'] && 1 === Contract_Test_Writer::$apply && count( $result['payload']['prior_attempts'] ) === 1, 'Operator-issued new attempt proceeds only after retained no-native-write proof.' );
+$result['phase'] = 'attempt_check'; $server->attempt = '00000000-0000-4000-8000-000000000098';
+$result = $worker->process( delivery_resume( $result ) );
+delivery_check( 'blocked' === $result['state'] && 1 === Contract_Test_Writer::$apply, 'Completed native write refuses a new attempt.' );
+
+foreach ( [ 'event_pending', 'applying' ] as $phase ) {
+    [ $job, $store, $server, $worker ] = delivery_fixture(); $store->fail_phase = $phase;
+    $result = $worker->process( $job );
+    delivery_check( is_wp_error( $result ) && 0 === Contract_Test_Writer::$apply && count( $server->posts ) === ( 'applying' === $phase ? 1 : 0 ), 'Journal failure precedes external effect at ' . $phase );
+}
+[ $job, $store, $server, $worker ] = delivery_fixture(); $store->fail_state = 'complete';
+$result = $worker->process( $job );
+delivery_check( is_wp_error( $result ) && 'event_pending' === $store->saved['phase'], 'Failed local acknowledgement retains outgoing event.' );
+$store->fail_state = ''; $result = $worker->process( delivery_resume( $store->saved ) );
+delivery_check( 'complete' === $result['state'] && 1 === Contract_Test_Writer::$apply, 'Local acknowledgement recovery never repeats mutation.' );
+
+[ $job, $store, $server, $worker ] = delivery_fixture( [ 'paused' => true ] );
+$job['attempts'] = 19;
+$result = $worker->process( $job );
+delivery_check( 'paused' === $result['last_error'] && 0 === $result['attempts'] && [] === $server->calls && 0 === Contract_Test_Writer::$apply, 'Pause prevents new reads/mutations without exhausting retries.' );
+[ $job, $store, $server, $worker ] = delivery_fixture(); $server->post_status = 409;
+$result = $worker->process( $job );
+delivery_check( 'blocked' === $result['state'] && 0 === Contract_Test_Writer::$apply, 'Event conflict blocks before publishing.' );
+[ $job, $store, $server, $worker ] = delivery_fixture(); $server->wrong_ack = true;
+$result = $worker->process( $job );
+delivery_check( 'blocked' === $result['state'] && 0 === Contract_Test_Writer::$apply, 'Wrong acceptance identity cannot authorize continuation.' );
+echo 'PASS ' . $checks . " current delivery execution checks.\n";

@@ -1,8 +1,13 @@
 <?php
 define( 'ABSPATH', __DIR__ );
+if ( ! class_exists( 'WP_Error' ) ) { class WP_Error { private $code; private $message; public function __construct( $code, $message = '', $data = [] ) { $this->code = $code; $this->message = $message; } public function get_error_code() { return $this->code; } public function get_error_message() { return $this->message; } } }
+if ( ! function_exists( 'is_wp_error' ) ) { function is_wp_error( $value ) { return $value instanceof WP_Error; } }
+if ( ! function_exists( 'home_url' ) ) { function home_url( $path ) { return 'https://writer-fixture.invalid' . $path; } }
 function wp_json_encode( $value, $flags = 0 ) { return json_encode( $value, $flags ); }
 function is_serialized( $value ) { return is_string( $value ) && preg_match( '/^(?:a|O|s|i|b|d):/', $value ); }
-function wp_kses( $value, $tags, $protocols ) { return strip_tags( $value, '<' . implode( '><', array_keys( $tags ) ) . '>' ); }
+function wp_kses_post( $value ) { return strip_tags( $value, '<p><b><strong><em><a><ul><li><h2><h3><br>' ); }
+require dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-posting-client.php';
+require dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-posting-protocol.php';
 require dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-writing-adapter.php';
 require dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-mapped-writer.php';
 require __DIR__ . '/mapped-writer-fixture.php';
@@ -13,12 +18,11 @@ function rejects( string $reason, callable $operation ): void { try { $operation
 function add_meta( array &$fixture, string $key, string $value ): void { $fixture['snapshot']['meta'][] = [ 'meta_id' => (string) ( 100 + count( $fixture['snapshot']['meta'] ) ), 'post_id' => '7', 'meta_key' => $key, 'meta_value' => $value ]; }
 function bind_heading( array &$fixture, string $path, array $live ): void {
     $local = &$fixture['configuration']['local']; unset( $local['fields']['/title'] );
-    $local['fields'][ $path ] = [ 'mode' => 'mapped', 'source_path' => 'heading' ];
+    $local['fields'][ $path ] = [ 'mode' => 'mapped', 'source_path' => 'h1', 'required' => true ];
     $descriptor = array_intersect_key( $live, array_flip( [ 'path', 'transport', 'builder', 'write_mode', 'acf_key', 'binding', 'source', 'selector_data' ] ) );
     $local['target_descriptors'][ $path ] = $descriptor;
     $fixture['inventory'][ $path ] = $live;
-    $fixture['configuration']['mapping']['bindings'][0]['target_descriptor']['target'] = $descriptor;
-    nova_writer_fixture_policy( $fixture['configuration'] );
+    nova_writer_fixture_refresh( $fixture );
 }
 $fixture = nova_writer_fixture(); $plan = plan_fixture( $fixture );
 check( $plan['changes']['post']['post_title'] === 'Generated fixture heading', 'Native title mapped.' );
@@ -27,16 +31,19 @@ check( ! isset( $plan['changes']['post']['post_excerpt'] ), 'Protected native ex
 check( count( $plan['protected'] ) === 1, 'Canonical protected slot resolved.' );
 $clone = nova_writer_fixture( 7, 'fixture-layout', 'clone' ); $clone_plan = plan_fixture( $clone );
 check( $clone_plan['changes']['post']['post_content'] === '' && $clone_plan['desired_status'] === 'draft', 'Clone explicitly blanks only Leave empty.' );
-$bad = $fixture; $bad['content']['digest'] = str_repeat( 'b', 64 ); rejects( 'pin_mismatch', function () use ( $bad ) { plan_fixture( $bad ); } );
-$bad = $fixture; $bad['content']['template_version'] = '999'; rejects( 'template_mismatch', function () use ( $bad ) { plan_fixture( $bad ); } );
+$future = $fixture; $future['snapshot']['post']['post_status'] = 'future'; $future['configuration']['local']['routing']['publication'] = 'preserve'; nova_writer_fixture_refresh( $future );
+check( plan_fixture( $future )['desired_status'] === 'future', 'An existing scheduled post retains its future status under preserve routing.' );
+$bad = $fixture; $bad['content']['configuration']['revision'] = 2; rejects( 'configuration', function () use ( $bad ) { plan_fixture( $bad ); } );
 $bad = $fixture; $bad['configuration']['local']['signature'] = 'drift'; rejects( 'layout_drift', function () use ( $bad ) { plan_fixture( $bad ); } );
 $bad = $fixture; $bad['configuration']['local']['routing']['publication'] = 'publish'; rejects( 'policy', function () use ( $bad ) { plan_fixture( $bad ); } );
-$bad = $fixture; $bad['content']['fields']['retained_note'] = 'override'; rejects( 'unknown_value', function () use ( $bad ) { plan_fixture( $bad ); } );
-$bad = $fixture; $bad['content']['fields']['heading'] = '<script>bad</script>'; rejects( 'html_policy', function () use ( $bad ) { plan_fixture( $bad ); } );
-$bad = $fixture; $bad['content']['fields']['heading'] = ['wrong']; rejects( 'value_type', function () use ( $bad ) { plan_fixture( $bad ); } );
-$bad = $fixture; $bad['content']['fields']['heading'] = str_repeat( 'é', 201 ); rejects( 'value_length', function () use ( $bad ) { plan_fixture( $bad ); } );
-$bad = $fixture; $bad['content']['fields']['slug'] = 'bad/slug'; rejects( 'slug', function () use ( $bad ) { plan_fixture( $bad ); } );
-$bad = $fixture; unset( $bad['content']['fields']['heading'] ); rejects( 'missing_value', function () use ( $bad ) { plan_fixture( $bad ); } );
+$bad = $fixture; $bad['content']['content']['h1'] = '<script>bad</script>'; rejects( 'html_policy', function () use ( $bad ) { plan_fixture( $bad ); } );
+$bad = $fixture; $bad['content']['content']['h1'] = ['wrong']; rejects( 'value_type', function () use ( $bad ) { plan_fixture( $bad ); } );
+$bad = $fixture; $bad['content']['url'] = 'https://other.invalid/slug/'; rejects( 'slug', function () use ( $bad ) { plan_fixture( $bad ); } );
+$bad = $fixture; $bad['content']['url'] = 'https://writer-fixture.invalid/slug/?query=1'; rejects( 'slug', function () use ( $bad ) { plan_fixture( $bad ); } );
+$bad = $fixture; unset( $bad['content']['content']['h1'] ); rejects( 'missing_value', function () use ( $bad ) { plan_fixture( $bad ); } );
+$optional = $fixture; $optional['configuration']['local']['fields']['/title']['required'] = false; nova_writer_fixture_refresh( $optional ); $optional['content']['content']['h1'] = null;
+check( ! isset( plan_fixture( $optional )['changes']['post']['post_title'] ), 'Optional null preserves native content instead of blanking it.' );
+$optional['content']['content']['h1'] = ''; check( plan_fixture( $optional )['changes']['post']['post_title'] === '', 'Explicit empty string remains a mapped value.' );
 $acf = $fixture;
 add_meta( $acf, 'matrix', 'a:1:{i:0;s:4:"copy";}' ); add_meta( $acf, '_matrix', 'field_matrix' );
 add_meta( $acf, 'matrix_0_heading', 'Existing heading' ); add_meta( $acf, '_matrix_0_heading', 'field_heading' );
@@ -47,11 +54,11 @@ check( $acf_plan['changes']['meta'] === [ 102 => 'Generated fixture heading' ], 
 check( $acf_plan['uses_acf'] && count( $acf_plan['snapshot']['meta'] ) === 6, 'Complete native snapshot includes parent counters, references and siblings.' );
 $bad = $acf; $bad['snapshot']['meta'][3]['meta_value'] = 'field_other'; rejects( 'acf_reference', function () use ( $bad ) { plan_fixture( $bad ); } );
 $bad = $acf; add_meta( $bad, 'matrix_0_heading', 'duplicate' ); rejects( 'physical_identity', function () use ( $bad ) { plan_fixture( $bad ); } );
-$bad = $acf; $bad['inventory']['/meta_all/matrix_0_heading']['write_mode'] = 'complete_parent'; $bad['configuration']['local']['target_descriptors']['/meta_all/matrix_0_heading']['write_mode'] = 'complete_parent'; $bad['configuration']['mapping']['bindings'][0]['target_descriptor']['target']['write_mode'] = 'complete_parent'; nova_writer_fixture_policy( $bad['configuration'] ); rejects( 'complete_parent', function () use ( $bad ) { plan_fixture( $bad ); } );
+$bad = $acf; $bad['inventory']['/meta_all/matrix_0_heading']['write_mode'] = 'complete_parent'; $bad['configuration']['local']['target_descriptors']['/meta_all/matrix_0_heading']['write_mode'] = 'complete_parent'; nova_writer_fixture_refresh( $bad ); rejects( 'complete_parent', function () use ( $bad ) { plan_fixture( $bad ); } );
 $bad = $acf;
 $bad['configuration']['local']['fields']['/meta_all/matrix'] = [ 'mode' => 'protected' ];
 $bad['configuration']['local']['target_descriptors']['/meta_all/matrix'] = [ 'path' => '/meta_all/matrix', 'acf_key' => 'field_matrix' ];
-$bad['inventory']['/meta_all/matrix'] = [ 'path' => '/meta_all/matrix', 'acf_key' => 'field_matrix', 'type' => 'flexible_content' ]; nova_writer_fixture_policy( $bad['configuration'] );
+$bad['inventory']['/meta_all/matrix'] = [ 'path' => '/meta_all/matrix', 'acf_key' => 'field_matrix', 'type' => 'flexible_content' ]; nova_writer_fixture_refresh( $bad );
 rejects( 'protected_overlap', function () use ( $bad ) { plan_fixture( $bad ); } );
 $bad = $fixture; add_meta( $bad, '_elementor_data', '[]' ); bind_heading( $bad, '/meta_all/_elementor_data', [ 'path' => '/meta_all/_elementor_data', 'writable' => true, 'type' => 'text' ] ); rejects( 'writer_scope', function () use ( $bad ) { plan_fixture( $bad ); } );
 $json = '[ {"id":"a", "settings": {"title":"old", "html":"<b>Keep \\/ \\u00e9</b>"}, "count": 2, "ok":true, "none":null} ]';
@@ -64,29 +71,11 @@ bind_heading( $elementor, '/builder/heading', [ 'path' => '/builder/heading', 'w
 $elementor_plan = plan_fixture( $elementor ); check( $elementor_plan['uses_elementor'] && strpos( $elementor_plan['changes']['meta'][100], 'Generated fixture heading' ) !== false, 'Elementor resolves semantic native identity.' );
 $bad = $elementor; $bad['snapshot']['meta'][0]['meta_value'] = '[{"id":"a","settings":{"title":"old"}},{"id":"a","settings":{"title":"old"}}]'; rejects( 'elementor_identity', function () use ( $bad ) { plan_fixture( $bad ); } );
 $bad = $elementor; $bad['snapshot']['meta'][0]['meta_value'] = '[{"id":"a","widgetType":"heading","settings":{"title":"old","__dynamic__":{"title":"tag"}}}]'; rejects( 'elementor_setting', function () use ( $bad ) { plan_fixture( $bad ); } );
-$bad = $elementor; $bad['configuration']['local']['fields']['/builder/other'] = [ 'mode' => 'protected' ]; $bad['configuration']['local']['target_descriptors']['/builder/other'] = [ 'path' => '/builder/other', 'builder' => 'elementor' ]; $bad['inventory']['/builder/other'] = [ 'path' => '/builder/other', 'builder' => 'elementor', 'selector_data' => [ 'element_id' => 'a', 'path' => [ 'subtitle' ] ] ]; nova_writer_fixture_policy( $bad['configuration'] ); rejects( 'protected_overlap', function () use ( $bad ) { plan_fixture( $bad ); } );
-$repeat = $acf; $source = 'sections[].heading';
-$repeat['configuration']['template']['fields'] = [ $repeat['configuration']['template']['fields'][1] ];
-$repeat['configuration']['template']['groups'] = [ [ 'group_key' => 'sections', 'required' => true, 'minItems' => 1, 'maxItems' => 1, 'fields' => [ [ 'field_key' => 'heading', 'field_type' => 'heading', 'required' => true ] ] ] ];
-unset( $repeat['configuration']['local']['fields']['/meta_all/matrix_0_heading'] );
-$repeat['configuration']['local']['repeat_slots'] = [ 'sections' => [ [ 'id' => 'existing-a', 'targets' => [ 'heading' => '/meta_all/matrix_0_heading' ] ] ] ];
-$binding = &$repeat['configuration']['mapping']['bindings'][0]; $binding['source_path'] = $source; $binding['target_descriptor'] = [ 'format' => 'nova_bridge_target_v1', 'slots' => [ [ 'slot_id' => 'existing-a', 'target' => $repeat['configuration']['local']['target_descriptors']['/meta_all/matrix_0_heading'] ] ] ]; unset( $binding );
-unset( $repeat['content']['fields']['heading'] ); $repeat['content']['fields']['sections'] = [ [ 'heading' => 'Existing row replacement' ] ];
-$repeat['context']['repeat_instances'] = [ 'sections' => [ [ 'slot_id' => 'existing-a', 'instance_id' => 'generated-instance-1' ] ] ]; nova_writer_fixture_policy( $repeat['configuration'] );
-check( plan_fixture( $repeat )['changes']['meta'][102] === 'Existing row replacement', 'Fixed repeat replaces existing leaf without creating or reordering rows.' );
-$bad = $repeat; unset( $bad['context']['repeat_instances'] ); rejects( 'repeat_identity', function () use ( $bad ) { plan_fixture( $bad ); } );
-$bad = $repeat; $bad['context']['repeat_instances']['sections'][0]['slot_id'] = 'changed'; rejects( 'repeat_identity', function () use ( $bad ) { plan_fixture( $bad ); } );
-$bad = $repeat; $bad['content']['fields']['sections'][] = [ 'heading' => 'Extra row' ]; rejects( 'repeat_bounds', function () use ( $bad ) { plan_fixture( $bad ); } );
-$two = $repeat;
-$two['configuration']['template']['groups'][0]['minItems'] = 2; $two['configuration']['template']['groups'][0]['maxItems'] = 2;
-add_meta( $two, 'matrix_1_heading', 'Second row' ); add_meta( $two, '_matrix_1_heading', 'field_heading' );
-$two['inventory']['/meta_all/matrix_1_heading'] = array_merge( $two['inventory']['/meta_all/matrix_0_heading'], [ 'path' => '/meta_all/matrix_1_heading' ] );
-$two['configuration']['local']['target_descriptors']['/meta_all/matrix_1_heading'] = array_merge( $two['configuration']['local']['target_descriptors']['/meta_all/matrix_0_heading'], [ 'path' => '/meta_all/matrix_1_heading' ] );
-$two['configuration']['local']['repeat_slots']['sections'][] = [ 'id' => 'existing-b', 'targets' => [ 'heading' => '/meta_all/matrix_1_heading' ] ];
-$two['configuration']['mapping']['bindings'][0]['target_descriptor']['slots'][] = [ 'slot_id' => 'existing-b', 'target' => $two['configuration']['local']['target_descriptors']['/meta_all/matrix_1_heading'] ];
-$two['content']['fields']['sections'][] = [ 'heading' => 'Second replacement' ];
-$two['context']['repeat_instances']['sections'][] = [ 'slot_id' => 'existing-b', 'instance_id' => 'generated-instance-1' ]; nova_writer_fixture_policy( $two['configuration'] );
-rejects( 'repeat_identity', function () use ( $two ) { plan_fixture( $two ); } );
-$two['context']['repeat_instances']['sections'][1]['instance_id'] = 'generated-instance-2';
-check( count( plan_fixture( $two )['changes']['meta'] ) === 2, 'Two unique instances bind exactly two existing scalar rows.' );
+$bad = $elementor; $bad['configuration']['local']['fields']['/builder/other'] = [ 'mode' => 'protected' ]; $bad['configuration']['local']['target_descriptors']['/builder/other'] = [ 'path' => '/builder/other', 'builder' => 'elementor' ]; $bad['inventory']['/builder/other'] = [ 'path' => '/builder/other', 'builder' => 'elementor', 'selector_data' => [ 'element_id' => 'a', 'path' => [ 'subtitle' ] ] ]; nova_writer_fixture_refresh( $bad ); rejects( 'protected_overlap', function () use ( $bad ) { plan_fixture( $bad ); } );
+$unsupported = $acf; $unsupported['configuration']['local']['fields']['/meta_all/matrix_0_heading']['source_path'] = 'sections[].heading';
+rejects( 'configuration', function () use ( $unsupported ) { plan_fixture( $unsupported ); } );
+$bad = $fixture; unset( $bad['context']['snapshot_sha256'] ); rejects( 'snapshot_identity', function () use ( $bad ) { plan_fixture( $bad ); } );
+$bad = $fixture; unset( $bad['context']['attempt_id'] ); rejects( 'snapshot_identity', function () use ( $bad ) { plan_fixture( $bad ); } );
+$bad = $fixture; $bad['context']['content_item_version_id'] = '92'; rejects( 'snapshot_identity', function () use ( $bad ) { plan_fixture( $bad ); } );
+$bad = $clone; $bad['context']['effective_operation'] = 'update'; rejects( 'operation', function () use ( $bad ) { plan_fixture( $bad ); } );
 echo 'PASS ' . $checks . " mapped writer assertions\n";
