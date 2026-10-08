@@ -1,0 +1,726 @@
+/*
+ * Service v2 owns its content layout; the site still supplies fonts and brand tokens.
+ * All rules are confined to the Service root or its content-only theme ancestors.
+ * Third-party form/calendar markup inside .nova-service__embed keeps its plugin CSS.
+ */
+body.nova-service-v2-page #nova-service-primary,
+body.nova-service-v2-page .site-content:has(#nova-service-primary),
+body.nova-service-v2-page .ast-container:has(#nova-service-primary),
+body.nova-service-v2-page .content-area:has(#nova-service-primary) {
+	display: block !important;
+	width: 100% !important;
+	max-width: none !important;
+	min-width: 0;
+	margin: 0 !important;
+	padding: 0 !important;
+	float: none;
+}
+
+#nova-service-v2 {
+	--nova-service-brand: var(--nova-service-primary, var(--e-global-color-primary, var(--wp--preset--color--primary, var(--ast-global-color-0, CanvasText))));
+	--nova-service-ink: var(--nova-service-text, var(--e-global-color-text, var(--wp--preset--color--contrast, var(--ast-global-color-3, inherit))));
+	--nova-service-paper: var(--nova-service-surface, var(--wp--preset--color--base, var(--ast-global-color-5, Canvas)));
+	--nova-service-action-text: var(--nova-service-contrast, var(--wp--preset--color--base, var(--ast-global-color-5, Canvas)));
+	--nova-service-action-bg: var(--nova-service-button-bg, var(--nova-service-primary, var(--e-global-color-accent, var(--nova-service-brand))));
+	--nova-service-line: var(--nova-service-border, #ddd);
+	--nova-service-soft: var(--nova-service-paper);
+	--nova-service-soft-text: var(--nova-service-ink);
+	--nova-service-radius: .65rem;
+	--nova-service-gutter: clamp(1.25rem, 3vw, 2.5rem);
+	--nova-service-image-max-height: 420px;
+	--nova-service-hero-image-max-height: 440px;
+	display: block;
+	width: 100%;
+	max-width: none;
+	margin: 0;
+	padding: var(--nova-service-header-offset, 0px) 0 0;
+	border: 0;
+	background: var(--nova-service-paper);
+	color: var(--nova-service-ink);
+	font-family: var(--nova-service-body-font, var(--e-global-typography-text-font-family, inherit));
+	font-size: var(--nova-service-body-size, var(--e-global-typography-text-font-size, 1rem));
+	font-style: var(--e-global-typography-text-font-style, normal);
+	font-weight: var(--e-global-typography-text-font-weight, 400);
+	line-height: var(--nova-service-line-height, var(--e-global-typography-text-line-height, 1.7));
+	text-align: left;
+	text-transform: none;
+	letter-spacing: normal;
+	box-shadow: none;
+	isolation: isolate;
+	overflow-wrap: anywhere;
+}
+
+@supports (background-color: color-mix(in srgb, black 6%, white)) {
+	#nova-service-v2 {
+		--nova-service-soft: color-mix(in srgb, var(--nova-service-accent, var(--nova-service-brand)) 6%, var(--nova-service-paper));
+		--nova-service-line: var(--nova-service-border, color-mix(in srgb, var(--nova-service-brand) 18%, var(--nova-service-paper)));
+	}
+}
+
+/* High-specificity local reset prevents theme entry-content rules from changing
+ * our layout. Embed descendants are deliberately excluded from this reset. */
+#nova-service-v2 :where(h1, h2, h3, h4, h5, h6, p, a, ul, ol, li, blockquote, figure, figcaption, address, details, summary, img, table, th, td):not(.nova-service__embed *) {
+	margin: 0;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	color: inherit;
+	font-family: inherit;
+	font-style: normal;
+	line-height: inherit;
+	text-transform: none;
+	letter-spacing: normal;
+	text-shadow: none;
+	text-align: inherit;
+	box-shadow: none;
+}
+
+#nova-service-v2,
+#nova-service-v2 :where(div, section, article, header, aside, h1, h2, h3, p, a, ul, ol, li, figure, img, details, summary, blockquote, table, th, td):not(.nova-service__embed *) {
+	box-sizing: border-box;
+}
+
+#nova-service-v2 :where(a):not(.nova-service__embed *) {
+	color: var(--nova-service-brand);
+	text-decoration: underline;
+	text-decoration-thickness: .08em;
+	text-underline-offset: .2em;
+}
+
+#nova-service-v2 :where(a, summary):not(.nova-service__embed *):focus-visible {
+	outline: 3px solid var(--nova-service-brand);
+	outline-offset: 5px;
+}
+
+#nova-service-v2 :where(h1, h2, h3, h4, h5, h6):not(.nova-service__embed *) {
+	font-family: var(--nova-service-heading-font, var(--e-global-typography-primary-font-family, var(--wp--preset--font-family--heading, inherit)));
+	font-weight: var(--e-global-typography-primary-font-weight, 700);
+	line-height: var(--e-global-typography-primary-line-height, 1.2);
+	text-wrap: balance;
+}
+
+#nova-service-v2 .nova-service__container {
+	display: block;
+	width: 100%;
+	max-width: var(--nova-service-content-width, 1200px);
+	margin: 0 auto;
+	padding: 0 var(--nova-service-gutter);
+}
+
+#nova-service-v2 .nova-service__section {
+	display: block;
+	width: 100%;
+	max-width: none;
+	margin: 0;
+	padding: clamp(1.75rem, 3vw, 3rem) 0;
+	border: 0;
+	background: transparent;
+	scroll-margin-top: calc(var(--nova-service-header-offset, 2rem) + 2rem);
+}
+
+#nova-service-v2 .nova-service__section--rich_text + .nova-service__section--rich_text {
+	padding-top: 0;
+}
+
+/* Full-width bands connect neighboring sections through the site's own palette. */
+#nova-service-v2 .nova-service__band {
+	display: block;
+	width: 100%;
+	max-width: none;
+	margin: 0;
+	padding: 0;
+	border-block: 1px solid var(--nova-service-line);
+	background: transparent;
+}
+#nova-service-v2 .nova-service__band--soft,
+#nova-service-v2 .nova-service__section--reviews.nova-service__width--full,
+#nova-service-v2 .nova-service__section--faq.nova-service__width--full {
+	background: var(--nova-service-soft);
+	color: var(--nova-service-soft-text, var(--nova-service-ink));
+}
+#nova-service-v2 .nova-service__section--reviews.nova-service__width--full,
+#nova-service-v2 .nova-service__section--faq.nova-service__width--full { border-block: 1px solid var(--nova-service-line); }
+#nova-service-v2 .nova-service__band + .nova-service__band,
+#nova-service-v2 .nova-service__band + .nova-service__section--reviews.nova-service__width--full,
+#nova-service-v2 .nova-service__band + .nova-service__section--faq.nova-service__width--full { border-top: 0; }
+#nova-service-v2 .nova-service__section--rich_text.nova-service__width--full + .nova-service__section--rich_text.nova-service__width--full > .nova-service__container > .nova-service__content-grid { padding-top: 1.5rem; border-top: 1px solid var(--nova-service-line); }
+
+#nova-service-v2 .nova-service__section--rich_text .nova-service__container,
+#nova-service-v2 .nova-service__section--faq .nova-service__container {
+	max-width: var(--nova-service-content-width, 1200px);
+}
+
+/* Neighboring half-width sections share one aligned row; order stays explicit. */
+#nova-service-v2 .nova-service__row {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: clamp(1.5rem, 3vw, 3rem);
+	align-items: start;
+}
+#nova-service-v2 .nova-service__row > .nova-service__section { min-width: 0; padding-top: clamp(1.75rem, 3vw, 3rem); }
+#nova-service-v2 .nova-service__row > .nova-service__section > .nova-service__container { max-width: none; margin: 0; padding: 0; }
+#nova-service-v2 .nova-service__row > .nova-service__section--rich_text + .nova-service__section--rich_text { padding-top: clamp(1.75rem, 3vw, 3rem); }
+#nova-service-v2 .nova-service__width--half .nova-service__heading { font-size: clamp(1.6rem, 2.3vw, 2.15rem); }
+#nova-service-v2 .nova-service__width--half .nova-service__hero-grid:has(.nova-service__hero-media),
+#nova-service-v2 .nova-service__width--half.nova-service__layout--split .nova-service__content-grid:has(.nova-service__content-copy):has(.nova-service__content-media) { grid-template-columns: minmax(0, 1fr); }
+#nova-service-v2 .nova-service__width--half .nova-service__cards { grid-template-columns: minmax(0, 1fr); }
+#nova-service-v2 .nova-service__width--half { --nova-service-image-max-height: 300px; --nova-service-hero-image-max-height: 300px; }
+#nova-service-v2 .nova-service__row > .nova-service__section--cta,
+#nova-service-v2 .nova-service__row > .nova-service__section--hero { padding: clamp(1.75rem, 3vw, 3rem) 1.5rem; border-radius: var(--nova-service-radius); }
+#nova-service-v2 .nova-service__width--half.nova-service__section--cta .nova-service__container { flex-direction: column; align-items: flex-start; gap: 1.25rem; }
+#nova-service-v2 .nova-service__width--half.nova-service__section--cta .nova-service__actions { max-width: 100%; }
+
+#nova-service-v2 .nova-service__section--rich_text.nova-service__layout--split .nova-service__container {
+	max-width: var(--nova-service-content-width, 1200px);
+}
+
+#nova-service-v2 .nova-service__content-grid { display: block; }
+#nova-service-v2 .nova-service__content-copy { min-width: 0; }
+#nova-service-v2 .nova-service__content-media { min-width: 0; }
+#nova-service-v2 .nova-service__layout--split .nova-service__content-grid:has(.nova-service__content-copy):has(.nova-service__content-media) {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+	gap: clamp(2rem, 5vw, 5rem);
+	align-items: center;
+}
+#nova-service-v2 .nova-service__layout--split .nova-service__content-media .nova-service__gallery { margin-top: 0; }
+#nova-service-v2 .nova-service__content-grid:not(:has(.nova-service__content-copy)) .nova-service__gallery { margin-top: 0; }
+#nova-service-v2 .nova-service__layout--stacked .nova-service__hero-grid:has(.nova-service__hero-media) { grid-template-columns: minmax(0, 1fr); }
+#nova-service-v2 .nova-service__layout--stacked .nova-service__hero-copy { max-width: 76ch; }
+#nova-service-v2 .nova-service__layout--compact { padding-top: 1.5rem; padding-bottom: 1.5rem; }
+#nova-service-v2 .nova-service__layout--compact .nova-service__cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 1rem; }
+#nova-service-v2 .nova-service__layout--compact .nova-service__card { padding: 1.25rem; }
+#nova-service-v2 .nova-service__layout--compact .nova-service__gallery { grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr)); gap: 1rem; }
+#nova-service-v2 .nova-service__layout--compact .nova-service__gallery--single { grid-template-columns: minmax(0, 1fr); max-width: 440px; }
+#nova-service-v2 .nova-service__layout--compact .nova-service__figure .nova-service__image { aspect-ratio: 1; }
+#nova-service-v2 .nova-service__layout--compact .nova-service__hero-title { font-size: clamp(2.25rem, 3.5vw, 3.5rem); }
+
+#nova-service-v2 .nova-service__title {
+	padding-top: 2rem;
+	padding-bottom: 1rem;
+}
+
+#nova-service-v2 .nova-service__title h1,
+#nova-service-v2 .nova-service__hero-title {
+	max-width: 18ch;
+	font-size: clamp(2.3rem, 4.5vw, 4.6rem);
+	font-weight: 700;
+	line-height: 1.08;
+	letter-spacing: -.035em;
+	text-wrap: balance;
+}
+
+#nova-service-v2 .nova-service__heading {
+	max-width: 28ch;
+	margin-bottom: 1rem;
+	font-size: clamp(1.65rem, 2.6vw, 2.4rem);
+	letter-spacing: -.025em;
+}
+
+#nova-service-v2 h3.nova-service__heading {
+	font-size: clamp(1.45rem, 2.4vw, 2rem);
+}
+
+#nova-service-v2 .nova-service__eyebrow {
+	margin-bottom: 1rem;
+	font-size: .8rem;
+	font-weight: 700;
+	line-height: 1.5;
+	letter-spacing: .1em;
+	text-transform: uppercase;
+}
+
+#nova-service-v2 .nova-service__rich {
+	max-width: 76ch;
+	font-size: 1rem;
+	line-height: 1.65;
+}
+
+/* A full-row text section uses the full content container; columns retain their measure. */
+#nova-service-v2 .nova-service__section--rich_text.nova-service__width--full .nova-service__heading,
+#nova-service-v2 .nova-service__section--rich_text.nova-service__width--full .nova-service__rich { max-width: none; }
+
+#nova-service-v2 .nova-service__rich > * + * {
+	margin-top: 1.2em;
+}
+
+#nova-service-v2 .nova-service__rich :where(ul, ol) {
+	margin-top: 1.2em;
+	padding-left: 1.5em;
+	list-style-position: outside;
+}
+
+#nova-service-v2 .nova-service__rich ul { list-style-type: disc; }
+#nova-service-v2 .nova-service__rich ol { list-style-type: decimal; }
+#nova-service-v2 .nova-service__rich li { display: list-item; }
+#nova-service-v2 .nova-service__rich li + li { margin-top: .4em; }
+#nova-service-v2 .nova-service__rich h2 { font-size: clamp(1.65rem, 2.5vw, 2.2rem); }
+#nova-service-v2 .nova-service__rich h3 { font-size: 1.5rem; }
+#nova-service-v2 .nova-service__rich h4 { font-size: 1.25rem; }
+#nova-service-v2 .nova-service__rich strong { font-weight: 700; }
+#nova-service-v2 .nova-service__rich em { font-style: italic; }
+#nova-service-v2 .nova-service__rich blockquote { padding: 1rem 1.5rem; border-left: 3px solid var(--nova-service-brand); }
+#nova-service-v2 .nova-service__rich img:not(.nova-service__embed *) { display: block; width: auto; max-width: min(100%, 640px); height: auto; max-height: var(--nova-service-image-max-height); max-height: min(var(--nova-service-image-max-height), 55svh); aspect-ratio: auto; object-fit: contain; }
+#nova-service-v2 .nova-service__rich table { width: 100%; border-collapse: collapse; }
+#nova-service-v2 .nova-service__rich :where(th, td) { padding: .75rem; border: 1px solid var(--nova-service-line); text-align: left; vertical-align: top; }
+#nova-service-v2 .nova-service__rich th { font-weight: 700; background: var(--nova-service-soft); }
+
+#nova-service-v2 .nova-service__section--hero {
+	background: var(--nova-service-hero-bg, var(--nova-service-soft));
+	color: var(--nova-service-hero-text, var(--nova-service-ink));
+}
+
+#nova-service-v2 .nova-service__hero-grid {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	gap: clamp(1.5rem, 3vw, 3rem);
+	align-items: center;
+}
+
+#nova-service-v2 .nova-service__hero-grid:has(.nova-service__hero-media) {
+	grid-template-columns: minmax(0, 1.05fr) minmax(0, .95fr);
+}
+
+#nova-service-v2 .nova-service__hero-copy { min-width: 0; }
+#nova-service-v2 .nova-service__hero-media { max-width: 560px; }
+#nova-service-v2 .nova-service__hero-copy .nova-service__rich { margin-top: 1.75rem; max-width: 58ch; font-size: 1.125rem; }
+
+#nova-service-v2 .nova-service__actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: .85rem;
+	align-items: center;
+	margin-top: 1.5rem;
+}
+
+#nova-service-v2 .nova-service__button {
+	display: inline-flex;
+	justify-content: center;
+	align-items: center;
+	gap: 1.25rem;
+	min-height: 3.25rem;
+	max-width: 100%;
+	padding: .9rem 1.5rem;
+	border: 2px solid var(--nova-service-action-bg);
+	border-radius: var(--nova-service-button-radius, .4rem);
+	background: var(--nova-service-action-bg);
+	color: var(--nova-service-button-text, var(--nova-service-action-text));
+	font-family: var(--e-global-typography-accent-font-family, inherit);
+	font-size: var(--e-global-typography-accent-font-size, 1rem);
+	font-weight: var(--e-global-typography-accent-font-weight, 700);
+	line-height: var(--e-global-typography-accent-line-height, 1.35);
+	text-transform: var(--e-global-typography-accent-text-transform, none);
+	letter-spacing: var(--e-global-typography-accent-letter-spacing, normal);
+	text-align: center;
+	text-decoration: none;
+	transition: filter .15s ease, transform .15s ease;
+}
+
+#nova-service-v2 .nova-service__button:hover { filter: brightness(.91); transform: translateY(-1px); }
+#nova-service-v2 .nova-service__button--secondary { border-color: var(--nova-service-button-outline, currentColor); background: transparent; color: inherit; }
+
+#nova-service-v2 .nova-service__gallery {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+	gap: var(--nova-service-section-gap, 1.5rem);
+	margin-top: 1.5rem;
+}
+
+#nova-service-v2 .nova-service__gallery--single { grid-template-columns: minmax(0, 1fr); max-width: 640px; }
+#nova-service-v2 .nova-service__gallery--hero { margin-top: 0; }
+#nova-service-v2 .nova-service__gallery--hero.nova-service__gallery--multiple { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+#nova-service-v2 .nova-service__gallery--hero.nova-service__gallery--multiple .nova-service__figure:first-child { grid-column: 1 / -1; }
+#nova-service-v2 .nova-service__figure { display: block; min-width: 0; }
+#nova-service-v2 .nova-service__figure .nova-service__image:where(:not(.nova-service__embed *)) { display: block; width: 100%; max-width: 100%; height: auto; max-height: var(--nova-service-image-max-height); max-height: min(var(--nova-service-image-max-height), 55svh); aspect-ratio: 4 / 3; object-fit: cover; border-radius: var(--nova-service-radius); }
+#nova-service-v2 .nova-service__gallery--hero .nova-service__figure .nova-service__image:where(:not(.nova-service__embed *)) { aspect-ratio: 5 / 4; max-height: var(--nova-service-hero-image-max-height); max-height: min(var(--nova-service-hero-image-max-height), 55svh); }
+/* Single photos, including a hero, retain their complete natural proportions. */
+#nova-service-v2 .nova-service__gallery--single .nova-service__figure .nova-service__image:where(:not(.nova-service__embed *)) { width: auto; height: auto; aspect-ratio: auto; object-fit: contain; object-position: left center; }
+#nova-service-v2 .nova-service__figure figcaption { padding-top: .65rem; font-size: .875rem; line-height: 1.6; }
+
+#nova-service-v2 .nova-service__cards {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+	gap: var(--nova-service-section-gap, 1.5rem);
+	margin-top: 1.25rem;
+}
+
+#nova-service-v2 .nova-service__card {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	margin: 0;
+	padding: var(--nova-service-card-padding, 1.25rem);
+	border: 1px solid var(--nova-service-line);
+	border-radius: var(--nova-service-radius);
+	background: var(--nova-service-paper);
+	color: var(--nova-service-ink);
+}
+
+#nova-service-v2 .nova-service__card-title { margin-bottom: .8rem; font-size: 1.25rem; line-height: 1.35; }
+#nova-service-v2 .nova-service__card .nova-service__rich { font-size: 1rem; }
+#nova-service-v2 .nova-service__card .nova-service__text-link { align-self: flex-start; margin-top: 1.25rem; }
+#nova-service-v2 .nova-service__rating { display: flex; gap: .6rem; align-items: center; margin-bottom: .65rem; color: var(--nova-service-brand); font-size: .8125rem; font-weight: 700; }
+#nova-service-v2 .nova-service__rating > span:first-child { font-size: 1rem; letter-spacing: .08em; }
+#nova-service-v2 .nova-service__review blockquote { flex: 1; }
+#nova-service-v2 .nova-service__review figcaption { display: flex; flex-wrap: wrap; gap: .4rem .75rem; align-items: center; margin-top: .9rem; font-size: .8125rem; }
+#nova-service-v2 .nova-service__review figcaption strong { font-weight: 700; }
+#nova-service-v2 .nova-service__reviews { grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 1rem; margin-top: 1rem; }
+#nova-service-v2 .nova-service__review { padding: var(--nova-service-card-padding, 1rem); }
+#nova-service-v2 .nova-service__layout--compact .nova-service__review { padding: var(--nova-service-card-padding, 1rem); }
+#nova-service-v2 .nova-service__review .nova-service__rich { font-size: .9375rem; line-height: 1.55; }
+#nova-service-v2 .nova-service__review .nova-service__card-title { margin-bottom: .5rem; font-size: 1.0625rem; }
+#nova-service-v2 .nova-service__review-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem; margin-bottom: .8rem; }
+#nova-service-v2 .nova-service__review-head .nova-service__rating { margin-bottom: 0; }
+/* Website testimonials use the customer's quote and identity rather than vendor chrome. */
+#nova-service-v2 .nova-service__reviews:has(> .nova-service__testimonial) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+#nova-service-v2 .nova-service__width--half .nova-service__reviews:has(> .nova-service__testimonial) { grid-template-columns: minmax(0, 1fr); }
+#nova-service-v2 .nova-service__testimonial { padding: var(--nova-service-card-padding, clamp(1.25rem, 2vw, 1.75rem)); }
+#nova-service-v2 .nova-service__layout--compact .nova-service__testimonial { padding: var(--nova-service-card-padding, 1.25rem); }
+#nova-service-v2 .nova-service__review.nova-service__testimonial blockquote { display: grid; grid-template-columns: 1.8rem minmax(0, 1fr); gap: .6rem; align-items: start; }
+#nova-service-v2 .nova-service__quote-mark { display: block; color: var(--nova-service-brand); font-family: var(--nova-service-heading-font, var(--e-global-typography-primary-font-family, inherit)); font-size: 4rem; font-weight: 700; line-height: .8; opacity: .35; }
+#nova-service-v2 .nova-service__review.nova-service__testimonial .nova-service__rich { max-width: none; font-size: clamp(1.05rem, 1.3vw, 1.25rem); font-weight: 500; line-height: 1.65; }
+#nova-service-v2 .nova-service__review.nova-service__testimonial .nova-service__testimonial-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .75rem 1rem; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--nova-service-line); }
+#nova-service-v2 .nova-service__testimonial-person { display: flex; align-items: center; gap: .65rem; min-width: 0; }
+#nova-service-v2 .nova-service__testimonial-initial,
+#nova-service-v2 .nova-service__testimonial-person .nova-service__review-avatar { display: inline-flex; flex: 0 0 40px; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 50%; }
+#nova-service-v2 .nova-service__testimonial-initial { border: 1px solid var(--nova-service-line); background: var(--nova-service-soft); color: var(--nova-service-brand); font-size: 1rem; font-weight: 700; line-height: 1; }
+#nova-service-v2 .nova-service__testimonial-attribution { display: flex; flex-direction: column; gap: .15rem; font-size: .9375rem; }
+#nova-service-v2 .nova-service__testimonial-publication { display: flex; flex-direction: column; align-items: flex-start; gap: .35rem; }
+#nova-service-v2 .nova-service__testimonial-publication .nova-service__review-source { padding: 0; border: 0; border-radius: 0; background: transparent; font-size: .75rem; font-weight: 400; }
+#nova-service-v2 .nova-service__testimonial-publication .nova-service__rating { margin: 0; font-size: .75rem; }
+#nova-service-v2 .nova-service__review-source { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .4rem; max-width: 100%; padding: .3rem .5rem; border: 1px solid var(--nova-service-line); border-radius: .35rem; background: var(--nova-service-soft); font-size: .8125rem; font-weight: 700; text-decoration: none; }
+#nova-service-v2 .nova-service__review-source-link { color: inherit; text-decoration: none; }
+#nova-service-v2 .nova-service__provider-brand { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .4rem; max-width: 100%; font-weight: 700; }
+#nova-service-v2 .nova-service__provider-mark { display: inline-flex; flex: 0 0 auto; align-items: center; min-width: 0; }
+#nova-service-v2 .nova-service__provider-logo { display: block; width: auto; max-width: 112px; height: 24px; object-fit: contain; object-position: left center; }
+/* Preserve the unmodified Google wordmark with the required 18px height/clear space. */
+#nova-service-v2 .nova-service__provider-mark--google { padding: 10px; border-radius: .25rem; background: #fff; }
+#nova-service-v2 .nova-service__provider-mark--google .nova-service__provider-logo { width: auto; max-width: none; height: 18px; }
+#nova-service-v2 .nova-service__review-date { color: inherit; opacity: .8; }
+#nova-service-v2 .nova-service__section--reviews.nova-service__layout--list .nova-service__cards { grid-template-columns: minmax(0, 1fr); gap: 0; }
+#nova-service-v2 .nova-service__section--reviews.nova-service__layout--list .nova-service__review { padding: 1rem 0; border: 0; border-bottom: 1px solid var(--nova-service-line); border-radius: 0; background: transparent; }
+#nova-service-v2 .nova-service__section--reviews.nova-service__layout--list .nova-service__review figcaption { flex-direction: row; flex-wrap: wrap; gap: .6rem 1rem; align-items: center; }
+#nova-service-v2 .nova-service__review-avatar { display: block; width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
+#nova-service-v2 .nova-service__review-author { align-self: flex-start; }
+#nova-service-v2 .nova-service__review-date { font-size: .8125rem; }
+#nova-service-v2 .nova-service__review-summary { display: flex; flex-wrap: wrap; gap: .65rem 1rem; align-items: center; margin-top: 1rem; font-size: .875rem; color: inherit; }
+#nova-service-v2 .nova-service__overall-rating { display: flex; align-items: center; gap: .6rem; line-height: 1.2; }
+#nova-service-v2 .nova-service__overall-rating > strong { font-size: 1.25rem; font-weight: 700; }
+#nova-service-v2 .nova-service__overall-rating > strong > span { margin-left: .2rem; font-size: 1rem; font-weight: 400; }
+#nova-service-v2 .nova-service__review-stars { position: relative; display: inline-block; width: max-content; font-size: 1rem; letter-spacing: .08em; line-height: 1.3; white-space: nowrap; }
+#nova-service-v2 .nova-service__review-stars > span:first-child { opacity: .3; }
+#nova-service-v2 .nova-service__review-stars > span:last-child { position: absolute; inset: 0 auto 0 0; overflow: hidden; }
+#nova-service-v2 .nova-service__review-summary-copy { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; }
+#nova-service-v2 .nova-service__review-summary-copy > strong { font-weight: 700; }
+#nova-service-v2 .nova-service__review-scope { font-size: .8125rem; }
+#nova-service-v2 .nova-service__review-summary-copy > a { align-self: flex-start; }
+#nova-service-v2 .nova-service__review-summary-copy > a:not(.nova-service__google-attribution) { color: inherit; }
+#nova-service-v2 .nova-service__review-selection { margin-top: .8rem; font-size: .8125rem; }
+/* Official compact Places attribution: fixed readable chip on any site palette. */
+#nova-service-v2 .nova-service__google-attribution { padding: .2rem .45rem; border-radius: .25rem; background: #fff; color: #5e5e5e; font-family: Arial, sans-serif; font-size: 14px; font-weight: 400; line-height: 1.5; letter-spacing: normal; }
+
+/* Optional review designs share honest content/attribution, with distinct composition. */
+#nova-service-v2 .nova-service__section--reviews:is(.nova-service__layout--editorial, .nova-service__layout--conversation, .nova-service__layout--publisher_cards, .nova-service__layout--signature) { background: var(--nova-service-paper); color: var(--nova-service-ink); }
+#nova-service-v2 .nova-service__section--reviews:is(.nova-service__layout--editorial, .nova-service__layout--spotlight, .nova-service__layout--signature) .nova-service__reviews { grid-template-columns: minmax(0, 1fr); max-width: 1000px; }
+#nova-service-v2 .nova-service__section--reviews:is(.nova-service__layout--conversation, .nova-service__layout--publisher_cards, .nova-service__layout--compact_rail) .nova-service__reviews { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+#nova-service-v2 .nova-service__review--designed { padding: var(--nova-service-card-padding, clamp(1.25rem, 2.5vw, 2rem)); }
+#nova-service-v2 .nova-service__review.nova-service__review--designed .nova-service__rich { max-width: none; font-size: clamp(1.05rem, 1.4vw, 1.35rem); font-weight: 500; line-height: 1.55; }
+#nova-service-v2 .nova-service__review.nova-service__review--designed .nova-service__review-quote { display: grid; grid-template-columns: 2rem minmax(0, 1fr); gap: .85rem; align-items: start; min-width: 0; }
+#nova-service-v2 .nova-service__review--designed .nova-service__testimonial-footer { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--nova-service-line); }
+#nova-service-v2 .nova-service__review--designed .nova-service__review-identity { display: block; margin: 0 0 1.1rem; }
+#nova-service-v2 .nova-service__review--designed > .nova-service__testimonial-publication { margin-top: 1.15rem; padding-top: .9rem; border-top: 1px solid var(--nova-service-line); }
+#nova-service-v2 .nova-service__review-source-link,
+#nova-service-v2 .nova-service__source-text { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+
+/* Editorial: spacious quotation measure and an explicitly chosen serif face. */
+#nova-service-v2 .nova-service__review.nova-service__review--editorial .nova-service__rich { font-family: var(--nova-service-editorial-font, Georgia, serif); font-size: clamp(1.35rem, 2.1vw, 1.9rem); font-weight: 400; line-height: 1.45; }
+#nova-service-v2 .nova-service__review--editorial .nova-service__quote-mark { font-size: 4.5rem; }
+
+/* Conversation: a speech bubble, with the real customer beneath it. */
+#nova-service-v2 .nova-service__review.nova-service__review--conversation { padding: 0; border: 0; border-radius: 0; background: transparent; }
+#nova-service-v2 .nova-service__review-bubble { position: relative; flex: 1; min-width: 0; padding: clamp(1.2rem, 2vw, 1.75rem); border: 1px solid var(--nova-service-line); border-radius: var(--nova-service-radius); background: var(--nova-service-soft); }
+#nova-service-v2 .nova-service__review-bubble::after { content: ''; position: absolute; bottom: -.6rem; left: 1.65rem; width: 1.1rem; height: 1.1rem; border-right: 1px solid var(--nova-service-line); border-bottom: 1px solid var(--nova-service-line); border-radius: .15rem; background: var(--nova-service-soft); transform: rotate(45deg); }
+#nova-service-v2 .nova-service__review.nova-service__review--conversation .nova-service__review-quote { display: block; }
+#nova-service-v2 .nova-service__review--conversation .nova-service__quote-mark { margin-bottom: .35rem; font-size: 3rem; }
+#nova-service-v2 .nova-service__review.nova-service__review--conversation .nova-service__testimonial-footer { margin-top: 1.35rem; padding: 0 .75rem; border: 0; }
+
+/* Spotlight: the existing site CTA palette provides the contrasting full-width band. */
+#nova-service-v2 .nova-service__section--reviews.nova-service__layout--spotlight { background: var(--nova-service-cta-bg, var(--nova-service-brand)); color: var(--nova-service-cta-text, var(--nova-service-action-text)); }
+#nova-service-v2 .nova-service__review.nova-service__review--spotlight { border: 0; border-bottom: 1px solid currentColor; border-radius: 0; background: transparent; color: inherit; }
+#nova-service-v2 .nova-service__review.nova-service__review--spotlight .nova-service__review-quote { display: block; }
+#nova-service-v2 .nova-service__review.nova-service__review--spotlight .nova-service__rich { max-width: 64ch; font-size: clamp(1.4rem, 2.2vw, 2rem); line-height: 1.45; }
+#nova-service-v2 .nova-service__review--spotlight .nova-service__quote-mark { margin-bottom: .45rem; color: inherit; opacity: .55; }
+#nova-service-v2 .nova-service__review--spotlight .nova-service__rating,
+#nova-service-v2 .nova-service__review--spotlight .nova-service__review-author,
+#nova-service-v2 .nova-service__review--spotlight .nova-service__rich a { color: inherit; }
+#nova-service-v2 .nova-service__review--spotlight .nova-service__review-source { border-color: currentColor; background: transparent; color: inherit; }
+#nova-service-v2 .nova-service__review--spotlight .nova-service__provider-mark { padding: .25rem .4rem; border-radius: .25rem; background: #fff; }
+#nova-service-v2 .nova-service__review--spotlight .nova-service__provider-mark--google { padding: 10px; }
+#nova-service-v2 .nova-service__review--spotlight .nova-service__testimonial-footer { border-color: currentColor; }
+
+/* Publisher cards: customer identity first, with a source strip below each quote. */
+#nova-service-v2 .nova-service__review.nova-service__review--publisher_cards .nova-service__review-quote { display: block; }
+#nova-service-v2 .nova-service__review--publisher_cards .nova-service__quote-mark { margin-bottom: .3rem; font-size: 3rem; }
+
+/* Compact rail: one connected grid with separators, retaining every source per card. */
+#nova-service-v2 .nova-service__section--reviews.nova-service__layout--compact_rail .nova-service__reviews { gap: 0; border-block: 1px solid var(--nova-service-line); }
+#nova-service-v2 .nova-service__review.nova-service__review--compact_rail { padding: 1.25rem; border: 0; border-radius: 0; background: transparent; }
+#nova-service-v2 .nova-service__review--compact_rail:nth-child(even) { border-left: 1px solid var(--nova-service-line); }
+#nova-service-v2 .nova-service__review--compact_rail:nth-child(n+3) { border-top: 1px solid var(--nova-service-line); }
+#nova-service-v2 .nova-service__review.nova-service__review--compact_rail .nova-service__review-quote { display: block; }
+#nova-service-v2 .nova-service__review.nova-service__review--compact_rail .nova-service__rich { font-size: 1rem; line-height: 1.55; }
+#nova-service-v2 .nova-service__review--compact_rail .nova-service__quote-mark { display: none; }
+
+/* Signature: a customer identity rail alongside the complete quotation. */
+#nova-service-v2 .nova-service__review.nova-service__review--signature { display: grid; grid-template-columns: 155px minmax(0, 1fr); gap: 0; padding: 0; overflow: hidden; }
+#nova-service-v2 .nova-service__review.nova-service__review--signature .nova-service__signature-identity { display: flex; align-items: center; justify-content: center; margin: 0; padding: 1.5rem 1rem; background: var(--nova-service-soft); }
+#nova-service-v2 .nova-service__signature-identity .nova-service__testimonial-person { flex-direction: column; gap: 1rem; text-align: center; }
+#nova-service-v2 .nova-service__signature-identity .nova-service__testimonial-attribution { align-items: center; }
+#nova-service-v2 .nova-service__signature-identity .nova-service__testimonial-initial,
+#nova-service-v2 .nova-service__signature-identity .nova-service__review-avatar { width: 72px; height: 72px; flex-basis: 72px; font-size: 1.75rem; }
+#nova-service-v2 .nova-service__signature-content { min-width: 0; padding: clamp(1.25rem, 2.5vw, 2rem); }
+#nova-service-v2 .nova-service__review.nova-service__review--signature .nova-service__review-quote { display: block; }
+#nova-service-v2 .nova-service__review--signature .nova-service__quote-mark { margin-bottom: .35rem; font-size: 3.5rem; }
+#nova-service-v2 .nova-service__signature-content > .nova-service__testimonial-publication { margin-top: 1.25rem; }
+#nova-service-v2 .nova-service__review.nova-service__review--signature.nova-service__review--anonymous { grid-template-columns: minmax(0, 1fr); }
+
+#nova-service-v2 .nova-service__section--reviews.nova-service__width--half .nova-service__reviews { grid-template-columns: minmax(0, 1fr); }
+#nova-service-v2 .nova-service__section--reviews.nova-service__width--half .nova-service__review--signature { grid-template-columns: minmax(0, 1fr); }
+#nova-service-v2 .nova-service__section--reviews.nova-service__width--half .nova-service__review--compact_rail:nth-child(even) { border-left: 0; }
+#nova-service-v2 .nova-service__section--reviews.nova-service__width--half .nova-service__review--compact_rail + .nova-service__review--compact_rail { border-top: 1px solid var(--nova-service-line); }
+#nova-service-v2 .nova-service__credential-mark { display: flex; width: fit-content; max-width: 100%; align-items: center; margin-bottom: 1rem; }
+#nova-service-v2 .nova-service__credential-mark .nova-service__image { display: block; width: auto; max-width: 160px; height: 80px; object-fit: contain; object-position: left center; }
+#nova-service-v2 .nova-service__credential-copy { min-width: 0; }
+#nova-service-v2 .nova-service__credential-issuer { margin-bottom: .45rem; color: var(--nova-service-brand); font-size: .8125rem; font-weight: 700; line-height: 1.4; }
+#nova-service-v2 .nova-service__credential-copy .nova-service__text-link { margin-top: .75rem; }
+#nova-service-v2 .nova-service__layout--compact .nova-service__credential:has(> .nova-service__credential-mark) { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 1rem; align-items: center; }
+#nova-service-v2 .nova-service__layout--compact .nova-service__credential-mark { margin: 0; }
+#nova-service-v2 .nova-service__layout--compact .nova-service__credential-mark .nova-service__image { max-width: 64px; width: auto; height: 64px; }
+#nova-service-v2 .nova-service__layout--compact .nova-service__credential .nova-service__card-title { font-size: 1.0625rem; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--badges .nova-service__cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 1rem; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--badges .nova-service__credential:has(> .nova-service__credential-mark) { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 1.25rem; align-items: center; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--badges .nova-service__credential-mark { margin: 0; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--badges .nova-service__credential-mark .nova-service__image { max-width: 112px; height: 76px; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--badges .nova-service__card-title { margin-bottom: .5rem; font-size: 1.125rem; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--badges .nova-service__rich { font-size: .9375rem; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--logos .nova-service__cards { display: flex; flex-wrap: wrap; gap: 1.25rem; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--logos .nova-service__credential { flex: 0 1 220px; padding: .75rem; border: 0; border-radius: 0; background: transparent; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--logos .nova-service__credential-mark .nova-service__image { max-width: 160px; height: 72px; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--logos .nova-service__card-title { font-size: 1rem; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--logos .nova-service__rich { font-size: .875rem; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--list .nova-service__cards { grid-template-columns: minmax(0, 1fr); gap: 0; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--list .nova-service__credential { padding: 1rem 0; border: 0; border-bottom: 1px solid var(--nova-service-line); border-radius: 0; background: transparent; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--list .nova-service__credential:has(> .nova-service__credential-mark) { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 1.25rem; align-items: center; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--list .nova-service__credential-mark { margin: 0; }
+
+/* Credential designs use only supplied issuer marks and factual text. */
+#nova-service-v2 .nova-service__credential--designed { min-width: 0; }
+#nova-service-v2 .nova-service__credential--designed .nova-service__credential-visual { min-width: 0; margin-bottom: 1rem; }
+#nova-service-v2 .nova-service__credential--designed .nova-service__credential-mark { margin: 0; }
+#nova-service-v2 .nova-service__credential--designed .nova-service__credential-mark .nova-service__image,
+#nova-service-v2 .nova-service__credential-disclosure .nova-service__credential-mark .nova-service__image { width: auto; max-width: min(100%, 144px); height: auto; max-height: 80px; object-fit: contain; }
+#nova-service-v2 .nova-service__credential--designed .nova-service__card-title { margin-bottom: .5rem; font-size: 1.125rem; }
+#nova-service-v2 .nova-service__credential--designed .nova-service__rich { font-size: .9375rem; line-height: 1.6; }
+#nova-service-v2 .nova-service__credential-word { color: var(--nova-service-brand); font-size: .9375rem; font-weight: 700; }
+/* A plain document outline indicates information, never a fabricated seal or issuer logo. */
+#nova-service-v2 .nova-service__credential-symbol { position: relative; display: block; width: 28px; height: 34px; border: 1.5px solid currentColor; border-radius: 2px; color: var(--nova-service-brand); }
+#nova-service-v2 .nova-service__credential-symbol::before { content: ''; position: absolute; left: 5px; top: 9px; width: 15px; height: 1px; background: currentColor; box-shadow: 0 6px currentColor, 0 12px currentColor; }
+
+/* Logo rail: a connected row that scales to any number of factual entries. */
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--logo_rail .nova-service__credential-collection { grid-template-columns: repeat(var(--nova-service-credential-columns, 3), minmax(0, 1fr)); gap: 0; border-block: 1px solid var(--nova-service-line); }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--logo_rail .nova-service__credential--designed { padding: 1.25rem; border: 0; border-radius: 0; background: transparent; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--logo_rail .nova-service__credential--designed:not(:nth-child(3n+1)) { border-left: 1px solid var(--nova-service-line); }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--logo_rail .nova-service__credential--designed:nth-child(n+4) { border-top: 1px solid var(--nova-service-line); }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--logo_rail .nova-service__credential-visual { display: flex; align-items: center; min-height: 64px; }
+
+/* Featured membership: the first valid selected item leads, with all others in evidence rows. */
+#nova-service-v2 .nova-service__credential-composition { display: grid; grid-template-columns: minmax(0, .95fr) minmax(0, 1.05fr); gap: clamp(1.25rem, 3vw, 2.5rem); margin-top: 1.5rem; align-items: start; }
+#nova-service-v2 .nova-service__credential-composition:not(:has(.nova-service__credential-facts)) { grid-template-columns: minmax(0, 1fr); max-width: 720px; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--featured_membership .nova-service__credential--featured { padding: clamp(1.5rem, 3vw, 2rem); border: 0; background: var(--nova-service-soft); color: var(--nova-service-soft-text, var(--nova-service-ink)); }
+#nova-service-v2 .nova-service__credential--featured .nova-service__credential-visual { margin-bottom: 1.25rem; }
+#nova-service-v2 .nova-service__credential--featured .nova-service__credential-mark .nova-service__image { max-width: min(100%, 164px); max-height: 100px; }
+#nova-service-v2 .nova-service__credential-facts .nova-service__credential--designed { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 1rem; padding: 1.25rem 0; border: 0; border-bottom: 1px solid var(--nova-service-line); border-radius: 0; background: transparent; }
+#nova-service-v2 .nova-service__credential-facts .nova-service__credential-visual { margin: 0; }
+#nova-service-v2 .nova-service__credential-facts .nova-service__credential-mark .nova-service__image { max-width: 80px; max-height: 64px; }
+
+/* Credential Editorial stays in the site font: clear horizontal evidence rows. */
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--editorial .nova-service__credential-collection { grid-template-columns: minmax(0, 1fr); gap: 0; border-top: 1px solid var(--nova-service-line); }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--editorial .nova-service__credential--designed { display: grid; grid-template-columns: 146px minmax(0, 1fr); gap: 1.5rem; align-items: center; padding: 1.25rem 0; border: 0; border-bottom: 1px solid var(--nova-service-line); border-radius: 0; background: transparent; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--editorial .nova-service__credential-visual { margin: 0; }
+
+/* Credential tiles: authentic logos or a clearly neutral document outline. */
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--credential_tiles .nova-service__credential-collection { grid-template-columns: repeat(var(--nova-service-credential-columns, 3), minmax(0, 1fr)); gap: 1rem; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--credential_tiles .nova-service__credential--designed { padding: 1.25rem; border-top: 3px solid var(--nova-service-brand); }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--credential_tiles .nova-service__credential-visual { display: flex; align-items: center; min-height: 72px; }
+
+/* Trust band: site contrast colors, with light plates for unmodified issuer logos. */
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--trust_band { background: var(--nova-service-cta-bg, var(--nova-service-brand)); color: var(--nova-service-cta-text, var(--nova-service-action-text)); }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--trust_band .nova-service__credential-collection { grid-template-columns: repeat(var(--nova-service-credential-columns, 3), minmax(0, 1fr)); gap: 0; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--trust_band .nova-service__credential--designed { padding: 1.25rem; border: 0; border-radius: 0; background: transparent; color: inherit; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--trust_band .nova-service__credential--designed:not(:nth-child(3n+1)) { border-left: 1px solid currentColor; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--trust_band .nova-service__credential--designed:nth-child(n+4) { border-top: 1px solid currentColor; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--trust_band .nova-service__credential-visual { min-height: 64px; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--trust_band .nova-service__credential-mark { box-sizing: border-box; width: fit-content; max-width: min(100%, calc(144px + 1.1rem)); padding: .55rem; border-radius: .35rem; background: #fff; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--trust_band :is(.nova-service__credential-issuer, .nova-service__credential-symbol, .nova-service__text-link, .nova-service__rich a) { color: inherit; }
+
+/* Evidence accordion: native keyboard disclosure and consistently inset content. */
+#nova-service-v2 .nova-service__section--credentials.nova-service__layout--evidence_accordion .nova-service__credential-collection { display: block; border-top: 1px solid var(--nova-service-line); }
+#nova-service-v2 .nova-service__credential-disclosure { border-bottom: 1px solid var(--nova-service-line); }
+#nova-service-v2 .nova-service__credential-disclosure > summary { display: block; padding: 1rem 1.25rem; list-style: none; cursor: pointer; }
+#nova-service-v2 .nova-service__credential-disclosure > summary::-webkit-details-marker { display: none; }
+#nova-service-v2 .nova-service__credential-disclosure > summary::marker { content: ''; }
+#nova-service-v2 .nova-service__credential-disclosure .nova-service__credential-summary { display: grid; grid-template-columns: 140px minmax(0, 1fr) 20px; gap: 1.25rem; align-items: center; margin: 0; color: inherit; font-size: 1.125rem; line-height: 1.4; }
+#nova-service-v2 .nova-service__credential-summary-label { display: flex; flex-direction: column; min-width: 0; }
+#nova-service-v2 .nova-service__credential-summary .nova-service__credential-mark { margin: 0; }
+#nova-service-v2 .nova-service__credential-summary .nova-service__credential-issuer { margin-bottom: .35rem; }
+#nova-service-v2 .nova-service__credential-chevron { display: inline-flex; align-items: center; justify-content: center; font-size: 1.5rem; line-height: 1; }
+#nova-service-v2 .nova-service__credential-disclosure[open] .nova-service__credential-chevron { transform: rotate(45deg); }
+#nova-service-v2 .nova-service__credential-disclosure .nova-service__credential-content { padding: 0 1.25rem 1.25rem calc(140px + 2.5rem); }
+#nova-service-v2 .nova-service__credential-content .nova-service__rich { max-width: none; }
+#nova-service-v2 .nova-service__credential-content .nova-service__text-link { margin-top: .85rem; }
+
+/* A half section has the same readable one-column composition as a phone. */
+#nova-service-v2 .nova-service__section--credentials.nova-service__width--half :is(.nova-service__credential-collection, .nova-service__credential-composition) { grid-template-columns: minmax(0, 1fr); }
+#nova-service-v2 .nova-service__section--credentials.nova-service__width--half.nova-service__layout--editorial .nova-service__credential--designed { grid-template-columns: minmax(0, 1fr); gap: .75rem; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__width--half:is(.nova-service__layout--logo_rail, .nova-service__layout--trust_band) .nova-service__credential--designed { border-left: 0; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__width--half:is(.nova-service__layout--logo_rail, .nova-service__layout--trust_band) .nova-service__credential--designed + .nova-service__credential--designed { border-top: 1px solid var(--nova-service-line); }
+#nova-service-v2 .nova-service__section--credentials.nova-service__width--half .nova-service__credential-summary { grid-template-columns: minmax(0, 1fr) 20px; gap: .75rem; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__width--half .nova-service__credential-summary :is(.nova-service__credential-visual, .nova-service__credential-summary-label) { grid-column: 1; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__width--half .nova-service__credential-summary .nova-service__credential-chevron { grid-column: 2; grid-row: 1 / span 2; }
+#nova-service-v2 .nova-service__section--credentials.nova-service__width--half .nova-service__credential-content { padding: 0 1.25rem 1.25rem; }
+#nova-service-v2 .nova-service__section--related .nova-service__cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 360px)); gap: 1rem; }
+#nova-service-v2 .nova-service__section--related.nova-service__layout--list .nova-service__cards { grid-template-columns: minmax(0, 1fr); gap: .65rem; }
+#nova-service-v2 .nova-service__section--related.nova-service__layout--list .nova-service__related-card { width: 100%; min-height: 0; padding: var(--nova-service-card-padding, .85rem 1rem); }
+#nova-service-v2 .nova-service__related-card { display: block; padding: var(--nova-service-card-padding, 1rem); }
+#nova-service-v2 .nova-service__related-card:has(> .nova-service__image) { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 1rem; align-items: start; }
+#nova-service-v2 .nova-service__related-card > .nova-service__image { display: block; width: 72px; height: 72px; border-radius: .4rem; object-fit: cover; }
+#nova-service-v2 .nova-service__related-copy { min-width: 0; }
+#nova-service-v2 .nova-service__related-card .nova-service__card-title { margin-bottom: .4rem; font-size: 1.0625rem; line-height: 1.35; }
+#nova-service-v2 .nova-service__related-summary { font-size: .875rem; line-height: 1.5; }
+#nova-service-v2 .nova-service__related-card .nova-service__card-title a { color: inherit; text-decoration: none; }
+#nova-service-v2 .nova-service__related-card .nova-service__card-title a:hover { text-decoration: underline; }
+/* Service cards stay bounded while forming a horizontal row on wider screens. */
+#nova-service-v2 .nova-service__section--related:is(.nova-service__layout--default, .nova-service__layout--cards) .nova-service__cards { width: 100%; max-width: 1260px; margin-inline: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.25rem; }
+#nova-service-v2 .nova-service__section--related:is(.nova-service__layout--default, .nova-service__layout--cards) .nova-service__cards:not(:has(> :nth-child(3))) { max-width: 860px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+#nova-service-v2 .nova-service__section--related:is(.nova-service__layout--default, .nova-service__layout--cards) .nova-service__cards:not(:has(> :nth-child(2))) { max-width: 420px; grid-template-columns: minmax(0, 1fr); }
+#nova-service-v2 .nova-service__section--related:is(.nova-service__layout--default, .nova-service__layout--cards).nova-service__width--half .nova-service__cards { max-width: 420px; grid-template-columns: minmax(0, 1fr); }
+#nova-service-v2 .nova-service__section--related:is(.nova-service__layout--default, .nova-service__layout--cards) .nova-service__related-card { display: flex; flex-direction: column; align-items: stretch; gap: .9rem; min-height: 0; padding: var(--nova-service-card-padding, 1rem); }
+#nova-service-v2 .nova-service__section--related:is(.nova-service__layout--default, .nova-service__layout--cards) .nova-service__related-card > .nova-service__image { width: 100%; max-width: 100%; height: auto; max-height: 200px; aspect-ratio: 16 / 9; object-fit: cover; }
+#nova-service-v2 .nova-service__section--related:is(.nova-service__layout--default, .nova-service__layout--cards) .nova-service__card-title { font-size: 1.125rem; }
+#nova-service-v2 .nova-service__text-link { display: inline-block; font-size: .9375rem; font-weight: 700; }
+
+#nova-service-v2 .nova-service__section--cta {
+	background: var(--nova-service-cta-bg, var(--nova-service-brand));
+	color: var(--nova-service-cta-text, var(--nova-service-action-text));
+}
+
+#nova-service-v2 .nova-service__section--cta .nova-service__container { display: flex; gap: 2rem; align-items: center; justify-content: space-between; }
+#nova-service-v2 .nova-service__cta-copy { min-width: 0; max-width: 70ch; }
+#nova-service-v2 .nova-service__cta-copy .nova-service__gallery { --nova-service-image-max-height: 260px; max-width: 360px; }
+#nova-service-v2 .nova-service__section--cta .nova-service__actions { flex: 0 0 auto; max-width: 40%; margin: 0; }
+#nova-service-v2 .nova-service__section--cta .nova-service__button { border-color: currentColor; background: var(--nova-service-button-text, var(--nova-service-contrast, #fff)); color: var(--nova-service-button-bg, var(--nova-service-brand)); }
+#nova-service-v2 .nova-service__section--cta .nova-service__button--secondary { background: transparent; color: inherit; }
+#nova-service-v2 .nova-service__section--cta .nova-service__rich a { color: inherit; }
+#nova-service-v2 .nova-service__section--cta.nova-service__layout--stacked .nova-service__container { flex-direction: column; align-items: flex-start; }
+#nova-service-v2 .nova-service__section--cta.nova-service__layout--stacked .nova-service__actions { max-width: 100%; }
+
+#nova-service-v2 .nova-service__embed { display: block; width: 100%; max-width: 100%; margin-top: 1.25rem; }
+#nova-service-v2 .nova-service__embed > iframe { width: 100%; max-width: 100%; min-height: 420px; border: 0; }
+/* The clearly labelled demo CTA uses its own classes; provider forms keep theirs. */
+#nova-service-v2 .nova-service__demo-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .85rem; margin-bottom: 1rem; }
+#nova-service-v2 .nova-service__demo-field { display: flex; flex-direction: column; min-width: 0; gap: .35rem; font-size: .875rem; font-weight: 600; }
+#nova-service-v2 .nova-service__demo-field input { box-sizing: border-box; width: 100%; min-width: 0; padding: .7rem .8rem; border: 1px solid var(--nova-service-line); border-radius: .35rem; background: var(--nova-service-paper); color: var(--nova-service-ink); font-family: inherit; font-size: .9375rem; font-weight: 400; line-height: 1.35; }
+#nova-service-v2 .nova-service__demo-field input:focus-visible { outline: 2px solid var(--nova-service-brand); outline-offset: 2px; }
+#nova-service-v2 .nova-service__demo-status { margin-top: .8rem; font-size: .875rem; line-height: 1.5; }
+#nova-service-v2 .nova-service__demo-note { margin: .8rem 0 0; font-size: .8125rem; line-height: 1.5; opacity: .8; }
+#nova-service-v2 .nova-service__section--custom_cta.nova-service__width--full .nova-service__demo-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+#nova-service-v2 .nova-service__section--custom_cta.nova-service__width--full > .nova-service__container > .nova-service__heading,
+#nova-service-v2 .nova-service__section--custom_cta.nova-service__width--full > .nova-service__container > .nova-service__rich { max-width: none; }
+#nova-service-v2 .nova-service__map { width: 100%; margin-top: 1.75rem; overflow: hidden; border: 1px solid var(--nova-service-line); border-radius: var(--nova-service-radius); }
+#nova-service-v2 .nova-service__map iframe { display: block; width: 100%; height: clamp(300px, 42vw, 480px); border: 0; }
+#nova-service-v2 .nova-service__review-widget iframe { height: clamp(300px, 32vw, 360px); }
+#nova-service-v2 .nova-service__video { width: 100%; margin-top: 1.75rem; overflow: hidden; border: 1px solid var(--nova-service-line); border-radius: var(--nova-service-radius); background: #111; }
+#nova-service-v2 .nova-service__video :where(iframe, video) { display: block; width: 100%; max-width: 100%; height: auto; aspect-ratio: 16 / 9; border: 0; }
+#nova-service-v2 .nova-service__section--video.nova-service__layout--compact .nova-service__container { max-width: min(var(--nova-service-content-width, 1200px), 900px); }
+#nova-service-v2 .nova-service__address { margin: 1.25rem 0 .8rem; font-size: 1rem; font-style: normal; line-height: 1.6; }
+
+#nova-service-v2 .nova-service__faqs { margin-top: 1.25rem; border-top: 1px solid var(--nova-service-line); }
+#nova-service-v2 .nova-service__faq { display: block; border-bottom: 1px solid var(--nova-service-line); background: var(--nova-service-faq-bg, transparent); }
+#nova-service-v2 .nova-service__faqs > .nova-service__faq > summary { display: flex; gap: 1.25rem; align-items: center; justify-content: space-between; padding: 1rem 1.25rem; color: var(--nova-service-faq-question, inherit); cursor: pointer; list-style: none; font-size: 1rem; font-weight: 700; line-height: 1.5; }
+#nova-service-v2 .nova-service__faq summary::-webkit-details-marker { display: none; }
+#nova-service-v2 .nova-service__faq summary::marker { content: ''; }
+#nova-service-v2 .nova-service__faq summary::before,
+#nova-service-v2 .nova-service__faq summary::after { content: none; }
+#nova-service-v2 .nova-service__faq-icon { display: inline-flex; flex: 0 0 1.8rem; justify-content: center; font-size: 1.75rem; font-weight: 400; line-height: 1; }
+#nova-service-v2 .nova-service__faq[open] .nova-service__faq-icon { transform: rotate(45deg); }
+#nova-service-v2 .nova-service__faqs > .nova-service__faq > .nova-service__rich { max-width: none; padding: 0 1.25rem 1.25rem; color: var(--nova-service-faq-answer, inherit); }
+
+#nova-service-v2 .nova-service__preview { display: flex; flex-wrap: wrap; gap: .75rem 2rem; align-items: center; justify-content: space-between; padding: 1.25rem var(--nova-service-gutter); border-bottom: 2px solid var(--nova-service-brand); background: var(--nova-service-soft); font-size: .875rem; }
+#nova-service-v2 .nova-service__preview > div { max-width: 90ch; }
+#nova-service-v2 .nova-service__preview strong { font-weight: 700; }
+#nova-service-v2 .nova-service__preview a { flex-shrink: 0; font-weight: 700; }
+
+@media (max-width: 1000px) {
+	#nova-service-v2 .nova-service__section--related:is(.nova-service__layout--default, .nova-service__layout--cards) .nova-service__cards { max-width: 860px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 800px) {
+	#nova-service-v2 { --nova-service-image-max-height: 300px; --nova-service-hero-image-max-height: 320px; }
+	#nova-service-v2 .nova-service__row { grid-template-columns: minmax(0, 1fr); gap: 0; }
+	#nova-service-v2 .nova-service__row > .nova-service__section--rich_text + .nova-service__section--rich_text { padding-top: 0; }
+	#nova-service-v2 .nova-service__hero-grid:has(.nova-service__hero-media) { grid-template-columns: minmax(0, 1fr); }
+	#nova-service-v2 .nova-service__layout--split .nova-service__content-grid:has(.nova-service__content-copy):has(.nova-service__content-media) { grid-template-columns: minmax(0, 1fr); }
+	#nova-service-v2 .nova-service__hero-copy { max-width: 65ch; }
+	#nova-service-v2 .nova-service__hero-media { max-width: 480px; }
+	#nova-service-v2 .nova-service__gallery--hero .nova-service__figure .nova-service__image:where(:not(.nova-service__embed *)) { max-height: min(var(--nova-service-hero-image-max-height), 40svh); }
+	#nova-service-v2 .nova-service__hero-title { max-width: 22ch; }
+	#nova-service-v2 .nova-service__section--cta .nova-service__container { flex-direction: column; align-items: flex-start; }
+	#nova-service-v2 .nova-service__section--cta .nova-service__actions { max-width: 100%; }
+	#nova-service-v2 .nova-service__cta-copy .nova-service__gallery { --nova-service-image-max-height: 240px; }
+	#nova-service-v2 .nova-service__section--custom_cta.nova-service__width--full .nova-service__demo-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 600px) {
+	#nova-service-v2 .nova-service__section--credentials:is(.nova-service__layout--logo_rail, .nova-service__layout--featured_membership, .nova-service__layout--editorial, .nova-service__layout--credential_tiles, .nova-service__layout--trust_band, .nova-service__layout--evidence_accordion) :is(.nova-service__credential-collection, .nova-service__credential-composition) { grid-template-columns: minmax(0, 1fr); }
+	#nova-service-v2 .nova-service__section--credentials.nova-service__layout--editorial .nova-service__credential--designed { grid-template-columns: minmax(0, 1fr); gap: .75rem; }
+	#nova-service-v2 .nova-service__section--credentials:is(.nova-service__layout--logo_rail, .nova-service__layout--trust_band) .nova-service__credential--designed:nth-child(n) { border-left: 0; }
+	#nova-service-v2 .nova-service__section--credentials:is(.nova-service__layout--logo_rail, .nova-service__layout--trust_band) .nova-service__credential--designed + .nova-service__credential--designed { border-top: 1px solid var(--nova-service-line); }
+	#nova-service-v2 .nova-service__credential-disclosure .nova-service__credential-summary { grid-template-columns: minmax(0, 1fr) 20px; gap: .75rem; }
+	#nova-service-v2 .nova-service__credential-summary :is(.nova-service__credential-visual, .nova-service__credential-summary-label) { grid-column: 1; }
+	#nova-service-v2 .nova-service__credential-summary .nova-service__credential-chevron { grid-column: 2; grid-row: 1 / span 2; }
+	#nova-service-v2 .nova-service__credential-disclosure .nova-service__credential-content { padding: 0 1.25rem 1.25rem; }
+	#nova-service-v2 .nova-service__section--reviews:is(.nova-service__layout--conversation, .nova-service__layout--publisher_cards, .nova-service__layout--compact_rail) .nova-service__reviews { grid-template-columns: minmax(0, 1fr); }
+	#nova-service-v2 .nova-service__review--compact_rail:nth-child(even) { border-left: 0; }
+	#nova-service-v2 .nova-service__review--compact_rail + .nova-service__review--compact_rail { border-top: 1px solid var(--nova-service-line); }
+	#nova-service-v2 .nova-service__review.nova-service__review--signature { grid-template-columns: minmax(0, 1fr); }
+	#nova-service-v2 .nova-service__review.nova-service__review--signature .nova-service__signature-identity { justify-content: flex-start; padding: 1.1rem 1.25rem; }
+	#nova-service-v2 .nova-service__signature-identity .nova-service__testimonial-person { flex-direction: row; gap: .75rem; text-align: left; }
+	#nova-service-v2 .nova-service__signature-identity .nova-service__testimonial-attribution { align-items: flex-start; }
+	#nova-service-v2 .nova-service__signature-identity .nova-service__testimonial-initial,
+	#nova-service-v2 .nova-service__signature-identity .nova-service__review-avatar { width: 48px; height: 48px; flex-basis: 48px; font-size: 1.25rem; }
+	#nova-service-v2 .nova-service__reviews:has(> .nova-service__testimonial) { grid-template-columns: minmax(0, 1fr); }
+	#nova-service-v2 .nova-service__section--related:is(.nova-service__layout--default, .nova-service__layout--cards) .nova-service__cards,
+	#nova-service-v2 .nova-service__section--related:is(.nova-service__layout--default, .nova-service__layout--cards) .nova-service__cards:not(:has(> :nth-child(3))) { max-width: 420px; grid-template-columns: minmax(0, 1fr); }
+	#nova-service-v2 .nova-service__section--custom_cta.nova-service__width--full .nova-service__demo-fields { grid-template-columns: minmax(0, 1fr); }
+	#nova-service-v2 .nova-service__section--credentials.nova-service__layout--badges .nova-service__credential:has(> .nova-service__credential-mark),
+	#nova-service-v2 .nova-service__section--credentials.nova-service__layout--list .nova-service__credential:has(> .nova-service__credential-mark) { grid-template-columns: 80px minmax(0, 1fr); gap: 1rem; }
+	#nova-service-v2 .nova-service__section--credentials:is(.nova-service__layout--badges, .nova-service__layout--list) .nova-service__credential-mark .nova-service__image { max-width: 80px; height: 64px; }
+}
+
+@media (max-width: 480px) {
+	#nova-service-v2 .nova-service__demo-fields { grid-template-columns: minmax(0, 1fr); }
+	#nova-service-v2 .nova-service__section--people .nova-service__gallery--multiple { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+	#nova-service-v2 .nova-service__section--people .nova-service__gallery--multiple .nova-service__image { aspect-ratio: 4 / 3; }
+	#nova-service-v2 .nova-service__section--people .nova-service__gallery--multiple figcaption { font-size: .8125rem; line-height: 1.5; }
+	#nova-service-v2 .nova-service__button { width: 100%; justify-content: space-between; }
+	#nova-service-v2 .nova-service__actions { width: 100%; }
+	#nova-service-v2 .nova-service__gallery--hero.nova-service__gallery--multiple { grid-template-columns: minmax(0, 1fr); }
+	#nova-service-v2 .nova-service__cards { grid-template-columns: minmax(0, 1fr); }
+	#nova-service-v2 .nova-service__layout--compact .nova-service__cards { grid-template-columns: minmax(0, 1fr); }
+	#nova-service-v2 .nova-service__faq summary { font-size: 1rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	#nova-service-v2 .nova-service__button { transition: none; }
+	#nova-service-v2 .nova-service__button:hover { transform: none; }
+}

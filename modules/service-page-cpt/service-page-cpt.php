@@ -7,6 +7,14 @@ namespace SEORAI\ServicePageCPT;
 
 defined( 'ABSPATH' ) || exit;
 
+require_once __DIR__ . '/includes/class-service-document.php';
+require_once __DIR__ . '/includes/class-service-review-importer.php';
+require_once __DIR__ . '/includes/class-service-shared.php';
+require_once __DIR__ . '/includes/class-service-editor.php';
+require_once __DIR__ . '/includes/class-service-shared-admin.php';
+require_once __DIR__ . '/includes/class-service-renderer.php';
+require_once __DIR__ . '/includes/class-service-live-preview.php';
+
 final class Plugin {
 	private const CPT                       = 'service_page';
 	private const BASE_SLUG                 = 'services';
@@ -267,12 +275,17 @@ final class Plugin {
 	}
 
 	private function __construct() {
+		ServiceDocument::bootstrap();
+		ServiceReviewImporter::bootstrap();
+		ServiceShared::bootstrap();
+		ServiceEditor::bootstrap();
+		ServiceSharedAdmin::bootstrap();
+		ServiceRenderer::bootstrap();
+		ServiceLivePreview::bootstrap();
 		\register_activation_hook( __FILE__, [ self::class, 'activate' ] );
 		\register_deactivation_hook( __FILE__, [ self::class, 'deactivate' ] );
 
-		\add_action( 'admin_notices', [ $this, 'render_dependency_notice' ] );
-		\add_action( 'admin_post_service_cpt_install_plugin', [ $this, 'handle_dependency_install' ] );
-		\add_action( 'current_screen', [ $this, 'maybe_block_admin_screen' ] );
+		// Block plugins remain optional for unconverted pages; native pages need none.
 
 		\add_action( 'init', [ $this, 'register_post_type' ] );
 		\add_action( 'init', [ $this, 'register_meta_fields' ] );
@@ -385,7 +398,7 @@ final class Plugin {
 			'rest_base'          => $base,
 			'menu_position'      => 22,
 			'menu_icon'          => 'dashicons-screenoptions',
-			'supports'           => [ 'title', 'excerpt', 'thumbnail', 'revisions', 'author', 'page-attributes' ],
+			'supports'           => [ 'title', 'excerpt', 'thumbnail', 'revisions', 'author', 'page-attributes', 'custom-fields' ],
 			'rewrite'            => [
 				'slug'         => $base,
 				'with_front'   => false,
@@ -1501,6 +1514,9 @@ final class Plugin {
 	 * Enqueues front-end assets.
 	 */
 	public function enqueue_front_assets(): void {
+		if ( $this->is_native_service_context() ) {
+			return;
+		}
 		if ( ! $this->is_service_context() ) {
 			return;
 		}
@@ -1536,6 +1552,9 @@ final class Plugin {
 	}
 
 	public function print_critical_layout_styles(): void {
+		if ( $this->is_native_service_context() ) {
+			return;
+		}
 		if ( ! $this->is_service_context() ) {
 			return;
 		}
@@ -1556,6 +1575,9 @@ final class Plugin {
 	 * Enqueues editor assets.
 	 */
 	public function enqueue_editor_assets(): void {
+		if ( $this->is_native_admin_page() ) {
+			return;
+		}
 		$screen = \get_current_screen();
 
 		if ( ! $screen || self::CPT !== $screen->post_type ) {
@@ -1616,6 +1638,9 @@ final class Plugin {
 	 * Admin-only assets for the meta box (media picker).
 	 */
 	public function enqueue_admin_assets( string $hook ): void {
+		if ( in_array( $hook, [ 'post.php', 'post-new.php' ], true ) && $this->is_native_admin_page() ) {
+			return;
+		}
 		if ( 'post.php' === $hook || 'post-new.php' === $hook ) {
 			$screen = \get_current_screen();
 
@@ -1628,7 +1653,8 @@ final class Plugin {
 			return;
 		}
 
-		if ( 'settings_page_service-cpt' === $hook || 'service_page_page_service-cpt' === $hook ) {
+		$is_unified_legacy_settings = isset( $_GET['page'], $_GET['tab'] ) && \is_scalar( $_GET['page'] ) && \is_scalar( $_GET['tab'] ) && 'nova-service-shared' === (string) $_GET['page'] && 'legacy' === (string) $_GET['tab'];
+		if ( 'settings_page_service-cpt' === $hook || 'service_page_page_service-cpt' === $hook || $is_unified_legacy_settings ) {
 			\wp_enqueue_media();
 			\wp_enqueue_script( 'service-cpt-admin' );
 			\wp_enqueue_script( 'service-cpt-settings' );
@@ -1712,6 +1738,9 @@ final class Plugin {
 	 * Forces plugin templates for this CPT.
 	 */
 	public function maybe_use_templates( string $template ): string {
+		if ( $this->is_native_service_context() ) {
+			return __DIR__ . '/templates/single-service-v2.php';
+		}
 		if ( \is_singular( self::CPT ) ) {
 			$path = __DIR__ . '/templates/single-' . self::CPT . '.php';
 			if ( \file_exists( $path ) ) {
@@ -1761,6 +1790,18 @@ final class Plugin {
 
 	private function is_service_context(): bool {
 		return \is_singular( self::CPT ) || \is_post_type_archive( self::CPT );
+	}
+
+	private function is_native_service_context(): bool {
+		return \is_singular( self::CPT ) && ( ServiceDocument::is_v2( (int) \get_queried_object_id() ) || ServiceDocument::is_preview( (int) \get_queried_object_id() ) );
+	}
+
+	private function is_native_admin_page(): bool {
+		$post = \get_post();
+		if ( ! $post && isset( $_GET['post'] ) ) {
+			$post = \get_post( \absint( $_GET['post'] ) );
+		}
+		return $post instanceof \WP_Post && self::CPT === $post->post_type && ( 'auto-draft' === $post->post_status || ServiceDocument::is_v2( (int) $post->ID ) );
 	}
 
 	public function allow_service_slug_without_attachment_conflict( $override, $slug, $post_id, $post_status, $post_type, $post_parent ) {
@@ -3728,6 +3769,9 @@ final class Plugin {
 	 * Registers a simple meta box as a fallback editor for all fields.
 	 */
 	public function register_meta_box(): void {
+		if ( $this->is_native_admin_page() ) {
+			return;
+		}
 		\add_meta_box(
 			'service-cpt-fields',
 			__( 'Service Page Fields', 'nova-bridge-suite' ),
@@ -4220,6 +4264,9 @@ final class Plugin {
 	}
 
 	public function save_meta_box( int $post_id, \WP_Post $post ): void {
+		if ( ServiceDocument::is_v2( $post_id ) ) {
+			return;
+		}
 		$nonce = isset( $_POST['service_cpt_nonce'] ) ? sanitize_text_field( wp_unslash( (string) $_POST['service_cpt_nonce'] ) ) : '';
 		if ( '' === $nonce || ! \wp_verify_nonce( $nonce, 'service_cpt_save_meta' ) ) {
 			return;
@@ -4373,6 +4420,15 @@ final class Plugin {
 	 * Renders the service page content, falling back to the legacy layout.
 	 */
 	public function render_service_page( int $post_id ): string {
+		if ( ServiceDocument::is_v2( $post_id ) || ServiceDocument::is_preview( $post_id ) ) {
+			$was_rendering = $this->rendering_service_page;
+			$this->rendering_service_page = true;
+			try {
+				return ServiceRenderer::render( $post_id );
+			} finally {
+				$this->rendering_service_page = $was_rendering;
+			}
+		}
 		$post = \get_post( $post_id );
 		$template_slug = $this->get_effective_template_slug( $post_id );
 		$template_content = $this->get_template_content( $template_slug );
@@ -5762,6 +5818,8 @@ final class Plugin {
 			'service-cpt',
 			[ $this, 'render_settings_page' ]
 		);
+		// Retain the registered old route for bookmarks, but show one service settings entry.
+		\remove_submenu_page( 'options-general.php', 'service-cpt' );
 	}
 
 	public function redirect_all_language_admin_scope(): void {
@@ -5820,6 +5878,7 @@ final class Plugin {
 			'service-cpt',
 			[ $this, 'render_settings_page' ]
 		);
+		\remove_submenu_page( 'edit.php?post_type=' . self::CPT, 'service-cpt' );
 	}
 
 	public function register_settings(): void {
@@ -6342,17 +6401,17 @@ final class Plugin {
 		];
 	}
 
-	public function render_settings_page(): void {
+	public function render_settings_page( bool $embedded = false ): void {
 		$settings_language_context = \Nova_Bridge_Suite_WPML_Support::get_settings_language_context();
 		$settings_language_links   = \Nova_Bridge_Suite_WPML_Support::get_settings_language_links(
-			\admin_url( 'options-general.php?page=service-cpt' )
+			$embedded ? ServiceSharedAdmin::settings_url( 'legacy' ) : \admin_url( 'options-general.php?page=service-cpt' )
 		);
 		$settings_form_action      = \Nova_Bridge_Suite_WPML_Support::get_settings_form_action_url();
 		$settings_form_language    = (string) ( $settings_language_context['current'] ?? '' );
 		$settings_form_default_language = (string) ( $settings_language_context['default'] ?? '' );
 		$templates  = $this->get_templates();
 		$selected_template = $this->get_selected_template_slug();
-		$missing_required = $this->collect_missing_plugins( self::REQUIRED_PLUGINS );
+		$missing_required = [];
 		$settings_payload = $this->get_settings_payload();
 		$color_presets = $settings_payload['colorPresets'] ?? [];
 		$spacing_presets = $settings_payload['spacingPresets'] ?? [];
@@ -6495,8 +6554,9 @@ final class Plugin {
 			],
 		];
 		?>
-		<div class="wrap">
-			<h1><?php esc_html_e( 'NOVA Services Settings', 'nova-bridge-suite' ); ?></h1>
+		<div class="<?php echo $embedded ? 'nova-service-legacy-settings' : 'wrap'; ?>">
+			<?php if ( ! $embedded ) : ?><h1><?php esc_html_e( 'NOVA Services Settings', 'nova-bridge-suite' ); ?></h1><?php endif; ?>
+			<div class="notice notice-info inline"><p><?php esc_html_e( 'New service pages use one flexible native template. Add, move, hide or remove sections in the page editor. Existing pages keep their legacy layout until you preview and apply migration in their editor. Brand colors and widths below also apply to the native template.', 'nova-bridge-suite' ); ?></p></div>
 			<?php if ( ! empty( $settings_language_context ) ) : ?>
 				<div class="notice notice-info inline">
 					<p>
@@ -6584,7 +6644,7 @@ final class Plugin {
 							<td><input type="text" name="<?php echo esc_attr( $this->get_settings_option_name( self::OPTION_PLURAL ) ); ?>" value="<?php echo esc_attr( $this->get_plural_name() ); ?>" class="regular-text" /></td>
 						</tr>
 						<tr>
-							<th scope="row"><?php esc_html_e( 'Default template', 'nova-bridge-suite' ); ?></th>
+							<th scope="row"><?php esc_html_e( 'Legacy template (unconverted pages)', 'nova-bridge-suite' ); ?></th>
 							<td>
 								<select name="<?php echo esc_attr( self::OPTION_TEMPLATE ); ?>" id="service-cpt-default-template">
 									<?php foreach ( $templates as $slug => $template ) : ?>
@@ -6593,7 +6653,7 @@ final class Plugin {
 										</option>
 									<?php endforeach; ?>
 								</select>
-								<p class="description"><?php esc_html_e( 'Applied to new Service Page posts and API inserts when no content is provided.', 'nova-bridge-suite' ); ?></p>
+								<p class="description"><?php esc_html_e( 'Only used by existing legacy pages. New pages use the native section template.', 'nova-bridge-suite' ); ?></p>
 							</td>
 						</tr>
 						<tr>
@@ -8336,6 +8396,9 @@ final class Plugin {
 	}
 
 	public function render_service_faq_schema(): void {
+		if ( $this->is_native_service_context() ) {
+			return;
+		}
 		if ( ! \is_singular( self::CPT ) ) {
 			return;
 		}
@@ -8487,6 +8550,37 @@ final class Plugin {
 	}
 
 	private function build_meta_description( int $post_id ): string {
+		if ( ServiceDocument::is_v2( $post_id ) ) {
+			$post    = \get_post( $post_id );
+			$excerpt = $post instanceof \WP_Post ? (string) $post->post_excerpt : '';
+			$parts   = [];
+			$title   = '';
+			// Keep an explicit provider/editor summary ahead of generated copy.
+			if ( '' !== \trim( \wp_strip_all_tags( $excerpt ) ) ) {
+				$parts[] = $excerpt;
+			} else {
+				$document = ServiceDocument::resolve_document( $post_id );
+				foreach ( $document['sections'] ?? [] as $section ) {
+					if ( empty( $section['enabled'] ) || ! \in_array( $section['type'] ?? '', [ 'hero', 'rich_text' ], true ) ) {
+						continue;
+					}
+					$data = (array) ( $section['data'] ?? [] );
+					if ( '' === $title && 'hero' === $section['type'] && ! empty( $data['title'] ) ) {
+						$title = (string) $data['title'];
+					}
+					if ( ! empty( $data['body'] ) ) {
+						$parts[] = (string) $data['body'];
+					}
+				}
+			}
+			$summary = \trim( \wp_strip_all_tags( \implode( ' ', $parts ) ) );
+			if ( '' === $summary ) {
+				$summary = '' !== $title ? $title : \get_the_title( $post_id );
+			}
+			$summary = (string) \preg_replace( '/\s+/', ' ', \trim( \wp_strip_all_tags( $summary ) ) );
+			return \wp_html_excerpt( $summary, 160, '' );
+		}
+
 		$meta = $this->get_meta_values( $post_id );
 
 		$parts = array_filter(
@@ -8568,6 +8662,9 @@ final class Plugin {
 	}
 
 	private function maybe_apply_template_content( int $post_id, bool $force = false, string $template_slug = '' ): void {
+		if ( ServiceDocument::is_v2( $post_id ) ) {
+			return;
+		}
 		static $updating = false;
 
 		if ( $updating ) {
@@ -8636,6 +8733,10 @@ final class Plugin {
 	}
 
 	public function rest_pre_insert_service_page( $prepared_post, \WP_REST_Request $request ) {
+		$id = (int) $request->get_param( 'id' );
+		if ( ( ! $id && ! ServiceDocument::request_uses_legacy_payload( $request ) ) || ServiceDocument::is_v2( $id ) || $request->has_param( 'nova_service_document' ) || $request->has_param( 'nova_service_content' ) ) {
+			return $prepared_post;
+		}
 		$post_content = '';
 		if ( $prepared_post instanceof \WP_Post ) {
 			$post_content = (string) $prepared_post->post_content;
@@ -8725,6 +8826,9 @@ final class Plugin {
 	}
 
 	public function filter_rest_service_page_response( $response, $post, \WP_REST_Request $request ) {
+		if ( $post instanceof \WP_Post && ServiceDocument::is_v2( (int) $post->ID ) ) {
+			return $response;
+		}
 		if ( ! $response instanceof \WP_REST_Response || ! $post instanceof \WP_Post ) {
 			return $response;
 		}
@@ -8794,21 +8898,8 @@ final class Plugin {
 			return;
 		}
 
-		$meta_description = $this->get_meta_context_note( 'Service page fields for the active layout.', $this->get_selected_template_slug() );
-
-		\register_rest_field(
-			self::CPT,
-			'meta',
-			[
-				'get_callback' => [ $this, 'get_rest_meta_field' ],
-				'schema'       => [
-					'description' => $meta_description,
-					'type'        => 'object',
-					'context'     => [ 'view', 'edit' ],
-					'properties'  => $meta_schema,
-				],
-			]
-		);
+		// Keep the native WordPress meta controller writable for older clients.
+		// Context belongs in read-only companion fields, never over the core meta field.
 
 		$description_schema = $this->get_rest_meta_description_schema();
 		if ( ! empty( $description_schema ) ) {
@@ -8821,6 +8912,7 @@ final class Plugin {
 						'description' => __( 'Descriptions for the active service page meta fields.', 'nova-bridge-suite' ),
 						'type'        => 'object',
 						'context'     => [ 'view', 'edit' ],
+						'readonly'    => true,
 						'properties'  => $description_schema,
 					],
 				]
@@ -8838,6 +8930,7 @@ final class Plugin {
 						'description' => __( 'Usage notes for the active service page meta fields.', 'nova-bridge-suite' ),
 						'type'        => 'string',
 						'context'     => [ 'view', 'edit' ],
+						'readonly'    => true,
 					],
 				]
 			);
@@ -8866,6 +8959,9 @@ final class Plugin {
 
 	public function get_rest_meta_descriptions_field( array $object, string $field_name, \WP_REST_Request $request ): array {
 		$post_id = isset( $object['id'] ) ? (int) $object['id'] : 0;
+		if ( $post_id && ServiceDocument::is_v2( $post_id ) ) {
+			return ServiceDocument::meta_descriptions( $post_id );
+		}
 		$template = $post_id ? $this->get_effective_template_slug( $post_id ) : $this->get_selected_template_slug();
 		$allowed  = $this->get_active_meta_keys_for_template( $template );
 		$descriptions = $this->get_meta_descriptions( $template );
@@ -8882,6 +8978,9 @@ final class Plugin {
 
 	public function get_rest_meta_note_field( array $object, string $field_name, \WP_REST_Request $request ): string {
 		$post_id = isset( $object['id'] ) ? (int) $object['id'] : 0;
+		if ( $post_id && ServiceDocument::is_v2( $post_id ) ) {
+			return ServiceDocument::meta_note( $post_id );
+		}
 		$template = $post_id ? $this->get_effective_template_slug( $post_id ) : $this->get_selected_template_slug();
 
 		return $this->get_meta_context_note( '', $template );
@@ -9128,6 +9227,18 @@ final class Plugin {
 
 		if ( ! $post || self::CPT !== $post->post_type ) {
 			return new \WP_Error( 'not_found', __( 'Service page not found.', 'nova-bridge-suite' ), [ 'status' => 404 ] );
+		}
+		if ( ServiceDocument::is_v2( $post_id ) ) {
+			return \rest_ensure_response( [
+				'id' => $post_id,
+				'title' => \get_the_title( $post_id ),
+				'experience' => 'v2',
+				'nova_service_document' => ServiceDocument::public_document( ServiceDocument::get_document( $post_id ) ),
+				'nova_service_resolved_document' => ServiceDocument::public_document( ServiceDocument::resolve_document( $post_id ) ),
+				'nova_service_content' => ServiceDocument::get_content( $post_id ),
+				'meta_note' => ServiceDocument::meta_note( $post_id ),
+				'meta_descriptions' => ServiceDocument::meta_descriptions( $post_id ),
+			] );
 		}
 
 		$meta       = $this->get_meta_values( $post_id );

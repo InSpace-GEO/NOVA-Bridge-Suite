@@ -1,0 +1,5 @@
+/evidence/
+/artifacts/
+/tools/__pycache__/
+/tools/*
+!/tools/build_candidate.py

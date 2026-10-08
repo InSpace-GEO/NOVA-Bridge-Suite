@@ -4,7 +4,7 @@
 - Requires at least: 6.0
 - Tested up to: 7.0
 - Requires PHP: 7.4
-- Stable tag: 2.8.12
+- Stable tag: 2.9.0-rc.1
 - License: Proprietary
 
 Connects NOVA to WordPress so your SEO automation can update pages and layouts the standard API cannot reach.
@@ -27,6 +27,8 @@ Modules are optional and can be toggled from `Settings -> NOVA Settings`. The co
 Enabled NOVA Blog and Service Page CPT modules load on every request, including REST and admin requests, so their registrations and rewrite rules remain available when WordPress rebuilds permalinks.
 
 Blog CPT settings are available under `Settings -> NOVA Blog Settings`. The CPT menu links to that same screen; older CPT settings URLs redirect there.
+
+The unreleased Service CPT v2 candidate adds one flexible native editor, reusable shared sections and a default site layout. Existing pages retain legacy rendering until explicitly migrated. See [the Service CPT guide](docs/SERVICE-CPT-V2.md) for setup, preview, migration and the content posting API.
 
 ## Installation
 

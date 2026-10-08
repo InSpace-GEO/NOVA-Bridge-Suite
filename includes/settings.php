@@ -766,7 +766,7 @@ function nova_bridge_suite_register_settings(): void {
         [
             'key'         => 'service_page_cpt',
             'label'       => 'Enable NOVA Service CPT',
-            'description' => 'Custom Post Type for SEO-friendly service pages using Gutenberg.',
+            'description' => 'Custom Post Type for SEO-friendly service pages with a native section editor and optional legacy migration.',
         ]
     );
 
