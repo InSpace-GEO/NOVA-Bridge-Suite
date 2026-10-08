@@ -4,6 +4,8 @@ Version **3.0.0** discovers WordPress layouts and prepares destination descripti
 
 See [current mapping setup](../../docs/contracted-mapping-setup.md), [local testing](../../docs/contracted-delivery-local-testing.md) and the [migration/validation record](../../docs/posting-service-migration-20261002.md). September handovers and retained simulated tests document the earlier contract. Isolated canaries do not install this candidate or certify a real NOVA round trip.
 
+**Build from content** adds separate WordPress-local rendering profiles: headings, paragraphs, lists, images, explicit FAQs and nested groups generate variable native Elementor layouts without a source page ID. Save and preview rules without a posting-service connection, then create an editable draft. An optional explicit site binding lets unconfigured legacy deliveries use a frozen local profile. No rules are uploaded and neither backend is changed. See [local content rules](../../docs/local-content-rules.md) for setup, recovery and validation boundaries.
+
 ## Mapping and human rules
 
 Open **Mapping**, select a concrete page/layout, and describe what its destination fields can hold. New drafts work offline without choosing NOVA sources. Add purpose, type, optional length/list limits, required/optional policy and instructions. Fixed groups describe selected existing slots with stable identities; they do not change native rows. Save, then export the backend description. See the [backend handover and tested example](../../docs/destination-mapping-backend-handover.md).
