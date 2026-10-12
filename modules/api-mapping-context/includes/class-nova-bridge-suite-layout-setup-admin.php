@@ -78,9 +78,15 @@ final class Nova_Bridge_Suite_Layout_Setup_Admin {
         }
     }
 
-    public static function header(): void {
+    public static function screen_title( string $current_tab = '' ): string {
+        if ( 'nova-connection' === $current_tab ) { return __( 'NOVA connection', 'nova-bridge-suite' ); }
+        if ( 'modules' === $current_tab ) { return __( 'Modules', 'nova-bridge-suite' ); }
+        return __( 'Layouts', 'nova-bridge-suite' );
+    }
+
+    public static function header( string $current_tab = '' ): void {
         echo '<header class="nova-brand-header"><img class="nova-brand-wordmark" src="' . esc_url( self::asset_base() . 'brand/inspace-wordmark.svg' ) . '" alt="InSpace" width="160" height="27">';
-        echo '<div class="nova-brand-product"><p class="nova-brand-kicker">NOVA / WORDPRESS</p><p class="nova-brand-title">WordPress layouts</p></div>';
+        echo '<div class="nova-brand-product"><p class="nova-brand-kicker">NOVA / WORDPRESS</p><p class="nova-brand-title">' . esc_html( self::screen_title( $current_tab ) ) . '</p></div>';
         echo '<span class="nova-brand-version">v' . esc_html( defined( 'NOVA_BRIDGE_SUITE_VERSION' ) ? NOVA_BRIDGE_SUITE_VERSION : '' ) . '</span></header>';
     }
 
@@ -124,7 +130,7 @@ final class Nova_Bridge_Suite_Layout_Setup_Admin {
         $rules = class_exists( 'Nova_Bridge_Suite_Content_Rules' ) ? Nova_Bridge_Suite_Content_Rules::profiles() : [];
         $existing = self::saved_existing();
         if ( ! $rules && ! $existing ) { return; }
-        echo '<section class="nova-layout-saved"><p class="nova-brand-kicker">SAVED ON THIS WEBSITE</p><h2>Continue with a saved setup</h2><p>Open its workspace for changes, or restart its guided setup.</p><div class="nova-layout-saved-grid">';
+        echo '<details class="nova-layout-saved"><summary>' . esc_html( sprintf( __( 'Saved layouts (%d)', 'nova-bridge-suite' ), count( $rules ) + count( $existing ) ) ) . '</summary><p class="nova-brand-kicker">SAVED ON THIS WEBSITE</p><h2>Continue with a saved setup</h2><p>Open its workspace for changes, or restart its guided setup.</p><div class="nova-layout-saved-grid">';
         foreach ( $rules as $profile ) {
             echo '<article class="nova-layout-saved-card"><span class="nova-brand-kicker">ELEMENTOR LAYOUT RULES</span><h3>' . esc_html( $profile['label'] ) . '</h3><p>Every matching block creates its own widget. Saved revision ' . esc_html( (string) $profile['revision'] ) . '.</p>';
             echo '<a class="button" href="' . esc_url( self::url( 'content-rules', [ 'view' => 'workspace', 'profile_id' => $profile['id'] ] ) ) . '">Open workspace</a> <a href="' . esc_url( self::url( 'content-rules', [ 'view' => 'setup', 'profile_id' => $profile['id'] ] ) ) . '">Guided setup</a></article>';
@@ -134,7 +140,7 @@ final class Nova_Bridge_Suite_Layout_Setup_Admin {
             echo '<article class="nova-layout-saved-card"><span class="nova-brand-kicker">EXISTING LAYOUT</span><h3>' . esc_html( $draft['label'] ) . '</h3><p>Existing fields and their descriptions. Saving alone does not enable content delivery.</p>';
             echo '<a class="button" href="' . esc_url( self::url( 'strategy-mapping', $args + [ 'view' => 'workspace' ] ) ) . '">Open workspace</a> <a href="' . esc_url( self::url( 'strategy-mapping', $args + [ 'view' => 'setup' ] ) ) . '">Guided setup</a></article>';
         }
-        echo '</div></section>';
+        echo '</div></details>';
     }
 
     public static function connection(): void {

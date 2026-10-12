@@ -776,6 +776,10 @@ function nova_bridge_suite_maybe_handle_targeted_rest_request(): bool {
 
 // Mapping discovery, configuration sync and delivery recovery also run during
 // internal REST dispatch and cron. The module setting controls this runtime.
+register_activation_hook( __FILE__, 'nova_bridge_suite_activate' );
+register_deactivation_hook( __FILE__, 'nova_bridge_suite_deactivate' );
+add_action( 'init', 'nova_bridge_suite_maybe_upgrade', 99 );
+add_action( 'update_option_' . NOVA_BRIDGE_SUITE_OPTION, 'nova_bridge_suite_settings_updated', 10, 3 );
 nova_bridge_suite_load_selected_modules( [ 'api_mapping_context' ] );
 
 $nova_bridge_suite_admin_content_write_module_keys = nova_bridge_suite_get_admin_content_write_module_keys();
@@ -891,15 +895,10 @@ foreach ( $nova_bridge_suite_modules as $nova_bridge_suite_setting_key => $nova_
     }
 }
 
-register_activation_hook( __FILE__, 'nova_bridge_suite_activate' );
-register_deactivation_hook( __FILE__, 'nova_bridge_suite_deactivate' );
-add_action( 'init', 'nova_bridge_suite_maybe_upgrade', 99 );
-
 function nova_bridge_suite_activate(): void {
+    nova_bridge_suite_load_settings_runtime();
+    nova_bridge_suite_initialize_settings();
     $settings = nova_bridge_suite_get_settings();
-    if ( false === get_option( NOVA_BRIDGE_SUITE_OPTION, false ) ) {
-        add_option( NOVA_BRIDGE_SUITE_OPTION, $settings );
-    }
 
     nova_bridge_suite_handle_cpt_toggle( false, ! empty( $settings['custom_post_types'] ) );
     nova_bridge_suite_handle_service_cpt_toggle( false, ! empty( $settings['service_page_cpt'] ) );
@@ -928,9 +927,8 @@ function nova_bridge_suite_maybe_upgrade(): void {
     update_option( NOVA_BRIDGE_SUITE_VERSION_OPTION, NOVA_BRIDGE_SUITE_VERSION );
 }
 
-add_action( 'update_option_' . NOVA_BRIDGE_SUITE_OPTION, 'nova_bridge_suite_settings_updated', 10, 3 );
-
 function nova_bridge_suite_settings_updated( $old_value, $new_value, string $option ): void {
+    nova_bridge_suite_update_auto_enable_provenance( $old_value, $new_value );
     $defaults      = nova_bridge_suite_default_settings();
     $old_settings  = wp_parse_args( is_array( $old_value ) ? $old_value : [], $defaults );
     $new_settings  = wp_parse_args( is_array( $new_value ) ? $new_value : [], $defaults );

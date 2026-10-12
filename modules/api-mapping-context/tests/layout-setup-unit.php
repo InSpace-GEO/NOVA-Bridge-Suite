@@ -27,7 +27,7 @@ function get_term($id){return false;}
 function is_wp_error($value){return false;}
 function is_serialized($value){return preg_match('/^[aOs]:/',$value)===1;}
 class UnsafeSavedObject {function __wakeup(){global $woken;++$woken;}}
-class Nova_Bridge_Suite_Content_Rules {static function profiles(){return [['id'=>'11111111-1111-4111-8111-111111111111','label'=>'Article rules','revision'=>2]];}}
+class Nova_Bridge_Suite_Content_Rules {public static $saved=[['id'=>'11111111-1111-4111-8111-111111111111','label'=>'Article rules','revision'=>2]];static function profiles(){return self::$saved;}}
 class Nova_Bridge_Suite_Posting_Settings {static function connection(){return ['enabled'=>false,'paused'=>true];}static function render(){echo '<div>Connection settings form</div>';}}
 function fixture_render(){echo '<section>INNER VIEW</section>';}
 function fixture_tabs($tabs){return ['strategy-mapping'=>['label'=>'Fill existing layout','render_callback'=>'fixture_render','legacy_slugs'=>['mapping']],'content-rules'=>['label'=>'Build new content','render_callback'=>'fixture_render']]+$tabs;}
@@ -52,6 +52,11 @@ check(count($filters['nova_bridge_suite_settings_tabs'][102])===1,'Shared shell 
 $saved=Nova_Bridge_Suite_Layout_Setup_Admin::saved_existing();
 check(count($saved)===1&&$saved[0]['reference_id']===17,'Saved setups leaked an inaccessible reference or malformed record');
 check($woken===0,'Saved setup projection instantiated an arbitrary serialized object');
+foreach(['layouts'=>'Layouts','strategy-mapping'=>'Layouts','content-rules'=>'Layouts','mapping'=>'Layouts','nova-connection'=>'NOVA connection','modules'=>'Modules'] as $view=>$title){
+    check(Nova_Bridge_Suite_Layout_Setup_Admin::screen_title($view)===$title,'The settings title does not identify its tab');
+    ob_start();Nova_Bridge_Suite_Layout_Setup_Admin::header($view);$header=ob_get_clean();
+    check(strpos($header,'class="nova-brand-title">'.$title.'</p>')!==false,'Visible header and screen title disagree');
+}
 $_GET=['lang'=>'nl'];
 check(strpos(Nova_Bridge_Suite_Layout_Setup_Admin::url('content-rules',['view'=>'workspace']),'lang=nl')!==false,'Saved setup links lost the selected language');
 ob_start();nova_bridge_suite_render_settings_page();$html=ob_get_clean();
@@ -60,12 +65,22 @@ check(strpos($html,'name="new" value="1"')!==false&&strpos($html,'name="view" va
 check(strpos($html,'No source page or separate field mapping is needed.')!==false,'The two approaches still appeared dependent');
 check(strpos($html,'profile_id=11111111-1111-4111-8111-111111111111')!==false&&strpos($html,'reference_id=17')!==false,'Saved workspaces lost their identities');
 check(strpos($html,'reference_id=18')===false,'An inaccessible saved-reference link was rendered');
+check(preg_match('/<details class="nova-layout-saved">\s*<summary>Saved layouts \(2\)<\/summary>/', $html)===1,'Saved layouts were not collapsed by default or the count includes inaccessible references');
+check(strpos($html,'Start guided setup')<strpos($html,'Saved layouts (2)'), 'The saved-layout disclosure displaced first-time setup');
+check(strpos($html,'class="screen-reader-text">Layouts</h1>')!==false&&strpos($html,'class="nova-brand-title">Layouts</p>')!==false,'The Layouts page does not have matching accessible and visible titles');
 $_GET=['tab'=>'content-rules'];ob_start();nova_bridge_suite_render_settings_page();$html=ob_get_clean();
 check(strpos($html,'INNER VIEW')!==false,'Old mode URL stopped rendering its editor');
 check(strpos($html,'tab=layouts')!==false&&strpos($html,'nav-tab-active')!==false,'Mode URL failed to highlight its Layouts parent');
 check(strpos($html,'>Build new content</a>')===false,'Hidden child route still appeared as another competing main tab');
+check(strpos($html,'class="screen-reader-text">Layouts</h1>')!==false&&strpos($html,'class="nova-brand-title">Layouts</p>')!==false,'The child editor lost its Layouts title');
 $_GET=['tab'=>'mapping'];ob_start();nova_bridge_suite_render_settings_page();$html=ob_get_clean();
 check(strpos($html,'INNER VIEW')!==false,'Legacy mapping URL did not resolve');
+$_GET=['tab'=>'nova-connection'];ob_start();nova_bridge_suite_render_settings_page();$html=ob_get_clean();
+check(strpos($html,'class="screen-reader-text">NOVA connection</h1>')!==false&&strpos($html,'class="nova-brand-title">NOVA connection</p>')!==false,'The connection page still identifies itself as layouts');
+$saved_rows=$wpdb->rows;$saved_profiles=Nova_Bridge_Suite_Content_Rules::$saved;$wpdb->rows=[];Nova_Bridge_Suite_Content_Rules::$saved=[];
+ob_start();Nova_Bridge_Suite_Layout_Setup_Admin::render();$html=ob_get_clean();
+check(strpos($html,'nova-layout-saved')===false&&strpos($html,'Start guided setup')!==false,'An empty site should show first-time setup without a saved-layout disclosure');
+$wpdb->rows=$saved_rows;Nova_Bridge_Suite_Content_Rules::$saved=$saved_profiles;
 $administrator=false;ob_start();Nova_Bridge_Suite_Layout_Setup_Admin::render();$html=ob_get_clean();
 check($html==='','Non-administrator could render saved layout setup information');
 echo 'PASS '.$checks." guided layout navigation and saved-reference checks.\n";

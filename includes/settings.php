@@ -18,7 +18,6 @@ function nova_bridge_suite_module_definitions(): array {
         'api_mapping_context'    => [
             'path'                 => 'modules/api-mapping-context/api-mapping-context.php',
             'standalone_filenames' => [ 'api-mapping-context.php' ],
-            'default_enabled'      => true,
         ],
         'pagebuilder_wpbakery'   => [
             'path'                 => 'modules/wpbakery/wpbakery-bridge.php',
@@ -320,10 +319,8 @@ function nova_bridge_suite_handle_dismiss_suggestion(): void {
 
 add_action( 'admin_init', 'nova_bridge_suite_handle_dismiss_suggestion' );
 
-function nova_bridge_suite_get_recommended_modules(): array {
-    $settings = nova_bridge_suite_get_settings();
-    $recommendations = [];
-    $plugin_candidates = [
+function nova_bridge_suite_module_detection_candidates(): array {
+    return [
         'pagebuilder_wpbakery'   => [
             'label'       => 'Enable NOVA WPBakery Bridge',
             'description' => 'WPBakery detected. Enable the bridge to update WPBakery pages.',
@@ -343,6 +340,7 @@ function nova_bridge_suite_get_recommended_modules(): array {
             'label'       => 'Enable NOVA Avada Bridge',
             'description' => 'Avada detected. Enable the bridge to update Avada Builder pages.',
             'plugins'     => [ 'fusion-builder/fusion-builder.php', 'avada-builder/avada-builder.php' ],
+            'themes'      => [ 'Avada' ],
         ],
         'pagebuilder_divi'       => [
             'label'       => 'Enable NOVA Divi Bridge',
@@ -368,7 +366,7 @@ function nova_bridge_suite_get_recommended_modules(): array {
         'multilingual_polylang'  => [
             'label'       => 'Enable NOVA Polylang Bridge',
             'description' => 'Polylang detected. Enable the bridge to manage translations.',
-            'plugins'     => [ 'polylang/polylang.php' ],
+            'plugins'     => [ 'polylang/polylang.php', 'polylang-pro/polylang.php' ],
         ],
         'multilingual_weglot'    => [
             'label'       => 'Enable NOVA Weglot Bridge',
@@ -377,18 +375,76 @@ function nova_bridge_suite_get_recommended_modules(): array {
         ],
     ];
 
-    foreach ( $plugin_candidates as $key => $candidate ) {
-        $detected = nova_bridge_suite_has_active_plugin( $candidate['plugins'] ?? [] );
+}
 
-        // Some builders (Divi, Extra) ship as a theme, not a plugin.
-        if ( ! $detected && ! empty( $candidate['themes'] ) && function_exists( 'get_template' ) ) {
-            $template = (string) get_template();
-            $detected = '' !== $template && in_array( $template, (array) $candidate['themes'], true );
+function nova_bridge_suite_detect_modules(): array {
+    $detected = [];
+    $active_plugins = nova_bridge_suite_get_active_plugins();
+    $template = function_exists( 'get_template' ) ? (string) get_template() : '';
+    foreach ( nova_bridge_suite_module_detection_candidates() as $key => $candidate ) {
+        foreach ( $candidate['plugins'] ?? [] as $plugin ) {
+            if ( in_array( $plugin, $active_plugins, true ) ) { $detected[ $key ] = [ 'source' => 'plugin', 'name' => $plugin ]; break; }
         }
+        if ( isset( $detected[ $key ] ) ) { continue; }
+        foreach ( $candidate['themes'] ?? [] as $theme ) {
+            if ( '' !== $template && 0 === strcasecmp( $template, $theme ) ) { $detected[ $key ] = [ 'source' => 'theme', 'name' => $theme ]; break; }
+        }
+    }
+    return $detected;
+}
 
-        if ( ! $detected ) {
-            continue;
+// Runtime reads always leave missing settings off. Only activation can decide
+// that no prior settings/version evidence exists and initialize a fresh install.
+function nova_bridge_suite_initialize_settings(): bool {
+    $missing = new stdClass();
+    if ( $missing !== get_option( NOVA_BRIDGE_SUITE_OPTION, $missing ) ) { return false; }
+    $fresh = $missing === get_option( NOVA_BRIDGE_SUITE_VERSION_OPTION, $missing )
+        && $missing === get_option( 'nova_bridge_suite_auto_enabled', $missing );
+    $settings = nova_bridge_suite_default_settings();
+    $auto_enabled = [];
+    if ( $fresh ) {
+        $settings['api_mapping_context'] = nova_bridge_suite_is_module_blocked( 'api_mapping_context' ) ? 0 : 1;
+        foreach ( nova_bridge_suite_detect_modules() as $key => $source ) {
+            if ( ! nova_bridge_suite_is_module_blocked( $key ) ) { $settings[ $key ] = 1; $auto_enabled[ $key ] = $source; }
         }
+    }
+    if ( ! add_option( NOVA_BRIDGE_SUITE_OPTION, $settings ) ) { return false; }
+    if ( $fresh ) {
+        add_option( 'nova_bridge_suite_auto_enabled', [ 'schema_version' => 1, 'version' => NOVA_BRIDGE_SUITE_VERSION, 'modules' => $auto_enabled ], '', false );
+    }
+    return $fresh;
+}
+
+function nova_bridge_suite_auto_enabled_modules(): array {
+    $record = get_option( 'nova_bridge_suite_auto_enabled', [] );
+    if ( ! is_array( $record ) || 1 !== ( $record['schema_version'] ?? null ) || ! is_array( $record['modules'] ?? null ) ) { return []; }
+    $settings = nova_bridge_suite_get_settings();
+    $detected = nova_bridge_suite_detect_modules();
+    $active = [];
+    foreach ( $record['modules'] as $key => $source ) {
+        if ( ! empty( $settings[ $key ] ) && isset( $detected[ $key ] ) && $source === $detected[ $key ] ) { $active[ $key ] = $source; }
+    }
+    return $active;
+}
+
+function nova_bridge_suite_update_auto_enable_provenance( $old_value, $new_value ): void {
+    $record = get_option( 'nova_bridge_suite_auto_enabled', [] );
+    if ( ! is_array( $record ) || 1 !== ( $record['schema_version'] ?? null ) || ! is_array( $record['modules'] ?? null ) ) { return; }
+    $old_value = is_array( $old_value ) ? $old_value : [];
+    $new_value = is_array( $new_value ) ? $new_value : [];
+    $changed = false;
+    foreach ( $record['modules'] as $key => $source ) {
+        if ( empty( $old_value[ $key ] ) !== empty( $new_value[ $key ] ) ) { unset( $record['modules'][ $key ] ); $changed = true; }
+    }
+    if ( $changed ) { update_option( 'nova_bridge_suite_auto_enabled', $record, false ); }
+}
+
+function nova_bridge_suite_get_recommended_modules(): array {
+    $settings = nova_bridge_suite_get_settings();
+    $recommendations = [];
+    $candidates = nova_bridge_suite_module_detection_candidates();
+    foreach ( nova_bridge_suite_detect_modules() as $key => $source ) {
+        $candidate = $candidates[ $key ];
 
         if ( ! empty( $settings[ $key ] ) ) {
             continue;
@@ -566,7 +622,7 @@ function nova_bridge_suite_register_settings(): void {
 
     add_settings_section(
         'nova_bridge_core',
-        'Core Bridge',
+        'NOVA Core',
         'nova_bridge_suite_render_core_section',
         'nova-settings'
     );
@@ -587,23 +643,16 @@ function nova_bridge_suite_register_settings(): void {
         'nova_bridge_core'
     );
 
-    add_settings_section(
-        'nova_bridge_api_mapping',
-        'API Mapping Context',
-        '__return_false',
-        'nova-settings'
-    );
-
     add_settings_field(
         'nova_bridge_api_mapping_context_toggle',
         'API Mapping Context',
         'nova_bridge_suite_render_checkbox_field',
         'nova-settings',
-        'nova_bridge_api_mapping',
+        'nova_bridge_core',
         [
             'key'         => 'api_mapping_context',
             'label'       => 'Enable API Mapping Context',
-            'description' => 'Discover publishing endpoints and map their API fields to NOVA content with optional authoring guidance.',
+            'description' => 'Optional layout setup and API field discovery. Enabled by default only on a new installation; updates preserve your choice. This does not enable the NOVA backend connection or automatic publication.',
         ]
     );
 
@@ -953,10 +1002,10 @@ function nova_bridge_suite_render_settings_page(): void {
 
     ?>
     <div class="wrap">
-        <h1 class="screen-reader-text"><?php echo esc_html__( 'NOVA WordPress layouts', 'nova-bridge-suite' ); ?></h1>
+        <h1 class="screen-reader-text"><?php echo esc_html( class_exists( 'Nova_Bridge_Suite_Layout_Setup_Admin' ) ? Nova_Bridge_Suite_Layout_Setup_Admin::screen_title( $current_tab ) : __( 'NOVA Settings', 'nova-bridge-suite' ) ); ?></h1>
         <div class="nova-publishing-app">
         <?php if ( class_exists( 'Nova_Bridge_Suite_Layout_Setup_Admin' ) ) : ?>
-            <?php Nova_Bridge_Suite_Layout_Setup_Admin::header(); ?>
+            <?php Nova_Bridge_Suite_Layout_Setup_Admin::header( $current_tab ); ?>
         <?php else : ?>
         <h1>
             <?php echo esc_html__( 'NOVA Settings', 'nova-bridge-suite' ); ?>
@@ -1129,6 +1178,7 @@ function nova_bridge_suite_render_settings_page(): void {
 
 function nova_bridge_suite_render_core_section(): void {
     echo '<p>' . esc_html__( 'The core NOVA Bridge and Post Resolver are always enabled.', 'nova-bridge-suite' ) . '</p>';
+    echo '<p>' . esc_html__( 'On first installation, NOVA enables matching supported builder and multilingual bridges detected on this site. Updates and reactivation preserve your saved module choices.', 'nova-bridge-suite' ) . '</p>';
 }
 
 function nova_bridge_suite_render_core_field(): void {
@@ -1168,6 +1218,11 @@ function nova_bridge_suite_render_checkbox_field( array $args ): void {
 
     if ( '' !== $description ) {
         echo '<p class="description">' . esc_html( $description ) . '</p>';
+    }
+
+    $auto_enabled = nova_bridge_suite_auto_enabled_modules();
+    if ( $checked && isset( $auto_enabled[ $key ] ) ) {
+        echo '<p class="description nova-bridge-auto-enabled">' . esc_html__( 'Auto-detected and enabled by NOVA', 'nova-bridge-suite' ) . '</p>';
     }
 
     if ( ! $disabled ) {

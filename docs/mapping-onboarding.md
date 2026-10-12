@@ -2,6 +2,8 @@
 
 Open **NOVA settings → Layouts**. Choose how an article should fit the website. The two approaches are independent; a site can save setups for both.
 
+Each settings section has its own title: **Layouts**, **NOVA connection** or **Modules**. The two layout editors stay under **Layouts**.
+
 The NOVA screen uses the available WordPress admin width. External theme/plugin admin notices are suppressed on this screen only; WordPress core and NOVA notices remain available. Other admin screens are unaffected.
 
 | Approach | Use it when | What the mapping means |
@@ -10,6 +12,14 @@ The NOVA screen uses the available WordPress admin width. External theme/plugin 
 | **Build new Elementor content** | The article should determine how many headings, paragraphs and other widgets the new page needs. | Choose which Elementor widget each content type becomes. Three paragraphs can create three Text Editor widgets. |
 
 Elementor layout rules **are a mapping**. They do not require a second, fixed-field mapping or a source page. “Text Editor” refers to the actual Elementor widget, not this plugin's article input.
+
+## Installation and modules
+
+Under **Modules → NOVA Core**, **Enable API Mapping Context** is an optional switch for layout setup and API field discovery. The core NOVA Bridge and Post Resolver remain enabled. API Mapping Context defaults on only for a genuinely new installation, subject to standalone-plugin conflicts; an upgrade does not turn a previously disabled or missing API choice on.
+
+At first installation, the suite enables matching supported builder and multilingual bridges for providers already active on the site. Conflicting standalone bridges are skipped. **Auto-detected and enabled by NOVA** identifies a bridge actually enabled by that initial setup, while it remains enabled and the same provider is detected. A manual toggle removes that automatic attribution. Updates and reactivation preserve saved module choices; detection on an existing site can offer a recommendation for an administrator to review.
+
+The suite does not install or activate external builder/language plugins. Initial defaults and later module changes do not switch on the NOVA connection or automatic publication. Elementor test drafts still require Elementor and its NOVA bridge to be available.
 
 ## Fill an existing layout
 
@@ -37,7 +47,7 @@ In this guide, reviewing rules requires a complete preview of the current conten
 
 ## Return to a saved workspace
 
-Saved setups appear on **Layouts**. **Open workspace** makes their sections available together for edits, previews and local saves. **Guided setup** remains available. Saving changed rules creates a new revision; a delivery preference already bound to an older revision stays on that revision until explicitly changed.
+Saved setups appear inside the collapsed **Saved layouts (N)** section on **Layouts**. Expand it and choose **Open workspace** to make the setup's sections available together for edits, previews and local saves. **Guided setup** remains available. Saving changed rules creates a new revision; a delivery preference already bound to an older revision stays on that revision until explicitly changed.
 
 ## NOVA connection and generation
 

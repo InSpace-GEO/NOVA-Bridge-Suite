@@ -126,6 +126,9 @@
 .nova-publishing-app .nova-layout-choice input:checked + .nova-layout-choice-content :is(h3,strong) { color: var(--nova-purple); }
 .nova-publishing-app .nova-layout-start form > :is(.button,button) { margin-top: 24px; }
 .nova-publishing-app .nova-layout-saved { margin-top: 36px; padding-top: 28px; border-top: 1px solid var(--nova-border); }
+.nova-publishing-app .nova-layout-saved > summary { color: var(--nova-ink); font-size: 16px; font-weight: 600; cursor: pointer; }
+.nova-publishing-app .nova-layout-saved > summary::marker { color: var(--nova-purple); }
+.nova-publishing-app .nova-layout-saved[open] > summary { margin-bottom: 20px; }
 .nova-publishing-app .nova-layout-saved > h2 { margin: 0 0 16px; font-size: 22px; }
 .nova-publishing-app .nova-layout-saved-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
 .nova-publishing-app .nova-layout-saved-card { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; min-width: 0; padding: 20px; border: 1px solid var(--nova-border); border-radius: var(--nova-radius); background: var(--nova-white); }
