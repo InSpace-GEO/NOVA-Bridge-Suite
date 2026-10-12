@@ -763,9 +763,27 @@ $GLOBALS['nbs_el_language']   = '';
 // The live site: WPML with German as the default language.
 $GLOBALS['nbs_el_default_language'] = 'de';
 
+/**
+ * A GET request to the collection route. Like core, get_param() falls back to
+ * the route's REGISTERED defaults (status => 'publish', ...), while
+ * get_query_params() holds only what the caller sent. A stub returning null
+ * for an omitted param hid that the controller read the default as an
+ * explicit ?status=publish.
+ */
 class WP_REST_Request
 {
     private $params;
+    private $defaults = [
+        'include_fields'      => true,
+        'include_element_map' => false,
+        'include_document'    => false,
+        'post_type'           => 'page',
+        'status'              => 'publish',
+        'per_page'            => 10,
+        'page'                => 1,
+        'order'               => 'desc',
+        'orderby'             => 'date',
+    ];
 
     public function __construct(array $params = [])
     {
@@ -774,7 +792,26 @@ class WP_REST_Request
 
     public function get_param($key)
     {
-        return array_key_exists($key, $this->params) ? $this->params[$key] : null;
+        if (array_key_exists($key, $this->params)) {
+            return $this->params[$key];
+        }
+
+        return array_key_exists($key, $this->defaults) ? $this->defaults[$key] : null;
+    }
+
+    public function get_query_params()
+    {
+        return $this->params;
+    }
+
+    public function get_body_params()
+    {
+        return [];
+    }
+
+    public function get_json_params()
+    {
+        return null;
     }
 }
 
@@ -857,7 +894,8 @@ class WP_Query
         }
 
         $limit       = isset($args['posts_per_page']) ? (int) $args['posts_per_page'] : 10;
-        $this->posts = $limit > 0 ? array_slice($matches, 0, $limit) : $matches;
+        $paged       = isset($args['paged']) ? max(1, (int) $args['paged']) : 1;
+        $this->posts = $limit > 0 ? array_slice($matches, ($paged - 1) * $limit, $limit) : $matches;
     }
 
     public function have_posts()
@@ -1125,7 +1163,11 @@ nbs_el_seed_post(7901, 'page', 'draft', ['post_name' => 'draft-only', 'nbs_lang'
 nbs_el_seed_post(7902, 'page', 'draft', ['post_name' => 'mixed-status', 'nbs_lang' => 'en']);
 nbs_el_seed_post(7903, 'page', 'publish', ['post_name' => 'mixed-status', 'nbs_lang' => 'en']);
 
-nbs_check('a draft is still found by slug without ?status=', $found_id($lookup_in('en', ['slug' => 'draft-only'])), 7901);
+nbs_check(
+    'a draft is still found by slug without ?status= (the registered publish default is not a caller filter)',
+    $found_id($lookup_in('en', ['slug' => 'draft-only'])),
+    7901
+);
 nbs_check(
     'an explicit ?status=publish does not return the draft',
     is_wp_error($r = $lookup_in('en', ['slug' => 'draft-only', 'status' => 'publish'])) ? $r->get_error_code() : $found_id($r),
@@ -1136,6 +1178,40 @@ nbs_check(
     $found_id($lookup_in('en', ['slug' => 'mixed-status'])),
     7903
 );
+
+// PR #11 review: the candidate scan was capped at the oldest 20 posts sharing
+// the basename, so a newer top-level page behind 20+ same-named children was
+// never examined and the first child came back as a basename match. 120
+// children also crosses a 100-row batch boundary.
+$children = [];
+for ($i = 0; $i < 120; ++$i) {
+    $parent_id  = 30000 + $i;
+    $child_id   = 31000 + $i;
+    nbs_el_seed_post($parent_id, 'page', 'publish', ['post_name' => 'hub-' . $i, 'nbs_lang' => 'en']);
+    nbs_el_seed_post($child_id, 'page', 'publish', ['post_name' => 'advisory', 'post_parent' => $parent_id, 'nbs_lang' => 'en']);
+    $children[] = $parent_id;
+    $children[] = $child_id;
+}
+nbs_el_seed_post(32000, 'page', 'publish', ['post_name' => 'advisory', 'post_parent' => 0, 'nbs_lang' => 'en']);
+nbs_check(
+    'a top-level page behind 120 older same-named children is still the exact-path match',
+    $found_id($lookup_in('en', ['slug' => 'advisory'])),
+    32000
+);
+nbs_check(
+    'a nested path past the first batch resolves its own child',
+    $found_id($lookup_in('en', ['slug' => 'hub-110/advisory'])),
+    31110
+);
+unset($GLOBALS['nbs_el_posts'][32000]);
+nbs_check(
+    'with no exact path match, the basename fallback still answers (oldest candidate)',
+    $found_id($lookup_in('en', ['slug' => 'advisory'])),
+    31000
+);
+foreach ($children as $seeded_id) {
+    unset($GLOBALS['nbs_el_posts'][$seeded_id]);
+}
 
 foreach ([7697, 17052, 7801, 7802, 17053, 7901, 7902, 7903, 7769, 17100] as $seeded_id) {
     unset($GLOBALS['nbs_el_posts'][$seeded_id]);

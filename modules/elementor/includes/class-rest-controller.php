@@ -320,7 +320,7 @@ class Rest_Controller extends WP_REST_Controller {
 				(string) $slug,
 				$lookup_types,
 				$status,
-				! empty( $request->get_param( 'status' ) )
+				$this->caller_supplied_param( $request, 'status' )
 			);
 			if ( ! $page_id ) {
 				return new WP_Error( 'seor_eb_not_found', __( 'Page not found for provided slug.', 'nova-bridge-suite' ), array( 'status' => 404 ) );
@@ -678,40 +678,52 @@ class Rest_Controller extends WP_REST_Controller {
 			return $this->find_post_id_by_path_any_language( $slug, $lookup_types, $status );
 		}
 
-		$query = new \WP_Query(
-			array(
-				'post_type'        => $lookup_types,
-				// post_name__in, not name: the same query core's
-				// /wp/v2/pages?slug= runs, which WPML scopes by the /en/
-				// directory. WPML rewrites name/pagename queries separately.
-				'post_name__in'    => array( basename( $path ) ),
-				'post_status'      => $status_requested ? $status : 'any',
-				'posts_per_page'   => 20,
-				'orderby'          => 'ID',
-				'order'            => 'ASC',
-				'fields'           => 'ids',
-				'no_found_rows'    => true,
-				'suppress_filters' => false,
-			)
-		);
-
+		// Every candidate sharing the basename is checked for the exact path
+		// before a basename match is accepted: a capped first page could hold
+		// only same-named children and hide the top-level page the caller
+		// meant (get_page_by_path() had no such cap).
+		$batch_size     = 100;
+		$paged          = 1;
 		$path_match     = 0;
 		$basename_match = 0;
-		foreach ( $query->posts as $post_id ) {
-			$post_id   = (int) $post_id;
-			$published = 'publish' === get_post_status( $post_id );
+		do {
+			$query = new \WP_Query(
+				array(
+					'post_type'        => $lookup_types,
+					// post_name__in, not name: the same query core's
+					// /wp/v2/pages?slug= runs, which WPML scopes by the /en/
+					// directory. WPML rewrites name/pagename queries separately.
+					'post_name__in'    => array( basename( $path ) ),
+					'post_status'      => $status_requested ? $status : 'any',
+					'posts_per_page'   => $batch_size,
+					'paged'            => $paged,
+					'orderby'          => 'ID',
+					'order'            => 'ASC',
+					'fields'           => 'ids',
+					'no_found_rows'    => true,
+					'suppress_filters' => false,
+				)
+			);
+			$batch = is_array( $query->posts ) ? $query->posts : array();
 
-			if ( trim( (string) get_page_uri( $post_id ), '/' ) === $path ) {
-				if ( $published ) {
-					return $post_id;
+			foreach ( $batch as $post_id ) {
+				$post_id   = (int) $post_id;
+				$published = 'publish' === get_post_status( $post_id );
+
+				if ( trim( (string) get_page_uri( $post_id ), '/' ) === $path ) {
+					if ( $published ) {
+						return $post_id;
+					}
+					if ( ! $path_match ) {
+						$path_match = $post_id;
+					}
+				} elseif ( ! $basename_match || ( $published && 'publish' !== get_post_status( $basename_match ) ) ) {
+					$basename_match = $post_id;
 				}
-				if ( ! $path_match ) {
-					$path_match = $post_id;
-				}
-			} elseif ( ! $basename_match || ( $published && 'publish' !== get_post_status( $basename_match ) ) ) {
-				$basename_match = $post_id;
 			}
-		}
+
+			++$paged;
+		} while ( count( $batch ) === $batch_size );
 
 		// A full-path match first; otherwise the same leniency as the basename
 		// fallback, within the language.
@@ -750,6 +762,25 @@ class Rest_Controller extends WP_REST_Controller {
 		);
 
 		return $fallback->have_posts() ? (int) $fallback->posts[0] : 0;
+	}
+
+	/**
+	 * Whether the caller sent $key itself. get_param() also returns the
+	 * route's registered default (status defaults to 'publish'), so it cannot
+	 * tell an omitted ?status= from an explicit one.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @param string          $key     Parameter name.
+	 * @return bool
+	 */
+	private function caller_supplied_param( $request, $key ) {
+		foreach ( array( $request->get_query_params(), $request->get_body_params(), $request->get_json_params() ) as $params ) {
+			if ( is_array( $params ) && isset( $params[ $key ] ) && '' !== $params[ $key ] ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**
