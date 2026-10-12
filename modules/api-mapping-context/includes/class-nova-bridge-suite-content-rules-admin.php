@@ -88,7 +88,7 @@ final class Nova_Bridge_Suite_Content_Rules_Admin {
     public static function list_profiles( $request ) {
         $types = [];
         foreach ( get_post_types( [ 'show_ui' => true ], 'objects' ) as $type ) {
-            if ( ! in_array( $type->name, [ 'attachment', 'revision', 'nav_menu_item', 'elementor_library' ], true ) && post_type_supports( $type->name, 'editor' ) ) {
+            if ( ! in_array( $type->name, [ 'attachment', 'revision', 'nav_menu_item', 'elementor_library', 'wp_block', 'wp_navigation', 'wp_template', 'wp_template_part', 'wp_global_styles', 'wp_font_family', 'wp_font_face', 'e-floating-buttons' ], true ) && post_type_supports( $type->name, 'editor' ) ) {
                 $types[] = [ 'value' => $type->name, 'label' => $type->labels->singular_name ];
             }
         }
