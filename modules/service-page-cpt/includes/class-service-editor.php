@@ -55,12 +55,18 @@ final class ServiceEditor {
 		}
 		$is_new = 'auto-draft' === $post->post_status;
 		$is_v2  = ServiceDocument::is_v2( $post->ID ) || $is_new;
+		$setup_required = $is_v2 && ServiceOnboarding::is_required();
 		$document = $is_new ? ServiceDocument::default_document( $post->ID ) : ServiceDocument::get_document( $post->ID );
 		self::enqueue_document_assets( [
 			'postId'       => $post->ID,
 			'mode'         => 'page',
 			'isV2'         => $is_v2,
 			'isNew'        => $is_new,
+			'visualEditor' => $is_v2,
+			'saveLabel'    => $setup_required ? __( 'Save draft', 'nova-bridge-suite' ) : ( in_array( $post->post_status, [ 'publish', 'private', 'future' ], true ) ? __( 'Update page', 'nova-bridge-suite' ) : ( \current_user_can( \get_post_type_object( 'service_page' )->cap->publish_posts ) ? __( 'Publish page', 'nova-bridge-suite' ) : __( 'Submit for review', 'nova-bridge-suite' ) ) ),
+			'saveAction'   => $setup_required ? 'save-post' : 'publish',
+			'onboardingRequired' => $setup_required,
+			'onboardingUrl' => ServiceOnboarding::setup_url(),
 			'document'     => $document,
 			'sections'     => ServiceDocument::section_registry(),
 			'restUrl'      => \rest_url( 'nova-service/v1/pages/' . $post->ID . '/migration' ),
@@ -90,6 +96,10 @@ final class ServiceEditor {
 		\wp_enqueue_style( 'nova-service-editor-v2', $url . 'service-editor-v2.css', [], (string) \filemtime( $directory . 'service-editor-v2.css' ) );
 		\wp_enqueue_script( 'nova-service-editor-v2', $url . 'service-editor-v2.js', [ 'jquery', 'jquery-ui-sortable', 'wp-api-fetch', 'editor', 'wp-util' ], (string) \filemtime( $directory . 'service-editor-v2.js' ), true );
 		\wp_localize_script( 'nova-service-editor-v2', 'novaServiceEditor', $config );
+		if ( ! empty( $config['visualEditor'] ) && 'page' === ( $config['mode'] ?? '' ) ) {
+			\wp_enqueue_style( 'nova-service-visual-editor-v2', $url . 'service-visual-editor-v2.css', [ 'nova-service-editor-v2' ], (string) \filemtime( $directory . 'service-visual-editor-v2.css' ) );
+			\wp_enqueue_script( 'nova-service-visual-editor-v2', $url . 'service-visual-editor-v2.js', [ 'nova-service-editor-v2' ], (string) \filemtime( $directory . 'service-visual-editor-v2.js' ), true );
+		}
 	}
 
 	public static function render_canvas(): void {

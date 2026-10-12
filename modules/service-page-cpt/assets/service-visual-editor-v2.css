@@ -1,0 +1,268 @@
+/* Visual editor chrome lives outside the rendered page iframe. */
+#nova-service-editor {
+	--nova-visual-ink: #0b0b0c;
+	--nova-visual-accent: #8511d9;
+	--nova-visual-green: #b9efa3;
+	--nova-visual-wash: #f5f6f3;
+	--nova-visual-muted: #5b5b61;
+	--nova-visual-line: rgba(11, 11, 12, .13);
+	--nova-visual-shadow: 0 12px 42px rgba(11, 11, 12, .13);
+}
+
+body.nova-service-visual-open { overflow: hidden; }
+body.nova-service-visual-open #nova-service-editor.nova-service-visual-mode {
+	position: fixed;
+	inset: 32px 0 0 160px;
+	z-index: 9990;
+	display: flex;
+	flex-direction: column;
+	width: auto;
+	max-width: none;
+	min-width: 0;
+	min-height: 0;
+	margin: 0;
+	padding: 0;
+	border: 0;
+	color: var(--nova-visual-ink);
+	background: var(--nova-visual-wash);
+	container-type: normal;
+}
+body.folded.nova-service-visual-open #nova-service-editor.nova-service-visual-mode { left: 36px; }
+
+#nova-service-editor.nova-service-visual-mode *,
+#nova-service-editor.nova-service-visual-mode *::before,
+#nova-service-editor.nova-service-visual-mode *::after { box-sizing: border-box; }
+#nova-service-editor.nova-service-visual-mode [hidden] { display: none !important; }
+#nova-service-editor.nova-service-visual-mode .nova-service-preview-viewport.is-frame-loading::after { content: 'Loading page…'; position: absolute; inset: 0; z-index: 10; display: grid; place-items: center; color: var(--nova-visual-ink); background: rgba(255,255,255,.9); font: inherit; }
+#nova-service-editor.nova-service-visual-mode > .nova-service-intro,
+#nova-service-editor.nova-service-visual-mode > .nova-service-footer,
+#nova-service-editor.nova-service-visual-mode > .nova-service-workspace { display: none; }
+
+#nova-service-editor .nova-visual-toolbar {
+	display: flex;
+	flex: 0 0 auto;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+	min-height: 62px;
+	padding: 12px 16px;
+	border-bottom: 1px solid var(--nova-visual-line);
+	color: var(--nova-visual-ink);
+	background: #fff;
+}
+#nova-service-editor.nova-service-visual-mode .nova-visual-toolbar { position: relative; z-index: 40; }
+#nova-service-editor .nova-visual-setup-notice { flex: 0 0 auto; padding: 10px 16px; border-bottom: 1px solid var(--nova-visual-line); color: var(--nova-visual-ink); background: #f7effd; font-size: 13px; line-height: 1.5; }
+#nova-service-editor .nova-visual-setup-notice a { margin-left: 8px; color: var(--nova-visual-accent); font-weight: 600; }
+#nova-service-editor .nova-visual-toolbar .button,
+#nova-service-editor .nova-visual-panel-heading .button,
+#nova-service-editor .nova-visual-section-tools .button,
+#nova-service-editor .nova-visual-rich-actions .button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 5px;
+	min-height: 34px;
+	margin: 0;
+	padding: 5px 11px;
+	border: 1px solid var(--nova-visual-line);
+	border-radius: 7px;
+	color: var(--nova-visual-ink);
+	background: #fff;
+	font: inherit;
+	font-size: 13px;
+	font-weight: 500;
+	line-height: 1.5;
+	white-space: nowrap;
+	text-shadow: none;
+	box-shadow: none;
+}
+#nova-service-editor .nova-visual-toolbar .button:hover,
+#nova-service-editor .nova-visual-panel-heading .button:hover,
+#nova-service-editor .nova-visual-section-tools .button:hover,
+#nova-service-editor .nova-visual-rich-actions .button:hover { border-color: var(--nova-visual-ink); background: var(--nova-visual-wash); }
+#nova-service-editor .nova-visual-toolbar .button-primary,
+#nova-service-editor .nova-visual-rich-actions .button-primary { border-color: var(--nova-visual-green); color: var(--nova-visual-ink); background: var(--nova-visual-green); }
+#nova-service-editor .nova-visual-toolbar .button-primary:hover,
+#nova-service-editor .nova-visual-rich-actions .button-primary:hover { border-color: var(--nova-visual-ink); background: var(--nova-visual-green); }
+#nova-service-editor .nova-visual-toolbar [aria-pressed="true"] { border-color: var(--nova-visual-accent); color: var(--nova-visual-accent); background: #f7effd; }
+#nova-service-editor.nova-service-visual-mode :is(button, a, input, select, textarea, summary):focus-visible { outline: 2px solid var(--nova-visual-accent); outline-offset: 3px; }
+#nova-service-editor.nova-service-visual-mode button:disabled { cursor: default; opacity: .45; }
+#nova-service-editor .nova-visual-status { flex: 1 1 140px; margin: 0 6px; color: var(--nova-visual-muted); font-size: 12px; line-height: 1.5; text-align: right; }
+#nova-service-editor.nova-service-visual-mode > .nova-service-message:not(:empty) {
+	position: absolute;
+	top: 74px;
+	left: 50%;
+	z-index: 100;
+	width: min(680px, calc(100% - 32px));
+	margin: 0;
+	padding: 12px 16px;
+	transform: translateX(-50%);
+	background: #fff;
+	box-shadow: var(--nova-visual-shadow);
+}
+
+#nova-service-editor.nova-service-visual-mode .nova-visual-body { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; }
+#nova-service-editor.nova-service-visual-mode .nova-service-preview-pane {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	flex-direction: column;
+	width: 100%;
+	height: 100%;
+	max-height: none;
+	margin: 0;
+	padding: 0;
+	border: 0;
+	border-radius: 0;
+	overflow: hidden;
+	background: var(--nova-visual-wash);
+}
+#nova-service-editor.nova-service-visual-mode .nova-service-preview-heading,
+#nova-service-editor.nova-service-visual-mode .nova-service-preview-controls,
+#nova-service-editor.nova-service-visual-mode .nova-service-preview-size,
+#nova-service-editor.nova-service-visual-mode .nova-service-preview-status,
+#nova-service-editor.nova-service-visual-mode .nova-service-preview-notes,
+#nova-service-editor.nova-service-visual-mode .nova-service-preview-toggle { display: none !important; }
+#nova-service-editor.nova-service-visual-mode .nova-service-preview-viewport {
+	position: relative;
+	flex: 1 1 auto;
+	width: 100%;
+	height: 100%;
+	min-height: 0;
+	max-height: none;
+	margin: 0 auto;
+	border: 0;
+	border-radius: 0;
+	resize: none;
+	overflow: hidden;
+	background: #fff;
+}
+#nova-service-editor.nova-service-visual-mode .nova-service-preview-frame { display: block; max-width: none; margin: 0; border: 0; background: #fff; }
+#nova-service-editor.nova-service-visual-mode.is-phone .nova-service-preview-viewport { flex: 0 1 auto; width: min(390px, 100%); height: 100%; box-shadow: 0 0 0 1px var(--nova-visual-line); }
+
+#nova-service-editor.nova-service-visual-mode .nova-visual-structure,
+#nova-service-editor.nova-service-visual-mode .nova-visual-inspector {
+	position: absolute;
+	top: 12px;
+	bottom: 12px;
+	z-index: 60;
+	display: flex;
+	flex-direction: column;
+	width: min(390px, calc(100% - 24px));
+	min-width: 0;
+	border: 1px solid var(--nova-visual-line);
+	border-radius: 12px;
+	overflow: hidden;
+	background: #fff;
+	box-shadow: var(--nova-visual-shadow);
+}
+#nova-service-editor.nova-service-visual-mode .nova-visual-structure { left: 12px; width: min(330px, calc(100% - 24px)); }
+#nova-service-editor.nova-service-visual-mode .nova-visual-inspector { right: 12px; }
+#nova-service-editor .nova-visual-panel-heading { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; min-height: 56px; padding: 12px 16px; border-bottom: 1px solid var(--nova-visual-line); background: #fff; }
+#nova-service-editor .nova-visual-panel-heading h3 { min-width: 0; margin: 0; color: var(--nova-visual-ink); font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; }
+#nova-service-editor .nova-visual-panel-heading .button { flex-shrink: 0; }
+#nova-service-editor .nova-visual-panel-body { flex: 1 1 auto; min-width: 0; min-height: 0; padding: 14px 16px; overflow: auto; overscroll-behavior: contain; }
+#nova-service-editor.nova-service-visual-mode .nova-visual-inspector .nova-service-edit-pane { display: block; min-width: 0; }
+#nova-service-editor.nova-service-visual-mode .nova-visual-inspector .nova-service-toolbar,
+#nova-service-editor.nova-service-visual-mode .nova-visual-inspector .nova-service-order-context { display: none; }
+#nova-service-editor.nova-service-visual-mode .nova-visual-inspector .nova-service-section { margin: 0; border: 0; border-radius: 0; box-shadow: none; }
+#nova-service-editor.nova-service-visual-mode .nova-visual-inspector .nova-service-section-header { padding: 10px 0; gap: 8px; background: #fff; }
+#nova-service-editor.nova-service-visual-mode .nova-visual-inspector .nova-service-section-header::before,
+#nova-service-editor.nova-service-visual-mode .nova-visual-inspector .nova-service-drag { display: none; }
+#nova-service-editor.nova-service-visual-mode .nova-visual-inspector .nova-service-section-content { padding: 6px 0 16px; }
+#nova-service-editor.nova-service-visual-mode .nova-visual-inspector .nova-service-image-grid { grid-template-columns: minmax(0, 1fr); }
+#nova-service-editor.nova-service-visual-mode .nova-visual-inspector .nova-service-image-card > img { height: auto; max-height: 190px; object-fit: contain; }
+#nova-service-editor.nova-service-visual-mode .nova-visual-inspector .nova-service-repeat-row { padding: 12px; }
+#nova-service-editor.nova-service-visual-mode .nova-visual-inspector .nova-service-enabled { margin-left: 0; }
+#nova-service-editor .nova-visual-structure-list { padding: 0; margin: 0 0 16px; list-style: none; }
+#nova-service-editor .nova-visual-structure-item { display: flex; align-items: center; gap: 8px; margin: 0 0 5px; padding: 5px; border: 1px solid transparent; border-radius: 7px; }
+#nova-service-editor .nova-visual-structure-item.is-selected { border-color: var(--nova-visual-accent); background: #f7effd; }
+#nova-service-editor .nova-visual-section-select { flex: 1 1 auto; min-width: 0; padding: 8px 5px; border: 0; color: var(--nova-visual-ink); background: transparent; font: inherit; font-size: 13px; line-height: 1.4; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+#nova-service-editor .nova-visual-section-state { flex: 0 0 auto; padding: 2px 6px; border-radius: 4px; color: var(--nova-visual-muted); background: #efefef; font-size: 11px; line-height: 1.5; }
+#nova-service-editor .nova-visual-add-type { width: 100%; max-width: 100%; min-height: 36px; margin-bottom: 8px; }
+
+#nova-service-editor.nova-service-visual-mode .nova-visual-section-tools {
+	position: absolute;
+	bottom: 16px;
+	left: 16px;
+	z-index: 45;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 7px;
+	width: max-content;
+	max-width: calc(100% - 32px);
+	margin: 0;
+	padding: 10px 12px;
+	border: 1px solid var(--nova-visual-line);
+	border-radius: 10px;
+	background: #fff;
+	box-shadow: var(--nova-visual-shadow);
+}
+#nova-service-editor.nova-service-visual-mode.is-structure-open .nova-visual-section-tools { left: 358px; max-width: calc(100% - 374px); }
+#nova-service-editor.nova-service-visual-mode.is-inspector-open .nova-visual-section-tools { max-width: calc(100% - 434px); }
+#nova-service-editor.nova-service-visual-mode.is-structure-open.is-inspector-open .nova-visual-section-tools { max-width: calc(100% - 776px); }
+#nova-service-editor .nova-visual-section-label { flex: 0 1 auto; min-width: 0; max-width: 250px; margin-right: 3px; color: var(--nova-visual-ink); font-size: 13px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+#nova-service-editor .nova-visual-source-note { color: var(--nova-visual-muted); font-size: 12px; line-height: 1.5; }
+#nova-service-editor .nova-visual-field-tools { display: flex; flex: 0 1 auto; flex-wrap: wrap; align-items: center; gap: 7px; min-width: 0; }
+#nova-service-editor .nova-visual-field-tools select { max-width: 240px; min-height: 34px; margin: 0; font-size: 13px; }
+
+#nova-service-editor.nova-service-visual-mode .nova-visual-rich-panel {
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	z-index: 90;
+	display: flex;
+	flex-direction: column;
+	width: min(920px, calc(100% - 48px));
+	max-height: calc(100% - 40px);
+	min-width: 0;
+	border: 1px solid var(--nova-visual-line);
+	border-radius: 12px;
+	transform: translate(-50%, -50%);
+	overflow: hidden;
+	background: #fff;
+	box-shadow: 0 20px 80px rgba(11, 11, 12, .24);
+}
+#nova-service-editor .nova-visual-rich-panel .wp-editor-wrap { width: 100%; max-width: 100%; }
+#nova-service-editor .nova-visual-rich-panel textarea { display: block; width: 100%; max-width: 100%; min-height: 260px; font-size: 14px; line-height: 1.6; }
+#nova-service-editor .nova-visual-rich-panel .mce-container { max-width: 100%; }
+#nova-service-editor .nova-visual-rich-panel .mce-edit-area iframe { min-height: 230px; max-height: 52vh; }
+#nova-service-editor .nova-visual-rich-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--nova-visual-line); background: #fff; }
+
+@media (max-width: 960px) {
+	body.auto-fold.nova-service-visual-open #nova-service-editor.nova-service-visual-mode { left: 36px; }
+	#nova-service-editor.nova-service-visual-mode .nova-visual-inspector { width: min(360px, calc(100% - 24px)); }
+	#nova-service-editor.nova-service-visual-mode.is-inspector-open .nova-visual-section-tools { max-width: calc(100% - 404px); }
+	#nova-service-editor.nova-service-visual-mode.is-structure-open.is-inspector-open .nova-visual-section-tools { left: 16px; max-width: calc(100% - 404px); }
+}
+
+@media (max-width: 782px) {
+	body.nova-service-visual-open #nova-service-editor.nova-service-visual-mode,
+	body.folded.nova-service-visual-open #nova-service-editor.nova-service-visual-mode,
+	body.auto-fold.nova-service-visual-open #nova-service-editor.nova-service-visual-mode { top: 46px; left: 0; }
+	body.nova-service-visual-open #wpadminbar { position: fixed; }
+	#nova-service-editor .nova-visual-toolbar { gap: 6px; min-height: 58px; padding: 8px; }
+	#nova-service-editor .nova-visual-status { flex-basis: 100%; margin: 0; text-align: left; }
+	#nova-service-editor.nova-service-visual-mode .nova-visual-structure,
+	#nova-service-editor.nova-service-visual-mode .nova-visual-inspector { top: auto; right: 8px; bottom: 8px; left: 8px; width: auto; height: min(56%, 470px); max-height: calc(100% - 90px); border-radius: 12px; }
+	#nova-service-editor.nova-service-visual-mode .nova-visual-section-tools,
+	#nova-service-editor.nova-service-visual-mode.is-structure-open .nova-visual-section-tools,
+	#nova-service-editor.nova-service-visual-mode.is-inspector-open .nova-visual-section-tools,
+	#nova-service-editor.nova-service-visual-mode.is-structure-open.is-inspector-open .nova-visual-section-tools { top: 8px; right: 8px; bottom: auto; left: 8px; width: max-content; max-width: calc(100% - 16px); gap: 5px; padding: 7px 8px; }
+	#nova-service-editor .nova-visual-section-label { max-width: 170px; }
+	#nova-service-editor .nova-visual-source-note { flex-basis: 100%; }
+	#nova-service-editor .nova-visual-field-tools select { max-width: 190px; }
+	#nova-service-editor.nova-service-visual-mode .nova-visual-rich-panel { width: calc(100% - 16px); max-height: calc(100% - 16px); }
+	#nova-service-editor .nova-visual-panel-heading { padding: 10px 12px; }
+	#nova-service-editor .nova-visual-panel-body { padding: 12px; }
+	#nova-service-editor .nova-visual-rich-panel textarea { min-height: 200px; }
+	#nova-service-editor .nova-visual-rich-panel .mce-edit-area iframe { min-height: 170px; max-height: 40vh; }
+	#nova-service-editor .nova-visual-rich-actions { padding: 10px 12px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	#nova-service-editor.nova-service-visual-mode *,
+	#nova-service-editor.nova-service-visual-mode *::before,
+	#nova-service-editor.nova-service-visual-mode *::after { scroll-behavior: auto !important; }
+}

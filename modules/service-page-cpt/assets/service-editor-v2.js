@@ -92,6 +92,7 @@
 	var localBackups = {};
 	var reviewImports = {};
 	var bulkReviews = {};
+	var visualListeners = [], visualUndo = [], visualRedo = [], visualCurrent = null, visualRestoring = false;
 	var richTypes = ['hero', 'rich_text', 'people', 'location', 'reviews', 'credentials', 'cta', 'custom_cta', 'related', 'faq'];
 	var imageTypes = ['hero', 'people', 'location', 'cta'];
 	var buttonTypes = ['hero', 'cta'];
@@ -123,9 +124,103 @@
 	}
 	function collection(section, key) {
 		var rows = Array.isArray(section.data[key]) ? section.data[key] : [];
-		return (section.data[key] = rows.map(function (row) { return row && !Array.isArray(row) && typeof row === 'object' ? row : {}; }));
+		rows = rows.map(function (row) { return row && !Array.isArray(row) && typeof row === 'object' ? row : {}; });
+		if (!hasOwn(section.data, key)) {
+			// Rendering an empty control must not turn an omitted field into an
+			// explicit clearing override. Attach the collection only on an edit.
+			return new Proxy(rows, {set: function (target, name, value) { target[name] = value; section.data[key] = target; return true; }});
+		}
+		section.data[key] = rows; return rows;
 	}
-	function changed() { saved = false; write(); updatePreviewSavedState(); renderOrderContext(); schedulePreview(); }
+	function changed() { visualRemember(); saved = false; write(); updatePreviewSavedState(); renderOrderContext(); schedulePreview(); visualNotify('model'); }
+	function visualSnapshot() { var title = document.getElementById('title'); return {document: clone(doc), title: title ? title.value : ''}; }
+	function visualNotify(type, extra) {
+		var cancelled = false, event = Object.assign({type: type, saved: saved, preventDefault: function () { cancelled = true; }}, extra || {});
+		visualListeners.slice().forEach(function (listener) { if (listener(event) === false) { cancelled = true; } });
+		return !cancelled;
+	}
+	function visualRemember() {
+		if (!config.visualEditor || visualRestoring || !visualCurrent) { return; }
+		var next = visualSnapshot();
+		if (JSON.stringify(next) !== JSON.stringify(visualCurrent)) { visualUndo.push(clone(visualCurrent)); if (visualUndo.length > 60) { visualUndo.shift(); } visualRedo = []; visualCurrent = next; }
+	}
+	function visualSection(id) { return doc.sections.find(function (section) { return section.id === id; }); }
+	function visualPath(path) {
+		var parts = String(path || '').split('.');
+		if (parts.length === 1 && ['title', 'body', 'eyebrow', 'address', 'map_url', 'video_url', '__page_title'].indexOf(parts[0]) >= 0) { return parts; }
+		if (parts.length >= 2 && ['items', 'buttons', 'images'].indexOf(parts[0]) >= 0 && /^(?:0|[1-9][0-9]?)$/.test(parts[1]) && (parts.length === 2 || parts.length === 3 && ['body', 'title', 'author', 'issuer', 'question', 'answer', 'label', 'url', 'image', 'alt', 'caption'].indexOf(parts[2]) >= 0)) { return parts; }
+		throw new Error('This page field cannot be edited inline.');
+	}
+	function visualField(id, path) {
+		var parts = visualPath(path), title = document.getElementById('title');
+		if (parts[0] === '__page_title') { return title ? title.value : ''; }
+		var section = visualSection(id); if (!section) { throw new Error('Select an existing section.'); }
+		var value = effectiveData(section);
+		parts.forEach(function (key) { value = value && typeof value === 'object' ? value[key] : undefined; });
+		return value === undefined || value === null ? '' : clone(value);
+	}
+	function visualMutate(action) {
+		removeEditors(); var result = action(); changed(); render(); return result;
+	}
+	function visualSet(id, path, value) {
+		var parts = visualPath(path);
+		if (typeof value !== 'string' || parts.length === 2) { throw new Error('Use text or the media chooser to edit this field.'); }
+		if (parts[0] === '__page_title') {
+			return visualMutate(function () { var title = document.getElementById('title'); if (!title) { throw new Error('The WordPress title field is unavailable.'); } title.value = value; });
+		}
+		var section = visualSection(id); if (!section) { throw new Error('Select an existing section.'); }
+		return visualMutate(function () {
+			if (parts.length === 1) { section.data[parts[0]] = value; return; }
+			var rows = clone(effectiveData(section)[parts[0]] || []), index = Number(parts[1]);
+			if (!Array.isArray(rows) || !rows[index] || typeof rows[index] !== 'object') { throw new Error('This item is no longer available.'); }
+			rows[index][parts[2]] = value; section.data[parts[0]] = rows;
+		});
+	}
+	function visualRestore(source, target) {
+		if (!source.length) { return; }
+		removeEditors(); target.push(visualSnapshot()); var state = source.pop();
+		doc = clone(state.document); var title = document.getElementById('title'); if (title) { title.value = state.title; }
+		visualCurrent = visualSnapshot(); visualRestoring = true;
+		try { changed(); render(); } finally { visualRestoring = false; }
+	}
+	function setupVisualCore() {
+		if (!config.visualEditor || editorMode !== 'page' || !preview) { return; }
+		preview.visual = true; visualCurrent = visualSnapshot();
+		window.novaServiceVisualCore = {
+			root: root, config: config, preview: preview,
+			getDocument: function () { return clone(doc); },
+			getSection: function (id) { var section = visualSection(id), preset = section && presetFor(section); return section ? Object.assign(clone(section), {effectiveData: effectiveData(section), label: sectionLabel(section), sharedEnabled: preset ? preset.enabled !== false : null}) : null; },
+			getField: visualField, setField: visualSet,
+			resetField: function (id, path) { var section = visualSection(id), key = visualPath(path)[0]; if (!section || !section.shared_key || key === '__page_title') { return; } if (!presetFor(section)) { throw new Error('This client default is unavailable. Choose an existing shared version before resetting content.'); } return visualMutate(function () { delete section.data[key]; }); },
+			replaceImage: function (id, path, image) {
+				var section = visualSection(id), parts = visualPath(path); if (!section || parts[0] !== 'images' || parts.length !== 2 || !image || typeof image.url !== 'string') { throw new Error('Choose an image for this section.'); }
+				return visualMutate(function () {
+					var data = effectiveData(section), rows = clone(data.images || []), index = Number(parts[1]);
+					if (section.type === 'location' && data.image_selection === 'one_per_page') { section.data.images = [clone(image)]; return; }
+					if (!Array.isArray(rows) || !rows[index]) { throw new Error('This photo is no longer available.'); }
+					rows[index] = clone(image); section.data.images = rows;
+				});
+			},
+			move: function (id, offset) { var index = doc.sections.findIndex(function (section) { return section.id === id; }), next = index + offset; if (index < 0 || next < 0 || next >= doc.sections.length || !Number.isInteger(offset)) { return; } return visualMutate(function () { doc.sections.splice(next, 0, doc.sections.splice(index, 1)[0]); }); },
+			duplicate: function (id) { var section = visualSection(id); if (!section || doc.sections.length >= 60) { throw new Error('A service page supports up to 60 sections.'); } return visualMutate(function () { var duplicate = clone(section); duplicate.id = uniqueId(); delete duplicate.content_slot; if (duplicate.type === 'rich_text') { delete duplicate.data.intent; } doc.sections.splice(doc.sections.indexOf(section) + 1, 0, duplicate); return duplicate.id; }); },
+			remove: function (id) { var section = visualSection(id); if (!section) { return; } return visualMutate(function () { doc.sections.splice(doc.sections.indexOf(section), 1); }); },
+			toggle: function (id) { var section = visualSection(id); if (!section) { return; } return visualMutate(function () { section.enabled = section.enabled === false; }); },
+			add: function (type, after) { if (!registry[type] || doc.sections.length >= 60) { throw new Error('Choose a section type; a page supports up to 60 sections.'); } return visualMutate(function () {
+				var section = {id: uniqueId(), type: type, enabled: true, data: {heading_level: 'h2'}}, index = doc.sections.findIndex(function (entry) { return entry.id === after; });
+				if (type === 'rich_text') { var used = doc.sections.map(richTextSlot), slot = ['rich_text_1', 'rich_text_2', 'rich_text_3'].find(function (entry) { return used.indexOf(entry) < 0; }); if (slot) { section.content_slot = slot; } }
+				var preset = presets.find(function (entry) { return entry.id === 'default_' + type && entry.type === type; }); if (preset) { section.shared_key = preset.id; section.data = {}; }
+				doc.sections.splice(index < 0 ? doc.sections.length : index + 1, 0, section); expanded[section.id] = true; return section.id;
+			}); },
+			select: function (id, scroll) { activeSectionId = id; activePreviewId = id; focusPreviewSection(id, id, Boolean(scroll)); },
+			undo: function () { visualRestore(visualUndo, visualRedo); }, redo: function () { visualRestore(visualRedo, visualUndo); }, canUndo: function () { return visualUndo.length > 0; }, canRedo: function () { return visualRedo.length > 0; },
+			setDevice: function (device) { preview.device = device === 'phone' ? 'phone' : 'desktop'; fitPreviewFrame(); }, refresh: function () { schedulePreview(true); },
+			setEditing: function (editing) { preview.editing = Boolean(editing); window.clearTimeout(preview.timer); if (editing) { preview.serial++; if (preview.controller) { preview.controller.abort(); preview.controller = null; } } else { schedulePreview(true); } },
+			save: function () { var submit = document.getElementById(config.saveAction === 'save-post' ? 'save-post' : 'publish'); if (!submit || submit.disabled) { throw new Error('The WordPress save action is unavailable.'); } submit.click(); },
+			getInspector: function () { return root.querySelector('.nova-service-edit-pane'); },
+			subscribe: function (listener) { visualListeners.push(listener); return function () { visualListeners = visualListeners.filter(function (entry) { return entry !== listener; }); }; }
+		};
+		document.dispatchEvent(new window.CustomEvent('nova-service-visual-ready'));
+	}
 	function write() { input.value = JSON.stringify(doc); }
 	function selectedPreviewTarget() { return previewTargets.find(function (target) { return Number(target.id) === selectedPreviewId; }) || null; }
 	function syncPreviewTargetContext() {
@@ -240,7 +335,7 @@
 	}
 	function fitPreviewFrame() {
 		if (!preview || !preview.viewport.clientWidth) { return; }
-		var width = preview.device === 'phone' ? 390 : 1140;
+		var width = preview.device === 'phone' ? 390 : (preview.visual ? Math.max(320, preview.viewport.clientWidth) : 1140);
 		var scale = Math.min(1, preview.viewport.clientWidth / width);
 		preview.frame.style.width = width + 'px';
 		preview.frame.style.height = Math.max(360, preview.viewport.clientHeight / scale) + 'px';
@@ -248,6 +343,7 @@
 	}
 	function schedulePreview(immediate) {
 		if (!preview || !config.editorPreviewUrl) { return; }
+		if (preview.editing) { preview.pending = true; return; }
 		window.clearTimeout(preview.timer); preview.serial++;
 		if (preview.controller) { preview.controller.abort(); preview.controller = null; }
 		preview.status.textContent = immediate ? 'Updating preview…' : 'Waiting for your latest changes…';
@@ -255,24 +351,29 @@
 	}
 	function refreshPreview() {
 		if (!preview) { return; }
+		if (preview.editing) { preview.pending = true; return; }
 		collectEditors(); var serial = preview.serial;
 		var controller = window.AbortController ? new window.AbortController() : null; preview.controller = controller;
 		preview.status.textContent = 'Updating preview…'; preview.pane.setAttribute('aria-busy', 'true');
 		var payload = {mode: editorMode, post_id: editorMode === 'page' ? Number(config.postId) : selectedPreviewId, document: clone(doc)};
 		var title = document.getElementById('title'); if (editorMode === 'page' && title) { payload.title = title.value; }
 		request(config.editorPreviewUrl, {method: 'POST', body: JSON.stringify(payload), signal: controller ? controller.signal : undefined}).then(function (result) {
-			if (serial !== preview.serial) { return; }
+			if (serial !== preview.serial || preview.editing) { return; }
 			if (!result || typeof result.html !== 'string') { throw new Error('The page preview did not return a display.'); }
 			try { preview.scrollY = preview.frame.contentWindow.scrollY || 0; } catch (error) { preview.scrollY = 0; }
-			preview.appliedSerial = serial; preview.frame.srcdoc = result.html;
+			preview.appliedSerial = serial;
+			if (preview.visual) { preview.framePending = true; preview.viewport.classList.add('is-frame-loading'); }
+			preview.frame.srcdoc = result.html;
 			preview.warnings.textContent = '';
 			(result.warnings || []).forEach(function (warning) { preview.warnings.appendChild(element('li', {}, warning)); });
 			preview.notes.hidden = !(result.warnings || []).length;
 			preview.status.textContent = 'Preview updated' + (saved ? '.' : ' — changes are not saved.');
+			visualNotify('status', {message: saved ? 'Saved page' : 'Unsaved changes'});
 		}).catch(function (error) {
 			if (serial !== preview.serial || error.name === 'AbortError') { return; }
 			preview.status.textContent = 'Preview could not update: ' + error.message + (preview.appliedSerial ? ' The last preview is still shown.' : '');
-		}).finally(function () { if (serial === preview.serial) { preview.pane.setAttribute('aria-busy', 'false'); preview.controller = null; } });
+			visualNotify('status', {message: preview.status.textContent});
+		}).finally(function () { if (serial === preview.serial) { if (!preview.visual || !preview.framePending) { preview.pane.setAttribute('aria-busy', 'false'); } preview.controller = null; } });
 	}
 	function setupPreview() {
 		if (!config.editorPreviewUrl) { return; }
@@ -314,15 +415,19 @@
 			var selectionStyle = frameDoc.createElement('style'); selectionStyle.textContent = '.nova-service-preview-selected{outline:3px solid #2271b1!important;outline-offset:3px;scroll-margin-top:16px}'; frameDoc.head.appendChild(selectionStyle);
 			frameDoc.addEventListener('click', function (event) {
 				if (event.target.closest('a,button[type="submit"],input[type="submit"]')) { event.preventDefault(); }
+				if (preview.visual) { return; }
 				var section = event.target.closest('[data-nova-service-section-id]'); if (!section) { return; }
 				var id = section.getAttribute('data-nova-service-section-id'), editorId = id;
 				if (libraryMode) { var reference = previewTargetSections().find(function (entry) { return entry.id === id; }); editorId = reference && doc.sections.some(function (preset) { return preset.id === reference.shared_key && preset.type === reference.type; }) ? reference.shared_key : ''; }
 				if (editorId) { focusEditorSection(editorId, id); }
 			});
 			frameDoc.addEventListener('submit', function (event) { event.preventDefault(); });
-			if (activeSectionId) { focusPreviewSection(activeSectionId, activePreviewId, true); }
+			if (preview.visual) { preview.frame.contentWindow.scrollTo(0, preview.scrollY); if (activeSectionId) { focusPreviewSection(activeSectionId, activePreviewId, false); } }
+			else if (activeSectionId) { focusPreviewSection(activeSectionId, activePreviewId, true); }
 			else { preview.frame.contentWindow.scrollTo(0, preview.scrollY); }
 			fitPreviewFrame();
+			visualNotify('frame');
+			if (preview.visual && !preview.framePending) { preview.pane.setAttribute('aria-busy', 'false'); }
 		}); preview.viewport.appendChild(preview.frame); pane.appendChild(preview.viewport);
 		preview.notes = element('details', {className: 'nova-service-preview-notes', hidden: ''}); preview.notes.appendChild(element('summary', {}, 'Preview notes')); preview.warnings = element('ul'); preview.notes.appendChild(preview.warnings); pane.appendChild(preview.notes);
 		pane.appendChild(element('p', {className: 'description'}, 'This preview shows your current edits. Save the page or shared settings to publish them. Forms and external embeds may be inactive here.'));
@@ -336,9 +441,9 @@
 		orderPanel = element('details', {className: 'nova-service-order-context'}); orderPanel.open = true;
 		var editPane = workspace.querySelector('.nova-service-edit-pane'); editPane.insertBefore(orderPanel, list);
 		if (window.ResizeObserver) { preview.resizeObserver = new window.ResizeObserver(fitPreviewFrame); preview.resizeObserver.observe(preview.viewport); } else { window.addEventListener('resize', fitPreviewFrame); }
-		list.addEventListener('focusin', function (event) { var section = event.target.closest('.nova-service-section'); if (section) { focusPreviewSection(section.getAttribute('data-section-id'), '', true); } });
-		list.addEventListener('click', function (event) { var section = event.target.closest('.nova-service-section'); if (section) { focusPreviewSection(section.getAttribute('data-section-id'), '', true); } });
-		if (window.IntersectionObserver) {
+		list.addEventListener('focusin', function (event) { var section = event.target.closest('.nova-service-section'); if (section && !preview.visual) { focusPreviewSection(section.getAttribute('data-section-id'), '', true); } });
+		list.addEventListener('click', function (event) { var section = event.target.closest('.nova-service-section'); if (section && !preview.visual) { focusPreviewSection(section.getAttribute('data-section-id'), '', true); } });
+		if (window.IntersectionObserver && !config.visualEditor) {
 			preview.sectionObserver = new window.IntersectionObserver(function (entries) {
 				var visible = entries.filter(function (entry) { return entry.isIntersecting; }).sort(function (a, b) { return Math.abs(a.boundingClientRect.top - 110) - Math.abs(b.boundingClientRect.top - 110); });
 				if (visible.length) { focusPreviewSection(visible[0].target.getAttribute('data-section-id'), '', true); }
@@ -365,6 +470,7 @@
 	}
 	function initEditors(container) {
 		if (!window.wp || !window.wp.editor) { return; }
+		if (config.visualEditor && (!container.closest('.nova-visual-inspector:not([hidden])') || container.getAttribute('data-section-id') !== activeSectionId)) { return; }
 		container.querySelectorAll('textarea[data-rich-editor]').forEach(function (textarea) {
 			if (textarea.disabled || textarea.getAttribute('data-editor-ready')) { return; }
 			textarea.setAttribute('data-editor-ready', '1');
@@ -372,7 +478,7 @@
 				tinymce: {wpautop: true, height: 180, menubar: false, block_formats: 'Paragraph=p;Heading 2=h2;Heading 3=h3;Heading 4=h4', toolbar1: 'formatselect bold italic bullist numlist blockquote link unlink undo redo', toolbar2: '', setup: function (editor) {
 					var initialized = false;
 					editor.on('init', function () { initialized = true; });
-					editor.on('focus', function () { var row = textarea.closest('.nova-service-section'); if (row) { focusPreviewSection(row.getAttribute('data-section-id'), '', true); } });
+					editor.on('focus', function () { var row = textarea.closest('.nova-service-section'); if (row && !(preview && preview.visual)) { focusPreviewSection(row.getAttribute('data-section-id'), '', true); } });
 					editor.on('change keyup input SetContent', function () {
 						if (initialized && richFields[textarea.id]) { richFields[textarea.id](editor.getContent()); changed(); }
 					});
@@ -984,6 +1090,7 @@
 		renderOrderContext();
 		if (preview && preview.sectionObserver) { list.querySelectorAll('.nova-service-section').forEach(function (row) { preview.sectionObserver.observe(row); }); }
 		if (activeSectionId) { focusPreviewSection(activeSectionId, activePreviewId, false); }
+		visualNotify('model');
 	}
 	var typeSelect = document.getElementById('nova-service-add-type');
 	Object.keys(registry).forEach(function (type) { typeSelect.appendChild(element('option', {value: type}, registry[type].label)); });
@@ -1009,7 +1116,7 @@
 			status(result.data.message);
 		}).catch(function (error) { status(error.message, true); }).finally(function () { saveTemplate.disabled = false; });
 	}); }
-	if (form) { form.addEventListener('submit', function () { collectEditors(); submitting = true; }); }
+	if (form) { form.addEventListener('submit', function (event) { if (!visualNotify('beforeSave')) { event.preventDefault(); event.stopImmediatePropagation(); return; } collectEditors(); submitting = true; }); }
 	window.addEventListener('beforeunload', function (event) {
 		if (!saved && !submitting) { event.preventDefault(); event.returnValue = ''; }
 	});
@@ -1021,5 +1128,6 @@
 		// Initial editor setup is not an author edit.
 		saved = true;
 		updatePreviewSavedState();
+		setupVisualCore();
 	});
 }(window, document, window.jQuery));

@@ -153,6 +153,7 @@ function previewHarness(mode, supportsAbort = true) {
 		doc: {version: 2, sections: [{id: 'proof', type: 'reviews', enabled: true, shared_key: 'shared_proof', data: {}}]}, saved: false,
 		clone: plain, collectEditors() { collections++; }, document: {getElementById: () => ({value: 'Unsaved page title'})},
 		element(tag, attrs, text) { return {tag, attrs, text}; },
+		visualNotify() {},
 		request(url, options) { let resolve, reject; const promise = new Promise((done, fail) => { resolve = done; reject = fail; }); calls.push({url, options, resolve, reject}); return promise; }
 	};
 	vm.createContext(context);
@@ -198,5 +199,13 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 	libraryPreview.calls[0].reject(new Error('late error')); await settle();
 	equal(libraryPreview.preview.frame.srcdoc, 'latest library', 'serial guards also work without AbortController');
 	ok(!libraryPreview.preview.status.textContent.includes('late error'), 'stale errors cannot overwrite current status');
+	const typingPreview = previewHarness('page');
+	typingPreview.preview.editing = true; typingPreview.context.schedulePreview(true); typingPreview.flush();
+	equal(typingPreview.calls.length, 0, 'inline typing does not request or replace its focused canvas');
+	typingPreview.preview.editing = false; typingPreview.context.schedulePreview(true); typingPreview.flush();
+	equal(typingPreview.calls.length, 1, 'finishing inline editing resumes the renderer');
+	const focusedCanvas = typingPreview.preview.frame.srcdoc;
+	typingPreview.preview.editing = true; typingPreview.calls[0].resolve({html: 'late render during typing', warnings: []}); await settle();
+	equal(typingPreview.preview.frame.srcdoc, focusedCanvas, 'a response arriving during an edit cannot destroy the caret');
 	console.log(checks + ' editor preview checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

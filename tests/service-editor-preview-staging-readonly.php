@@ -80,6 +80,12 @@ try {
     $assert( false === strpos( $html, 'action="https://example.org/submit"' ) && false === strpos( $html, 'href="https://example.org/side-effect"' ), 'Preview removes submission and navigation actions' );
     $assert( 0 === $GLOBALS['nova_editor_sideeffects'], 'Preview does not execute a custom shortcode' );
     $assert( false !== strpos( $html, '<details' ), 'Native expandable proof and FAQ controls remain available' );
+    $visual_dom = new DOMDocument(); $visual_errors = libxml_use_internal_errors( true );
+    try { $visual_dom->loadHTML( '<?xml encoding="utf-8" ?>' . $html, LIBXML_NONET ); } finally { libxml_clear_errors(); libxml_use_internal_errors( $visual_errors ); }
+    $visual_xpath = new DOMXPath( $visual_dom );
+    $assert( 1 === $visual_xpath->query( '//section[@data-nova-service-section-id="preview_only_form"]//*[@data-nova-service-field="title" and @data-nova-service-kind="text"]' )->length, 'Unsaved sections expose a visual field control bound to their real document heading' );
+    $assert( $visual_xpath->query( '//section//*[@data-nova-service-field="body" and @data-nova-service-kind="html"]' )->length >= 1, 'The actual staging preview exposes rich-text model fields for visual editing' );
+    $assert( 0 === $visual_xpath->query( '//*[@data-nova-service-field and (not(@data-nova-service-kind) or @contenteditable or starts-with(@data-nova-service-field,"items.") and @class="nova-service__faq-icon")]' )->length, 'Visual field markers remain inert and exclude FAQ decoration' );
     $assert( $before === $snapshot(), 'Page preview leaves all client posts, metadata and options unchanged' );
 } finally { remove_shortcode( 'nova_editor_sideeffect_test' ); remove_filter( 'nova_service_allowed_shortcodes', $allow_fixture_shortcode ); }
 $library = Shared::get_presets();
@@ -127,10 +133,15 @@ $office_dom = new DOMDocument(); $office_errors = libxml_use_internal_errors( tr
 try { $office_dom->loadHTML( '<?xml encoding="utf-8" ?>' . $office_render, LIBXML_NONET ); } finally { libxml_clear_errors(); libxml_use_internal_errors( $office_errors ); }
 $office_xpath = new DOMXPath( $office_dom );
 $office_root = '//*[@id="nova-service-location"]';
+$assert( 0 === $office_xpath->query( '//*[@data-nova-service-field or @data-nova-service-kind]' )->length, 'Published service HTML contains no visual editor field controls' );
 $assert( 1 === $office_xpath->query( $office_root . '//div[contains(concat(" ",normalize-space(@class)," ")," nova-service__content-copy ")]//div[contains(concat(" ",normalize-space(@class)," ")," nova-service__location-map ")]/iframe' )->length, 'The active office map is embedded in the paragraph column' );
 $assert( 0 === $office_xpath->query( $office_root . '//address' )->length && 1 === $office_xpath->query( $office_root . '//img' )->length, 'Office maps replace visible address text while retaining one pooled photo' );
 $office_preview = $request( [ 'mode' => 'page', 'post_id' => 5461, 'document' => $office_page ] );
 $office_preview_html = $office_preview->get_data()['html'] ?? '';
 $assert( 200 === $office_preview->get_status() && false !== strpos( $office_preview_html, 'nova-service__location-map' ) && false === strpos( $office_preview_html, '<iframe' ), 'Office-map live previews retain the compact wrapper and deactivate external embeds' );
+$office_preview_dom = new DOMDocument(); $office_preview_errors = libxml_use_internal_errors( true );
+try { $office_preview_dom->loadHTML( '<?xml encoding="utf-8" ?>' . $office_preview_html, LIBXML_NONET ); } finally { libxml_clear_errors(); libxml_use_internal_errors( $office_preview_errors ); }
+$office_preview_xpath = new DOMXPath( $office_preview_dom );
+$assert( 1 === $office_preview_xpath->query( $office_root . '//*[@data-nova-service-field="map_url" and @data-nova-service-kind="settings"]' )->length && 1 === $office_preview_xpath->query( $office_root . '//img[@data-nova-service-kind="image" and starts-with(@data-nova-service-field,"images.")]' )->length, 'The office map and chosen pooled photo expose distinct settings and image controls in preview only' );
 $assert( $before === $snapshot(), 'Office rendering and preview checks leave all saved page and client data unchanged' );
 echo wp_json_encode( [ 'result' => 'PASS', 'read_only' => true, 'checks' => $checks ], JSON_PRETTY_PRINT ) . "\n";

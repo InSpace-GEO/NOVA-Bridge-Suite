@@ -191,7 +191,7 @@ final class ServiceLivePreview {
 			if ( $kit ) { $classes[] = 'elementor-kit-' . $kit; }
 			$policy = "default-src 'none'; style-src 'self' https: 'unsafe-inline'; img-src 'self' https: data:; font-src 'self' https: data:; script-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'self'";
 			$frame = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><meta http-equiv="Content-Security-Policy" content="' . \esc_attr( $policy ) . '"><base href="' . \esc_url( \home_url( '/' ) ) . '"><title>' . \esc_html( $title ) . '</title>' . $head . '</head><body class="' . \esc_attr( \implode( ' ', \array_unique( $classes ) ) ) . '"><main id="nova-service-primary">' . $content . '</main></body></html>';
-			return self::inert_html( $frame );
+			return self::visual_html( self::inert_html( $frame ), $document );
 		} catch ( \Throwable $error ) {
 			return self::error( 'The preview could not be rendered. Your saved page and settings were not changed.', 500 );
 		} finally {
@@ -200,6 +200,138 @@ final class ServiceLivePreview {
 			self::restore_elementor_fonts( $elementor_fonts );
 			self::$rendering = $old_rendering;
 			foreach ( $before as $name => $state ) { if ( $state[0] ) { $GLOBALS[ $name ] = $state[1]; } else { unset( $GLOBALS[ $name ] ); } }
+		}
+	}
+
+	/** Mark model fields on the inert editor canvas without changing public rendering. */
+	public static function visual_html( string $html, array $document ): string {
+		$dom = new \DOMDocument(); $previous = \libxml_use_internal_errors( true );
+		try { $dom->loadHTML( '<?xml encoding="utf-8" ?>' . $html, LIBXML_NONET ); }
+		finally { \libxml_clear_errors(); \libxml_use_internal_errors( $previous ); }
+		$xpath = new \DOMXPath( $dom );
+		// User HTML cannot opt itself into an editor control. Only fields below
+		// are annotated, after the safe preview has removed executable content.
+		foreach ( $xpath->query( '//*[@data-nova-service-field or @data-nova-service-kind]' ) as $node ) {
+			$node->removeAttribute( 'data-nova-service-field' ); $node->removeAttribute( 'data-nova-service-kind' );
+		}
+		$authored = self::visual_class( 'nova-service__rich' ) . ' or ' . self::visual_class( 'nova-service__embed' );
+		// Rich text and custom embeds are authored content, including any nested
+		// elements that imitate a renderer section. They cannot select another
+		// document section through the parent canvas controller.
+		foreach ( $xpath->query( '//*[@data-nova-service-section-id and ancestor::*[' . $authored . ']]' ) as $node ) { $node->removeAttribute( 'data-nova-service-section-id' ); }
+		$by_id = \array_column( $document['sections'] ?? [], null, 'id' );
+		foreach ( $xpath->query( '//section[@data-nova-service-section-id and not(ancestor::*[' . $authored . '])]' ) as $section ) {
+			$model = $by_id[ $section->getAttribute( 'data-nova-service-section-id' ) ] ?? null;
+			if ( ! $model || ! self::visual_has_class( $section, 'nova-service__section' ) ) { continue; }
+			$data = (array) ( $model['data'] ?? [] ); $type = $model['type'] ?? '';
+			$heading = self::visual_first( $xpath, './/*[' . self::visual_class( 'nova-service__heading' ) . ' or ' . self::visual_class( 'nova-service__hero-title' ) . ']', $section );
+			if ( $heading && ( ! empty( $data['title'] ) || 'hero' === $type ) ) {
+				self::visual_mark( $heading, 'hero' === $type && '' === \trim( (string) ( $data['title'] ?? '' ) ) ? '__page_title' : 'title', 'text' );
+			}
+			if ( ! empty( $data['eyebrow'] ) ) { self::visual_mark( self::visual_first( $xpath, './/*[' . self::visual_class( 'nova-service__eyebrow' ) . ']', $section ), 'eyebrow', 'text' ); }
+			// A section's main copy is outside its nested cards, FAQs and embeds.
+			$nested = \implode( ' or ', \array_map( [ self::class, 'visual_class' ], [ 'nova-service__card', 'nova-service__credential-disclosure', 'nova-service__faq', 'nova-service__embed', 'nova-service__gallery' ] ) );
+			if ( self::visual_rich_has_content( $data['body'] ?? '' ) ) {
+				self::visual_mark( self::visual_first( $xpath, './/div[' . self::visual_class( 'nova-service__rich' ) . ' and not(ancestor::*[' . $nested . '])]', $section ), 'body', 'html' );
+			}
+			if ( \in_array( $type, [ 'hero', 'rich_text', 'people', 'location', 'cta' ], true ) ) { self::visual_images( $xpath, $section, (array) ( $data['images'] ?? [] ) ); }
+			if ( \in_array( $type, [ 'hero', 'cta' ], true ) ) {
+				$indices = [];
+				foreach ( $data['buttons'] ?? [] as $index => $item ) { if ( \is_array( $item ) && '' !== \trim( (string) ( $item['label'] ?? '' ) ) && ! empty( $item['url'] ) ) { $indices[] = (int) $index; } }
+				foreach ( $xpath->query( './/div[' . self::visual_class( 'nova-service__actions' ) . ' and not(ancestor::*[' . $authored . '])]/a', $section ) as $index => $node ) {
+					if ( isset( $indices[ $index ] ) ) { self::visual_mark( self::visual_label( $dom, $node ), 'buttons.' . $indices[ $index ] . '.label', 'text' ); }
+				}
+			}
+			if ( 'faq' === $type ) { self::visual_faqs( $xpath, $section, (array) ( $data['items'] ?? [] ) ); }
+			if ( 'reviews' === $type || 'credentials' === $type ) { self::visual_items( $xpath, $section, (array) ( $data['items'] ?? [] ), $type ); }
+			if ( 'location' === $type || 'map' === $type ) {
+				self::visual_mark( self::visual_first( $xpath, './/div[' . self::visual_class( 'nova-service__map' ) . ']', $section ), 'map_url', 'settings' );
+			}
+			if ( 'video' === $type ) { self::visual_mark( self::visual_first( $xpath, './/div[' . self::visual_class( 'nova-service__video' ) . ']', $section ), 'video_url', 'settings' ); }
+		}
+		// Without a hero, the renderer owns a direct article header for the
+		// WordPress title. It is a virtual canvas target, never a document section.
+		foreach ( $xpath->query( '//article[@id="nova-service-v2" and not(ancestor::*[' . $authored . '])]/header[' . self::visual_class( 'nova-service__title' ) . ']/h1' ) as $heading ) {
+			$heading->parentNode->setAttribute( 'data-nova-service-section-id', '__page_title' );
+			self::visual_mark( $heading, '__page_title', 'text' );
+		}
+		foreach ( \iterator_to_array( $dom->childNodes ) as $node ) { if ( XML_PI_NODE === $node->nodeType ) { $dom->removeChild( $node ); } }
+		return $dom->saveHTML();
+	}
+
+	private static function visual_class( string $name ): string { return 'contains(concat(" ",normalize-space(@class)," ")," ' . $name . ' ")'; }
+	private static function visual_has_class( \DOMElement $node, string $name ): bool { return false !== \strpos( ' ' . \preg_replace( '/\s+/', ' ', $node->getAttribute( 'class' ) ) . ' ', ' ' . $name . ' ' ); }
+	private static function visual_first( \DOMXPath $xpath, string $query, \DOMNode $context ): ?\DOMElement {
+		$node = $xpath->query( $query, $context )->item( 0 ); return $node instanceof \DOMElement ? $node : null;
+	}
+	private static function visual_mark( ?\DOMElement $node, string $path, string $kind ): void {
+		if ( $node ) { $node->setAttribute( 'data-nova-service-field', $path ); $node->setAttribute( 'data-nova-service-kind', $kind ); }
+	}
+	private static function visual_rich_has_content( $value ): bool {
+		$value = (string) $value;
+		$plain = \html_entity_decode( \strip_tags( $value ), ENT_QUOTES, 'UTF-8' );
+		return '' !== \trim( \str_replace( "\xc2\xa0", ' ', $plain ) ) || (bool) \preg_match( '/<(?:img|video|audio|table|hr)\b/i', $value );
+	}
+
+	/** Isolate button label text from its decorative arrow in the preview only. */
+	private static function visual_label( \DOMDocument $dom, \DOMElement $node ): ?\DOMElement {
+		$label = null;
+		foreach ( \iterator_to_array( $node->childNodes ) as $child ) {
+			if ( XML_TEXT_NODE !== $child->nodeType ) { continue; }
+			if ( ! $label ) { $label = $dom->createElement( 'span' ); $node->insertBefore( $label, $child ); }
+			$label->appendChild( $child );
+		}
+		return $label;
+	}
+
+	private static function visual_images( \DOMXPath $xpath, \DOMElement $section, array $images ): void {
+		$used = [];
+		foreach ( $xpath->query( './/div[' . self::visual_class( 'nova-service__gallery' ) . ' and not(ancestor::*[' . self::visual_class( 'nova-service__rich' ) . ' or ' . self::visual_class( 'nova-service__embed' ) . '])]/figure/img', $section ) as $node ) {
+			foreach ( $images as $index => $image ) {
+				if ( ! \is_array( $image ) || isset( $used[ $index ] ) ) { continue; }
+				$url = (string) ( $image['url'] ?? '' );
+				$attachment = ! empty( $image['id'] ) && \function_exists( 'wp_get_attachment_image_url' ) ? (string) \wp_get_attachment_image_url( (int) $image['id'], 'large' ) : '';
+				if ( $node->getAttribute( 'src' ) !== $url && ( '' === $attachment || $node->getAttribute( 'src' ) !== $attachment ) ) { continue; }
+				self::visual_mark( $node, 'images.' . (int) $index, 'image' ); $used[ $index ] = true; break;
+			}
+		}
+	}
+
+	private static function visual_faqs( \DOMXPath $xpath, \DOMElement $section, array $items ): void {
+		$indices = [];
+		foreach ( $items as $index => $item ) {
+			if ( \is_array( $item ) && '' !== \trim( (string) ( $item['question'] ?? '' ) ) && '' !== \trim( \strip_tags( (string) ( $item['answer'] ?? '' ) ) ) ) { $indices[] = (int) $index; }
+		}
+		foreach ( $xpath->query( './/details[' . self::visual_class( 'nova-service__faq' ) . ' and not(ancestor::*[' . self::visual_class( 'nova-service__rich' ) . ' or ' . self::visual_class( 'nova-service__embed' ) . '])]', $section ) as $index => $node ) {
+			if ( ! isset( $indices[ $index ] ) ) { continue; }
+			$prefix = 'items.' . $indices[ $index ] . '.';
+			self::visual_mark( self::visual_first( $xpath, './summary/span[not(' . self::visual_class( 'nova-service__faq-icon' ) . ')]', $node ), $prefix . 'question', 'text' );
+			self::visual_mark( self::visual_first( $xpath, './div[' . self::visual_class( 'nova-service__rich' ) . ']', $node ), $prefix . 'answer', 'html' );
+		}
+	}
+
+	private static function visual_items( \DOMXPath $xpath, \DOMElement $section, array $items, string $type ): void {
+		$indices = [];
+		foreach ( $items as $index => $item ) {
+			if ( ! \is_array( $item ) ) { continue; }
+			$visible = self::visual_rich_has_content( $item['body'] ?? '' );
+			if ( 'credentials' === $type ) { $visible = $visible || '' !== \trim( (string) ( $item['title'] ?? '' ) ) || ! empty( $item['image'] ); }
+			if ( $visible ) { $indices[] = (int) $index; }
+		}
+		$authored = self::visual_class( 'nova-service__rich' ) . ' or ' . self::visual_class( 'nova-service__embed' );
+		$query = 'reviews' === $type ? './/figure[' . self::visual_class( 'nova-service__review' ) . ' and not(ancestor::*[' . $authored . '])]' : './/*[(' . self::visual_class( 'nova-service__credential' ) . ' or ' . self::visual_class( 'nova-service__credential-disclosure' ) . ') and not(ancestor::*[' . $authored . '])]';
+		foreach ( $xpath->query( $query, $section ) as $index => $node ) {
+			if ( ! isset( $indices[ $index ] ) ) { continue; }
+			$item_index = $indices[ $index ]; $item = $items[ $item_index ]; $prefix = 'items.' . $item_index . '.';
+			self::visual_mark( self::visual_first( $xpath, './/div[' . self::visual_class( 'nova-service__rich' ) . ']', $node ), $prefix . 'body', 'html' );
+			if ( ! empty( $item['title'] ) ) { self::visual_mark( self::visual_first( $xpath, './/*[' . self::visual_class( 'nova-service__card-title' ) . ' and not(ancestor::blockquote)]', $node ), $prefix . 'title', 'text' ); }
+			if ( 'reviews' === $type ) {
+				if ( ! empty( $item['author'] ) ) { self::visual_mark( self::visual_first( $xpath, './/*[' . self::visual_class( 'nova-service__testimonial-attribution' ) . ' and not(ancestor::blockquote)]//strong | ./figcaption/strong | ./figcaption/a/strong', $node ), $prefix . 'author', 'text' ); }
+			} else {
+				if ( ! empty( $item['issuer'] ) ) { self::visual_mark( self::visual_first( $xpath, './/*[' . self::visual_class( 'nova-service__credential-issuer' ) . ' or ' . self::visual_class( 'nova-service__credential-word' ) . ']', $node ), $prefix . 'issuer', 'text' ); }
+				$summary = self::visual_first( $xpath, './/span[' . self::visual_class( 'nova-service__credential-summary-label' ) . ']/span[not(' . self::visual_class( 'nova-service__credential-issuer' ) . ')]', $node );
+				if ( $summary && ( ! empty( $item['title'] ) || ! empty( $item['issuer'] ) ) ) { self::visual_mark( $summary, $prefix . ( ! empty( $item['title'] ) ? 'title' : 'issuer' ), 'text' ); }
+			}
 		}
 	}
 

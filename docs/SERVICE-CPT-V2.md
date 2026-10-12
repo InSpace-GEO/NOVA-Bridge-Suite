@@ -1,6 +1,6 @@
 # NOVA Service CPT v2 handover
 
-This is the unreleased `2.9.0-rc.1` staging candidate. Native service pages use one flexible section template and the WordPress classic admin screen. They do not require the Gutenberg, Essential Blocks or FAQ Block plugins. The site's header and footer remain in place. Site-wide fonts, colors and button styling supply the baseline; service content uses a scoped layout with optional presentation overrides.
+This is the unreleased `2.9.0-rc.1` staging candidate. Native service pages use one flexible section template and an integrated visual editor within WordPress. They do not require the Gutenberg, Essential Blocks or FAQ Block plugins. The site's header and footer remain in place. Site-wide fonts, colors and button styling supply the baseline; service content uses a scoped layout with optional presentation overrides.
 
 ## Set up a fresh installation
 
@@ -40,9 +40,13 @@ Keep shared keys stable after pages reference them. A missing or mismatched refe
 
 ## Edit a service page
 
-New pages start in the native editor. Use **Add section**, the drag handle, **Move up/down**, **Duplicate**, **Remove section** and **Show section**. A live preview shows current edits before saving, with Desktop and Phone views and an expanded view. Opening or focusing a section highlights its preview. The editor and preview follow the current page or template section order. Removing a section removes its data on save; hiding retains its data. Empty content sections are omitted from the page.
+Native pages open a full-width visual canvas using the actual Service renderer, site fonts and brand styles. Click a heading to edit it in place; Enter applies and Escape cancels. Click rich text to open the WordPress rich editor over the canvas, then choose **Apply** or **Cancel**. Clicking a page photograph opens the media chooser. These edits customize the current page; opening or cancelling an inherited field keeps its shared link intact.
 
-The preview uses the actual Service renderer and site theme/brand styles. It does not save posts, shared content or the default template. Save or update explicitly to publish the edits. Previewed forms, external embeds and plugin shortcodes are inactive or represented by a placeholder; use the saved WordPress page preview to check their full interaction and the site's header/footer. On narrow screens, **Show live preview** opens the preview above the editing controls.
+Select a section for contextual **Move up/down**, **Duplicate**, **Hide/Show**, **Remove** and **Settings** controls. **Sections** provides the page structure, including hidden and empty sections, and lets you add sections. Settings open only for the selected section. **Undo/Redo** cover text, media, inheritance and section order. Desktop and Phone display the responsive layout. **WordPress details** returns to metadata, status, SEO and legacy rollback controls. **Update page**, **Publish page** or **Submit for review** uses the normal WordPress save workflow; nothing is published just by editing the canvas.
+
+Canvas editing preserves the version-2 document, generic posting slots and regular REST response. Shared fields show their source; choosing client defaults removes the corresponding local field or collection override. Administrators can open shared settings separately to change every linked page. Forms, calendars and external media stay inactive in the editor; use the saved page to check those interactions. The shared library and starting-layout settings retain their field editor and preview. Existing legacy pages retain explicit opt-in migration.
+
+Unfinished text edits warn before leaving the screen without saving. Fresh installations show required setup guidance inside the canvas and offer **Save draft** until onboarding is complete.
 
 The authenticated editor-only route is `POST /wp-json/nova-service/v1/editor-preview`, with `mode:page|library|template`, `post_id`, `document` and an optional unsaved `title`. Library/template previews require service settings permissions; page previews require permission to edit the target. It returns an inert standalone HTML preview. Routine posting still reads context from the regular GET response; no context endpoint or publishing-system change is added.
 
