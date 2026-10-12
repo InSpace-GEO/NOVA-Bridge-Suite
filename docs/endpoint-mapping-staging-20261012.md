@@ -18,3 +18,13 @@ The CLI canary restored its exact owned test registry using a conditional databa
 ## Boundary
 
 These routes read, prepare, save and validate local document mappings. They do not upload them to either backend or apply generated document values to the site. Existing provider bridges remain the translation infrastructure for later integration. Unsupported complete products/builders are reported explicitly; this work does not silently flatten them into generic body fields. Native repeated structures can be captured, but this adapter does not invent or resize their rows.
+
+## Subsequent endpoint coverage refinement
+
+Products now shows **Coming soon** and is excluded from setup. Auxiliary taxonomies require proven content-page usage or an added editorial field; native WordPress categories/tags and WooCommerce brands/product tags are hidden on this staging site. WooCommerce product categories remain visible, explicitly labelled **WooCommerce categories**.
+
+The five NOVA-owned CPTs show a checkmark with **Automatically mapped by NOVA** and supply their own current native blank mappings without a client save. Their admin cards are passive and have no mapping-view or content-inspection actions. Client setup counts only the remaining three primary defaults. Official creation mappings can accept their declared typed editorial data arrays (FAQ rows, takeaways, text tables); existing native rows, relationships, toggles and layout/settings remain protected.
+
+All 17 PHP suites and six JavaScript suites passed again, including 146 document assertions, 165 controller checks and 18 onboarding tests. The read-only live canary passed 60 checks across all five automatic native mappings, including typed collection roundtrips, stale identity rejection and rejected client overrides. It preserved the client mapping option and existing native content. A fresh private backup verified all 126 scoped plugin options and six retained native pages unchanged, alongside the four deployed runtime hashes and unchanged connection settings. The card grid uses natural card heights; expanding one disclosure leaves neighboring actions in place.
+
+The final browser check confirmed that automatic NOVA cards contain no actions. Expanding Page destination details left the neighboring Post action at exactly the same screen position before and after expansion.

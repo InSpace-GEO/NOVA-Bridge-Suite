@@ -7,6 +7,8 @@ final class Nova_Bridge_Suite_Document_Mapping {
     private const MAX_BYTES = 8388608;
     private const MAX_FIELDS = 2000;
     private const MAX_TARGETS = 1000;
+    private const MAX_RELEVANCE_FIELDS = 64;
+    private static $excluded_taxonomies = [];
 
     private static function error( string $code, string $message, int $status = 409 ): WP_Error { return new WP_Error( 'nova_document_mapping_' . $code, $message, [ 'status' => $status ] ); }
     private static function fail( string $message ): void { throw new InvalidArgumentException( $message ); }
@@ -45,6 +47,7 @@ final class Nova_Bridge_Suite_Document_Mapping {
     }
 
     private static function catalog(): array {
+        self::$excluded_taxonomies = [];
         $discovered = class_exists( 'Nova_Bridge_Suite_Content_Context' ) ? Nova_Bridge_Suite_Content_Context::discover_resources() : []; $resources = [];
         foreach ( $discovered['resources'] ?? [] as $resource ) { if ( is_array( $resource ) && preg_match( '/^(post_type|taxonomy):[a-z0-9_-]{1,32}$/D', $resource['id'] ?? '' ) ) { $resources[ $resource['id'] ] = $resource; } }
         global $wp_rest_server; $routes = is_object( $wp_rest_server ) && method_exists( $wp_rest_server, 'get_routes' ) ? $wp_rest_server->get_routes() : [];
@@ -72,10 +75,13 @@ final class Nova_Bridge_Suite_Document_Mapping {
                 $resources[ $id ] = [ 'id' => $id, 'type' => 'taxonomy', 'taxonomy' => $name, 'label' => $taxonomy->labels->name ?? $name, 'route' => $route, 'methods' => $write['methods'], 'availability' => '' === $reason ? 'available' : 'unavailable', 'fields' => $fields, 'document_mapping_reason' => $reason ];
             }
         }
+        foreach ( $resources as $id => &$resource ) { if ( 0 === strpos( $id, 'taxonomy:' ) ) { $relevance = self::taxonomy_relevance( substr( $id, 9 ), $resource ); if ( 'relevant' !== $relevance['status'] ) { self::$excluded_taxonomies[ $id ] = [ 'resource_id' => $id, 'status' => $relevance['status'], 'reason' => $relevance['reason'] ]; unset( $resources[ $id ] ); } else { $resource['content_relevance'] = $relevance; } } } unset( $resource );
         $labels = []; foreach ( $resources as $resource ) { $label = (string) ( $resource['label'] ?? $resource['id'] ); $labels[ $label ] = ( $labels[ $label ] ?? 0 ) + 1; }
         foreach ( $resources as &$resource ) { $label = (string) ( $resource['label'] ?? $resource['id'] ); if ( $labels[ $label ] > 1 ) { $resource['label'] = $label . ' (' . $resource['id'] . ')'; } } unset( $resource );
         return $resources;
     }
+    /** Diagnostics distinguish incomplete evidence from proven-unused auxiliary archives. */
+    public static function excluded_resources(): array { if ( ! current_user_can( 'manage_options' ) ) { return []; } self::catalog(); return array_values( self::$excluded_taxonomies ); }
     private static function editorial_type( $type ): bool {
         $name = $type->name ?? '';
         return preg_match( '/^[a-z0-9_-]{1,32}$/D', $name ) && ! empty( $type->public ) && ! empty( $type->show_ui ) && ! empty( $type->show_in_rest )
@@ -87,6 +93,66 @@ final class Nova_Bridge_Suite_Document_Mapping {
         if ( ! preg_match( '/^[a-z0-9_-]{1,32}$/D', $name ) || empty( $taxonomy->public ) || empty( $taxonomy->show_ui ) || in_array( $name, [ 'nav_menu', 'post_format', 'link_category', 'wp_theme', 'wp_pattern_category', 'translation_priority', 'elementor_library_type', 'elementor_library_category' ], true ) || ! current_user_can( $taxonomy->cap->edit_terms ?? 'manage_categories' ) ) { return false; }
         foreach ( (array) ( $taxonomy->object_type ?? [] ) as $name ) { $type = $types[ $name ] ?? ( function_exists( 'get_post_type_object' ) ? get_post_type_object( $name ) : null ); if ( $type && self::editorial_type( $type ) ) { return true; } }
         return false;
+    }
+    private static function meaningful_text( $value, int $depth = 0 ): bool {
+        if ( $depth > 12 ) { return false; }
+        if ( is_array( $value ) ) { foreach ( $value as $child ) { if ( self::meaningful_text( $child, $depth + 1 ) ) { return true; } } return false; }
+        if ( ! is_string( $value ) ) { return false; }
+        $value = preg_replace( '#<(script|style|template)\b[^>]*>.*?</\1>#is', '', $value );
+        $value = html_entity_decode( strip_tags( $value ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+        return 1 === preg_match( '/[^\s\x{00a0}\x{200b}\x{feff}]/u', $value );
+    }
+    private static function editorial_meta_name( string $key ): bool {
+        return self::safe_key( $key ) && ! preg_match( '/(?:^|[_-])(?:seo|rankmath|rank_math|yoast|aioseo|robots|canonical|redirect|name|slug|url|link|permalink|route|routing|thumbnail|image|media|icon|logo|color|colour|css|style|font|size|width|height|border|padding|margin|align|order|position|id|language|locale|display|visibility|verification)(?:$|[_-])/i', $key ) && ! in_array( strtolower( $key ), [ 'name', 'title', 'url', 'link', 'term_id' ], true );
+    }
+    private static function editorial_text_schema( array $schema, int $depth = 0 ): bool {
+        if ( $depth > 12 || ! empty( $schema['readonly'] ) || isset( $schema['enum'] ) || ! empty( $schema['format'] ) ) { return false; }
+        if ( 'string' === ( $schema['type'] ?? '' ) ) { return true; }
+        if ( 'array' === ( $schema['type'] ?? '' ) && is_array( $schema['items'] ?? null ) ) { return self::editorial_text_schema( $schema['items'], $depth + 1 ); }
+        if ( 'object' === ( $schema['type'] ?? '' ) ) { foreach ( (array) ( $schema['properties'] ?? [] ) as $key => $child ) { if ( self::editorial_meta_name( (string) $key ) && is_array( $child ) && self::editorial_text_schema( $child, $depth + 1 ) ) { return true; } } }
+        return false;
+    }
+    /** Auxiliary taxonomy archives enter onboarding only with actual editorial-page evidence. */
+    private static function taxonomy_relevance( string $name, array $resource ): array {
+        if ( 'product_cat' === $name ) { return [ 'status' => 'relevant', 'reason' => 'Product categories are a default content-page destination.' ]; }
+        $registered = function_exists( 'get_registered_meta_keys' ) ? array_merge( (array) get_registered_meta_keys( 'term' ), (array) get_registered_meta_keys( 'term', $name ) ) : []; $candidates = [];
+        foreach ( (array) ( $resource['fields'] ?? [] ) as $field ) {
+            $path = $field['path'] ?? ''; if ( ! is_string( $path ) || empty( $field['writable'] ) || 'seo' === ( $field['source'] ?? '' ) ) { continue; }
+            if ( preg_match( '#^/meta(?:_all)?/([^/]+)(?:/|$)#', $path, $match ) ) {
+                $key = str_replace( [ '~1', '~0' ], [ '/', '~' ], $match[1] );
+                if ( ! self::editorial_meta_name( $key ) || empty( $registered[ $key ]['single'] ) || ! self::editorial_text_schema( self::meta_schema( $registered[ $key ] ) ) ) { continue; }
+                $candidates[ $key ] = true;
+                $hint = $key . ' ' . ( $registered[ $key ]['description'] ?? '' ) . ' ' . ( $field['label'] ?? '' );
+                if ( preg_match( '/(?:body|copy|intro|description|wysiwyg|faq|content|text|story|blurb|summary|details|paragraph|heading|headline|question|answer|editorial|bio)/i', $hint ) || in_array( $field['type'] ?? '', [ 'rich_text', 'textarea', 'wysiwyg' ], true ) ) { return [ 'status' => 'relevant', 'reason' => 'The taxonomy declares an editable custom editorial content schema.' ]; }
+            } elseif ( 0 === strpos( $path, '/acf/' ) && in_array( $field['type'] ?? '', [ 'string', 'rich_text', 'textarea', 'wysiwyg' ], true ) && ! empty( $field['acf_field_key'] ) ) {
+                $parts = self::parts( $path ); $key = $parts[1] ?? ''; if ( self::editorial_meta_name( $key ) && preg_match( '/(?:body|copy|intro|description|faq|content|text|story|summary|details|heading|question|answer|bio)/i', $key . ' ' . ( $field['label'] ?? '' ) ) ) { return [ 'status' => 'relevant', 'reason' => 'The taxonomy declares an editable custom editorial ACF field.' ]; }
+            }
+        }
+        global $wpdb;
+        if ( is_object( $wpdb ) && method_exists( $wpdb, 'get_var' ) && method_exists( $wpdb, 'prepare' ) && preg_match( '/^[a-zA-Z0-9_]+$/D', $wpdb->term_taxonomy ?? '' ) ) {
+            $table = $wpdb->term_taxonomy;
+            // Match visible text outside HTML tags; normalize nonbreaking spaces before matching.
+            $description = "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(tt.description), '&nbsp;', ' '), '&#160;', ' '), '&#xa0;', ' '), %s, ' '), %s, ' '), %s, ' ')";
+            $found = $wpdb->get_var( $wpdb->prepare( 'SELECT EXISTS(SELECT 1 FROM `' . $table . '` tt WHERE tt.taxonomy = %s AND ' . $description . ' REGEXP %s LIMIT 1)', $name, "\xc2\xa0", "\xe2\x80\x8b", "\xef\xbb\xbf", '(^|>)[[:space:]]*[^<[:space:]][^<]*($|<)' ) );
+            if ( '1' === (string) $found ) { return [ 'status' => 'relevant', 'reason' => 'At least one native taxonomy page has filled description content.' ]; }
+            if ( '0' !== (string) $found ) { return [ 'status' => 'unknown', 'reason' => 'Native content-page relevance could not be checked completely; review this taxonomy.' ]; }
+            if ( $candidates && preg_match( '/^[a-zA-Z0-9_]+$/D', $wpdb->termmeta ?? '' ) ) {
+                $keys = array_slice( array_keys( $candidates ), 0, self::MAX_RELEVANCE_FIELDS ); $placeholders = implode( ',', array_fill( 0, count( $keys ), '%s' ) );
+                $found = $wpdb->get_var( $wpdb->prepare( 'SELECT EXISTS(SELECT 1 FROM `' . $table . '` tt JOIN `' . $wpdb->termmeta . '` tm ON tm.term_id = tt.term_id WHERE tt.taxonomy = %s AND tm.meta_key IN (' . $placeholders . ") AND TRIM(tm.meta_value) NOT IN ('', 'a:0:{}', 'b:0;', 'N;') LIMIT 1)", ...array_merge( [ $name ], $keys ) ) );
+                if ( '1' === (string) $found ) { return [ 'status' => 'relevant', 'reason' => 'A registered custom editorial field contains native taxonomy-page content.' ]; }
+                if ( '0' !== (string) $found || count( $candidates ) > self::MAX_RELEVANCE_FIELDS ) { return [ 'status' => 'unknown', 'reason' => 'Custom taxonomy-page content could not be checked completely; review this taxonomy.' ]; }
+            } elseif ( $candidates ) { return [ 'status' => 'unknown', 'reason' => 'The registered custom editorial content store is unavailable for inspection.' ]; }
+            return [ 'status' => 'unused', 'reason' => 'No filled content-page description or declared editorial content field was found.' ];
+        }
+        if ( ! function_exists( 'get_terms' ) ) { return [ 'status' => 'unknown', 'reason' => 'Taxonomy content-page relevance is unavailable; review this taxonomy.' ]; }
+        $terms = get_terms( [ 'taxonomy' => $name, 'hide_empty' => false, 'number' => self::MAX_TARGETS + 1, 'orderby' => 'term_id', 'order' => 'ASC' ] );
+        if ( ! is_array( $terms ) || is_wp_error( $terms ) ) { return [ 'status' => 'unknown', 'reason' => 'Taxonomy content-page relevance could not be inspected.' ]; }
+        foreach ( array_slice( $terms, 0, self::MAX_TARGETS ) as $term ) {
+            if ( ! current_user_can( 'edit_term', $term->term_id ) ) { continue; }
+            if ( self::meaningful_text( $term->description ?? '' ) ) { return [ 'status' => 'relevant', 'reason' => 'At least one native taxonomy page has filled description content.' ]; }
+            foreach ( array_slice( $candidates, 0, self::MAX_RELEVANCE_FIELDS, true ) as $key => $unused ) { if ( current_user_can( 'edit_term_meta', $term->term_id, $key ) && self::meaningful_text( get_term_meta( $term->term_id, $key, true ) ) ) { return [ 'status' => 'relevant', 'reason' => 'A registered custom editorial field contains native taxonomy-page content.' ]; } }
+        }
+        return count( $terms ) > self::MAX_TARGETS || count( $candidates ) > self::MAX_RELEVANCE_FIELDS ? [ 'status' => 'unknown', 'reason' => 'The bounded relevance sample is incomplete; review this taxonomy rather than treating it as unused.' ] : [ 'status' => 'unused', 'reason' => 'No filled content-page description or declared editorial content field was found.' ];
     }
     /** Collection creation is deliberately required; an unrelated item callback is not proof. */
     private static function write_schema( array $handlers, array $editorial_keys ): array {
@@ -115,7 +181,7 @@ final class Nova_Bridge_Suite_Document_Mapping {
         return false;
     }
     private static function unsupported_reason( string $id ): string {
-        if ( 'post_type:product' === $id ) { return 'A complete WooCommerce product document adapter is required; generic post fields do not represent the full product.'; }
+        if ( 'post_type:product' === $id ) { return 'Coming soon.'; }
         if ( 'post_type:attachment' === $id ) { return 'A complete media document adapter is required; generic post fields do not represent the original file and its native media variants.'; }
         return '';
     }
@@ -126,7 +192,8 @@ final class Nova_Bridge_Suite_Document_Mapping {
         $result = [];
         foreach ( self::catalog() as $id => $resource ) {
             $term = 0 === strpos( $id, 'taxonomy:' ); $name = substr( $id, strpos( $id, ':' ) + 1 ); $targets = []; $complete = true;
-            if ( $term && function_exists( 'get_terms' ) ) { $items = get_terms( [ 'taxonomy' => $name, 'hide_empty' => false, 'number' => self::MAX_TARGETS + 1, 'orderby' => 'term_id', 'order' => 'ASC' ] ); }
+            if ( 'post_type:product' === $id ) { $items = []; }
+            elseif ( $term && function_exists( 'get_terms' ) ) { $items = get_terms( [ 'taxonomy' => $name, 'hide_empty' => false, 'number' => self::MAX_TARGETS + 1, 'orderby' => 'term_id', 'order' => 'ASC' ] ); }
             elseif ( ! $term && function_exists( 'get_posts' ) ) { $items = get_posts( [ 'post_type' => $name, 'post_status' => [ 'publish', 'draft', 'private', 'pending', 'future' ], 'numberposts' => self::MAX_TARGETS + 1, 'orderby' => 'ID', 'order' => 'ASC', 'suppress_filters' => true ] ); }
             else { $items = []; $complete = false; }
             if ( is_wp_error( $items ) || ! is_array( $items ) ) { $items = []; $complete = false; }
@@ -135,7 +202,12 @@ final class Nova_Bridge_Suite_Document_Mapping {
             $supported = self::supported_resource( $id );
             $reasons = [ $supported ? 'Templates and filled mappings are local preparation; this adapter has no native writing endpoint.' : self::unsupported_reason( $id ) ];
             if ( ! self::available( $resource ) ) { $reasons[] = (string) ( $resource['document_mapping_reason'] ?? $resource['message'] ?? 'No verified native writable endpoint is available for this resource.' ); }
-            $result[] = [ 'id' => $id, 'resource_id' => $id, 'label' => (string) ( $resource['label'] ?? $name ), 'type' => $term ? 'taxonomy' : 'post_type', $term ? 'taxonomy' : 'post_type' => $name, 'route' => (string) ( $resource['route'] ?? '' ), 'methods' => (array) ( $resource['methods'] ?? [] ), 'availability' => self::available( $resource ) ? 'available' : 'unavailable', 'creation_supported' => self::available( $resource ) && $supported, 'can_inspect_existing' => $supported, 'native_write_supported' => false, 'reasons' => $reasons, 'targets' => $targets, 'targets_complete' => $complete ];
+            $model = self::suite_model( $id ); $native_available = false;
+            if ( $model ) { $native = self::empty( $id ); $native_available = ! is_wp_error( $native ); if ( ! $native_available ) { $reasons[] = $native->get_error_message(); } }
+            $status = 'post_type:product' === $id ? 'coming_soon' : ( $model ? ( $native_available ? 'mapped_by_nova' : 'nova_mapping_unavailable' ) : ( self::available( $resource ) ? 'client_configurable' : 'unavailable' ) );
+            if ( 'unknown' === ( $resource['content_relevance']['status'] ?? '' ) ) { $reasons[] = $resource['content_relevance']['reason']; }
+            $label = 'taxonomy:product_cat' === $id ? 'WooCommerce categories' : (string) ( $resource['label'] ?? $name );
+            $result[] = [ 'id' => $id, 'resource_id' => $id, 'label' => $label, 'type' => $term ? 'taxonomy' : 'post_type', $term ? 'taxonomy' : 'post_type' => $name, 'route' => (string) ( $resource['route'] ?? '' ), 'methods' => (array) ( $resource['methods'] ?? [] ), 'availability' => self::available( $resource ) ? 'available' : 'unavailable', 'creation_supported' => self::available( $resource ) && $supported && ( ! $model || $native_available ), 'can_inspect_existing' => $supported, 'system_managed' => '' !== $model, 'native_mapping_available' => $native_available, 'native_provider' => $model ?: null, 'provider_status' => $status, 'client_configurable' => '' === $model && 'post_type:product' !== $id, 'coming_soon' => 'post_type:product' === $id, 'content_relevance' => $resource['content_relevance'] ?? null, 'native_write_supported' => false, 'reasons' => $reasons, 'targets' => $targets, 'targets_complete' => $complete ];
         }
         return $result;
     }
@@ -213,7 +285,9 @@ final class Nova_Bridge_Suite_Document_Mapping {
             if ( ! $term ) { self::suite_fields( $resource_id, $resource, $reference_id, $structure, $fields, $provider, $warnings ); }
             elseif ( 'product_cat' === $name ) { self::woocommerce_category( $resource, $reference_id, $structure, $fields, $provider ); }
             if ( ! self::available( $resource ) ) { $warnings[] = 'The resource has no verified native write route. This is a protected local inspection, not a ready publishing adapter.'; }
-            return self::envelope( $resource_id, $target, $provider, $structure, $fields, array_values( array_unique( $warnings ) ), $version, false === ( $provider['preview_read_only'] ?? true ) ? '' : self::preview( $object, $term ) );
+            $mapping = self::envelope( $resource_id, $target, $provider, $structure, $fields, array_values( array_unique( $warnings ) ), $version, false === ( $provider['preview_read_only'] ?? true ) ? '' : self::preview( $object, $term ) );
+            if ( in_array( $provider['id'], [ 'nova_blog', 'nova_service' ], true ) ) { $mapping['instructions'] = self::native_instructions(); }
+            return $mapping;
         } );
     }
 
@@ -335,10 +409,32 @@ final class Nova_Bridge_Suite_Document_Mapping {
             $label = ucwords( str_replace( '_', ' ', preg_replace( '/^(?:blog|sp)_/', '', $key ) ) );
             self::field( $fields, $structure, $path, $label, (string) ( $registration['type'] ?? 'string' ), false, [ 'native_path' => $path, 'native_schema' => $schema, 'native_provider' => $model ] );
             self::schema_content_fields( $structure, $fields, $path, $schema, $writable, $label, $model, preg_match( '/_url$/D', $key ) ? 'url' : '' );
+            if ( ! $id && $writable && in_array( $key, [ 'blog_key_takeaways', 'blog_faqs', 'sp_faq', 'sp_cta_bullets', 'sp_table' ], true ) ) {
+                $strict = self::editorial_array_schema( $schema );
+                if ( $strict ) { self::field( $fields, $structure, $path, $label, 'array', true, [ 'native_path' => $path, 'native_schema' => $strict, 'native_provider' => $model, 'source_free_editorial_array' => true, 'instructions' => 'Supply only the declared native editorial rows and text values. Preserve the item schema; do not add native IDs, styles or extra properties.' ] ); }
+            }
         }
         foreach ( $fields as &$field ) { if ( '/core/content' === $field['path'] || isset( $field['builder'] ) ) { $field['writable'] = false; $field['protected'] = true; $field['reason'] = 'The dedicated native template renders its own metadata slots; this body scaffold remains protected.'; } } unset( $field );
         $provider = array_merge( $provider, [ 'id' => $model, 'native_body_provider' => $provider['id'], 'template_sha256' => self::hash( $structure['suite_template'] ), 'preview_read_only' => false ] );
         $warnings[] = 'Dedicated native template, layout settings and metadata are captured without rendering or running legacy migration. Frontend preview is disabled because rendering may migrate legacy content.';
+    }
+    private static function native_instructions(): string { return 'NOVA supplies this native mapping. Fill only the selected editorial values and declared content arrays. Keep native layout, global CTA content, media references, related-item IDs, routing, toggles and all read-only identities unchanged. The new item remains a draft; this document does not write or publish native content.'; }
+    private static function editorial_array_schema( array $schema, int $depth = 0 ): array {
+        if ( $depth > 8 || ! empty( $schema['readonly'] ) ) { return []; }
+        $type = $schema['type'] ?? '';
+        if ( 'string' === $type ) { return $schema; }
+        if ( 'array' === $type && is_array( $schema['items'] ?? null ) ) { $items = self::editorial_array_schema( $schema['items'], $depth + 1 ); if ( ! $items ) { return []; } $schema['items'] = $items; $schema['maxItems'] = min( 200, (int) ( $schema['maxItems'] ?? 200 ) ); return $schema; }
+        if ( 'object' === $type && ! empty( $schema['properties'] ) ) {
+            foreach ( $schema['properties'] as $key => $child ) { if ( ! self::editorial_meta_name( (string) $key ) || ! is_array( $child ) ) { return []; } $strict = self::editorial_array_schema( $child, $depth + 1 ); if ( ! $strict ) { return []; } $schema['properties'][ $key ] = $strict; }
+            $schema['additionalProperties'] = false; $schema['required'] = array_keys( $schema['properties'] ); return $schema;
+        }
+        return [];
+    }
+    private static function editorial_array_value( $value, array $schema ): bool {
+        if ( 'string' === ( $schema['type'] ?? '' ) ) { return is_string( $value ) && false === strpos( $value, "\0" ) && 1 === preg_match( '//u', $value ); }
+        if ( 'array' === ( $schema['type'] ?? '' ) ) { if ( ! self::list_array( $value ) || count( $value ) > ( $schema['maxItems'] ?? 200 ) ) { return false; } foreach ( $value as $child ) { if ( ! self::editorial_array_value( $child, $schema['items'] ) ) { return false; } } return true; }
+        if ( 'object' === ( $schema['type'] ?? '' ) ) { if ( ! is_array( $value ) || array_diff( array_keys( $value ), array_keys( $schema['properties'] ) ) || array_diff( $schema['required'], array_keys( $value ) ) ) { return false; } foreach ( $value as $key => $child ) { if ( ! self::editorial_array_value( $child, $schema['properties'][ $key ] ) ) { return false; } } return true; }
+        return false;
     }
     private static function suite_key_active( string $model, string $type, string $key, array $settings ): bool {
         if ( 'nova_blog' === $model ) {
@@ -369,7 +465,8 @@ final class Nova_Bridge_Suite_Document_Mapping {
         if ( 'object' === $type && is_array( $value ) ) { foreach ( (array) ( $schema['properties'] ?? [] ) as $key => $child_schema ) { if ( self::safe_key( (string) $key ) && is_array( $child_schema ) && array_key_exists( $key, $value ) ) { self::schema_content_fields( $structure, $fields, $path . '/' . str_replace( [ '~', '/' ], [ '~0', '~1' ], $key ), $child_schema, $writable && empty( $child_schema['readonly'] ), $label . ' · ' . ucfirst( $key ), $provider, '', $depth + 1 ); } } return; }
         if ( 'string' !== $type || is_array( $value ) ) { return; }
         $format = $format ?: ( $schema['format'] ?? '' ); $kind = in_array( $format, [ 'url', 'uri', 'uri-reference' ], true ) ? 'url' : ( 'email' === $format ? 'email' : 'rich_text' );
-        self::field( $fields, $structure, $path, $label, $kind, $writable && empty( $schema['readonly'] ), [ 'native_path' => $path, 'native_schema' => $schema, 'native_provider' => $provider ] );
+        $notes = is_string( $schema['description'] ?? null ) && '' !== $schema['description'] ? $schema['description'] : 'Fill the native ' . $label . ' editorial slot. Keep its declared value type and native position.';
+        self::field( $fields, $structure, $path, $label, $kind, $writable && empty( $schema['readonly'] ), [ 'native_path' => $path, 'native_schema' => $schema, 'native_provider' => $provider, 'instructions' => $notes ] );
     }
     private static function suite_template( string $model ): array {
         $base = dirname( __DIR__, 2 ); $options = []; $artifacts = [];
@@ -472,7 +569,7 @@ final class Nova_Bridge_Suite_Document_Mapping {
             if ( ! $term ) { self::suite_fields( $resource_id, $resource, 0, $structure, $fields, $provider, $warnings ); }
             elseif ( 'product_cat' === $name ) { self::woocommerce_category( $resource, 0, $structure, $fields, $provider ); }
             $mapping = self::envelope( $resource_id, $target, $provider, $structure, $fields, $warnings, [] );
-            $mapping['mode'] = 'creation'; return $mapping;
+            $mapping['mode'] = 'creation'; if ( in_array( $provider['id'], [ 'nova_blog', 'nova_service' ], true ) ) { $mapping['instructions'] = self::native_instructions(); } return $mapping;
         } );
     }
     public static function blank( array $filled, array $selected_paths, string $instructions = '' ) {
@@ -481,7 +578,7 @@ final class Nova_Bridge_Suite_Document_Mapping {
             if ( 'creation' === $filled['mode'] && $filled['source_reference'] ) { return self::error( 'selection', 'Start authoring a creation blueprint from a fresh filled source mapping.', 400 ); }
             self::instructions( $instructions );
             foreach ( $filled['fields'] as $field ) { if ( self::hash( $field['value'] ) !== self::hash( $field['current_value'] ) ) { return self::error( 'selection', 'Creation authoring requires the original full source values, not a generation result.', 400 ); } }
-            $mapping = self::trusted_blank( $filled, $selected_paths ); $mapping['instructions'] = $instructions;
+            $mapping = self::trusted_blank( $filled, $selected_paths ); $mapping['instructions'] = '' === $instructions && in_array( $filled['provider']['id'], [ 'nova_blog', 'nova_service' ], true ) ? $filled['instructions'] : $instructions;
             self::json( $mapping ); return $mapping;
         } );
     }
@@ -517,6 +614,7 @@ final class Nova_Bridge_Suite_Document_Mapping {
     private static function allowed_value( $value, array $field ): bool {
         if ( is_object( $value ) || is_resource( $value ) ) { return false; }
         if ( $value === $field['current_value'] ) { return true; }
+        if ( ! empty( $field['source_free_editorial_array'] ) && ! self::editorial_array_value( $value, $field['native_schema'] ) ) { return false; }
         if ( isset( $field['native_schema'] ) && function_exists( 'rest_validate_value_from_schema' ) && is_wp_error( rest_validate_value_from_schema( $value, $field['native_schema'], $field['path'] ) ) ) { return false; }
         $type = $field['type'];
         if ( 'url' === $type && ( ! is_string( $value ) || ! self::safe_url( $value ) ) ) { return false; }

@@ -1,10 +1,10 @@
 # Endpoint defaults and live document mappings
 
-The Layouts screen now lists every discovered content destination. A destination has one local blank creation default; existing items are read from their own current native document. Users do not need to map every existing layout group.
+The Layouts screen lists relevant content destinations. Client-configurable destinations have one local blank creation default; NOVA's own Blog and Service CPTs use their native mapping automatically and show a checkmark with **Automatically mapped by NOVA**. Existing items are read from their own current native document. Users do not need to map every existing layout group.
 
 ## Onboarding
 
-For each supported destination, configure its creation default:
+For each client-configurable destination, configure its creation default:
 
 1. Start with standard WordPress fields, even if the destination has no items, or choose a sample to retain its native layout.
 2. Choose which supported content slots start empty. Review the server-generated blank preview. Unselected content and protected settings remain from the sample.
@@ -12,6 +12,10 @@ For each supported destination, configure its creation default:
 4. Review and save the local default. The sample itself is never changed.
 
 Inspect existing content separately to see full current values and native structure. This is read-only and does not require a saved creation default. Older reference drafts and Elementor rules remain under **Other layout tools**.
+
+**Products** shows **Coming soon** and is excluded from required setup. Native WordPress categories/tags and WooCommerce brands/product tags appear only when their content or added editorial fields show that the site uses them as content pages. WooCommerce product categories remain a primary destination. Merely having terms, taxonomy names, thumbnails or SEO/routing metadata does not require a mapping.
+
+NOVA-owned CPTs require no client setup and have no mapping-view or content-inspection actions in the admin. Their mappings are supplied automatically through the API from the current native definitions and template settings, rather than saved as client-authored defaults. Existing manual records remain in history but cannot override the official native mapping.
 
 ## Local API
 
@@ -29,6 +33,8 @@ All routes use `/wp-json/nova-bridge/v1/mapping`. They require an authenticated 
 
 A creation request contains `resource_id`, `reference_type`, `reference_id`, `source_document_version`, `selected_fields`, optional `field_descriptions`, `instructions` and `label`, and integer `expected_revision` for a save. IDs of zero select standard fields without a source item. The version must come from the source-read response. Saved defaults have a local UUID and integer revision. Concurrent saves cannot silently overwrite one another.
 
+For a NOVA-owned CPT, `GET /creation` returns its current official native mapping and exact identity without writing an option. Native identities include the blueprint digest and a native format revision; they are not client-save revision counters. Returned generated values must retain that exact current identity during validation. Template/schema changes invalidate an earlier native identity. Client save/preview requests cannot replace the official mapping.
+
 The mapping format is `nova-document-mapping/v1`. `structure` retains supported native layout and settings. `fields` includes complete current values, purposes, writable/protected flags and native paths. Generated output may change **only `fields[path].value`** for permitted slots; structure, source values, instructions, identity and freshness markers remain unchanged. Creation validation also requires the exact saved `mapping_id` and `revision`. Structure and content hashes detect layout drift and intervening editorial changes.
 
 Public creation templates empty selected values in both field aliases and native structure. Private source evidence in `nova_bridge_endpoint_mappings_v1` contains freshness markers, rather than a duplicate of the original selected content. The source reference identifies where the template originated; its new target ID is zero. Creation defaults reset publication to draft and clear the sample's slug, author, parent and menu order. Protected design, media and unselected copy may remain intentionally.
@@ -37,7 +43,7 @@ Public creation templates empty selected values in both field aliases and native
 
 Standard WordPress posts, pages, editable REST custom post types and eligible public taxonomies use native editorial fields and capability-approved registered metadata. Internal models such as navigation, pattern categories and WPML translation priorities are excluded from the publishing checklist. Approved ACF fields preserve existing nested/repeated structure. Elementor capture retains its ordered document and page settings, with supported content leaves editable. Gutenberg capture retains the block tree; supported paragraph, heading and list text leaves are editable, while unknown or dynamic blocks remain protected. No adapter invents repeated rows or native identities.
 
-NOVA's own Blog and Service CPTs use dedicated raw readers for their structured metadata and protected template settings. The template artifact/code hashes and current language scope are retained for validation. Their generic body scaffold stays protected when their native template owns rendering. Frontend previews are disabled for these models to avoid triggering legacy migration; native fields and structure remain inspectable. WooCommerce categories also retain their below-products copy and protected native display/media settings.
+NOVA's own Blog and Service CPTs use dedicated raw readers for their structured metadata and protected template settings. Their automatic source-free mappings also accept declared editorial data collections, such as FAQ rows, takeaways and text-only tables, with strict item schemas. Media IDs, related-post IDs, settings and native builder trees remain protected. Existing-item mappings retain their existing row structure. The template artifact/code hashes and current language scope are retained for validation. Their generic body scaffold stays protected when their native template owns rendering. Frontend previews are disabled for these models to avoid triggering legacy migration; native fields and structure remain inspectable. WooCommerce categories also retain their below-products copy and protected native display/media settings.
 
 An unsupported builder or complete WooCommerce product document returns an explicit capability limitation. Its generic post fields are not presented as a complete product or builder template. Oversized or sensitive native documents fail explicitly. Endpoint coverage distinguishes these destinations from configured supported defaults.
 

@@ -137,6 +137,37 @@ final class Nova_Bridge_Suite_Endpoint_Mappings {
         return $identity ? $state['revisions'][$identity['id']][$identity['revision']] : null;
     }
 
+    private static function managed( array $resource ): bool { return true === ( $resource['system_managed'] ?? false ); }
+
+    private static function native_descriptions( array $mapping, array $paths ): array {
+        $descriptions = [];
+        foreach ( $paths as $path ) {
+            $field = $mapping['fields'][$path];
+            $purpose = $field['native_schema']['description'] ?? ( $field['native_description'] ?? $field['label'] );
+            $descriptions[$path] = [ 'purpose' => is_string( $purpose ) ? $purpose : $field['label'], 'instructions' => (string) ( $field['instructions'] ?? '' ) ];
+        }
+        return $descriptions;
+    }
+
+    /** A native default is recomputed from current schema/settings, never stored as a client choice. */
+    private static function native_record( array $resource ) {
+        if ( false === ( $resource['native_mapping_available'] ?? true ) ) { return self::error( 'native_unavailable', 'The supplied NOVA native mapping is currently unavailable.', 409 ); }
+        $source = Nova_Bridge_Suite_Document_Mapping::empty( $resource['id'] ); if ( is_wp_error( $source ) ) { return $source; }
+        $provider = $source['provider']['id'] ?? '';
+        if ( '' === $provider || 'core' === $provider || ( isset( $resource['native_provider'] ) && $provider !== $resource['native_provider'] ) || empty( $source['provider']['complete'] ) ) { return self::error( 'native_unavailable', 'A complete matching NOVA native provider is required for this supplied mapping.', 409 ); }
+        $selected = [];
+        foreach ( $source['fields'] as $path => $field ) {
+            if ( ! empty( $field['writable'] ) && empty( $field['protected'] ) && ( is_string( $field['value'] ) || is_array( $field['value'] ) ) ) { $selected[] = $path; }
+        }
+        $instructions = (string) ( $source['instructions'] ?? '' );
+        $descriptions = self::native_descriptions( $source, $selected );
+        $blank = Nova_Bridge_Suite_Document_Mapping::blank( $source, $selected, $instructions ); if ( is_wp_error( $blank ) ) { return $blank; }
+        $blank = self::enrich( $blank, [ 'instructions' => $instructions, 'field_descriptions' => $descriptions ] );
+        if ( strlen( self::canonical_json( $blank ) ) > self::MAX_BODY_BYTES ) { return self::error( 'size', 'The supplied native mapping exceeds the complete-document limit.', 413 ); }
+        $version = self::document_version( $blank ); $type = $source['target']['reference_type'];
+        return [ 'resource_id' => $resource['id'], 'mapping_id' => 'native:' . $resource['id'] . ':' . $version, 'revision' => 1, 'schema_version' => 1, 'document_version' => $version, 'source_document_version' => self::document_version( $source ), 'reference' => [ 'reference_type' => $type, 'reference_id' => 0 ], 'reference_type' => $type, 'reference_id' => 0, 'selected_fields' => $selected, 'field_descriptions' => $descriptions ?: (object) [], 'label' => 'NOVA ' . $resource['label'] . ' mapping', 'instructions' => $instructions, 'mapping' => $blank, 'source_evidence' => [ 'document_version' => self::document_version( $source ), 'baseline' => $source['baseline'], 'target' => $source['target'], 'provider' => $source['provider'] ], 'system_managed' => true, 'native_mapping_available' => true, 'client_configurable' => false, 'status' => 'mapped_by_nova', 'needs_refresh' => false, 'saved' => false, 'local_only' => true, 'native_write_supported' => false ];
+    }
+
     private static function enrich( array $mapping, ?array $record ): array {
         if ( ! $record ) { return $mapping; }
         $mapping['instructions'] = $record['instructions'];
@@ -173,17 +204,17 @@ final class Nova_Bridge_Suite_Endpoint_Mappings {
     /** Server evidence is deliberately never included in REST documents or catalog metadata. */
     private static function public_record( ?array $record, string $resource_id ): array {
         if ( ! $record ) { return [ 'resource_id' => $resource_id, 'mapping_id' => null, 'revision' => 0, 'schema_version' => 1, 'document_version' => null, 'reference' => null, 'selected_fields' => [], 'field_descriptions' => (object) [], 'label' => '', 'instructions' => '', 'mapping' => null, 'saved' => false ]; }
-        return array_intersect_key( $record, array_flip( [ 'resource_id', 'mapping_id', 'revision', 'schema_version', 'document_version', 'source_document_version', 'reference', 'reference_type', 'reference_id', 'selected_fields', 'field_descriptions', 'label', 'instructions', 'mapping', 'saved', 'local_only', 'native_write_supported' ] ) );
+        return array_intersect_key( $record, array_flip( [ 'resource_id', 'mapping_id', 'revision', 'schema_version', 'document_version', 'source_document_version', 'reference', 'reference_type', 'reference_id', 'selected_fields', 'field_descriptions', 'label', 'instructions', 'mapping', 'saved', 'local_only', 'native_write_supported', 'system_managed', 'native_mapping_available', 'client_configurable', 'status', 'needs_refresh' ] ) );
     }
 
     public static function endpoints( $request ) {
         $permission = self::can_admin( $request ); if ( is_wp_error( $permission ) ) { return $permission; }
         $resources = self::resources(); if ( is_wp_error( $resources ) ) { return $resources; }
         $state = self::load(); if ( is_wp_error( $state ) ) { return $state; }
-        $result = []; $configured = 0;
+        $result = []; $configured = 0; $required = 0; $managed_configured = 0;
         foreach ( $resources as $resource ) {
             if ( ! is_array( $resource ) || ! is_string( $resource['id'] ?? null ) ) { continue; }
-            $item = array_intersect_key( $resource, array_flip( [ 'id', 'resource_id', 'label', 'type', 'post_type', 'taxonomy', 'route', 'methods', 'availability', 'targets_complete', 'creation_supported', 'can_inspect_existing', 'reasons', 'capabilities', 'native_write_supported' ] ) );
+            $item = array_intersect_key( $resource, array_flip( [ 'id', 'resource_id', 'label', 'type', 'post_type', 'taxonomy', 'route', 'methods', 'availability', 'targets_complete', 'creation_supported', 'can_inspect_existing', 'reasons', 'capabilities', 'native_write_supported', 'system_managed', 'native_mapping_available', 'provider_status', 'native_provider', 'coming_soon', 'content_relevance' ] ) );
             $item['endpoint'] = $resource['route'] ?? ''; $item['targets'] = [];
             $item['targets_complete'] = ( $resource['targets_complete'] ?? true ) && count( $resource['targets'] ?? [] ) <= 100;
             foreach ( array_slice( $resource['targets'] ?? [], 0, 100 ) as $target ) {
@@ -194,19 +225,24 @@ final class Nova_Bridge_Suite_Endpoint_Mappings {
             $item['can_inspect_existing'] = $resource['can_inspect_existing'] ?? true;
             $item['native_write_supported'] = false;
             $item['reasons'] = $resource['reasons'] ?? [];
-            $record = self::record( $state, $resource['id'] );
-            $item['default_mapping'] = $record ? [ 'id' => $record['mapping_id'], 'revision' => $record['revision'], 'label' => $record['label'] ] : null;
-            $item['coverage'] = [ 'configured' => !! $record, 'selected_fields' => $record ? count( $record['selected_fields'] ) : 0 ];
-            if ( $record ) { ++$configured; } $result[] = $item;
+            $item['system_managed'] = self::managed( $resource ); $item['coming_soon'] = true === ( $resource['coming_soon'] ?? false );
+            $item['require_creation_default'] = ! $item['system_managed'] && ! $item['coming_soon'] && $item['creation_supported'] && false !== ( $resource['require_creation_default'] ?? true );
+            $item['coverage_required'] = ! $item['coming_soon'] && false !== ( $resource['coverage_required'] ?? true ) && ( $item['system_managed'] || $item['require_creation_default'] );
+            $record = $item['system_managed'] ? self::native_record( $resource ) : self::record( $state, $resource['id'] );
+            if ( is_wp_error( $record ) ) { $item['native_mapping_available'] = false; $item['provider_status'] = 'needs_review'; $item['reasons'][] = $record->get_error_message(); $record = null; }
+            elseif ( $item['system_managed'] ) { $item['native_mapping_available'] = true; $item['provider_status'] = 'mapped_by_nova'; }
+            $item['default_mapping'] = $record ? [ 'id' => $record['mapping_id'], 'revision' => $record['revision'], 'label' => $record['label'], 'system_managed' => $item['system_managed'] ] : null;
+            $item['coverage'] = [ 'configured' => !! $record, 'selected_fields' => $record ? count( $record['selected_fields'] ) : 0, 'required' => $item['coverage_required'], 'system_managed' => $item['system_managed'] ];
+            if ( $item['coverage_required'] ) { ++$required; if ( $record ) { ++$configured; if ( $item['system_managed'] ) { ++$managed_configured; } } } $result[] = $item;
         }
-        return self::response( [ 'resources' => $result, 'coverage' => [ 'total' => count( $result ), 'configured' => $configured, 'unconfigured' => count( $result ) - $configured ], 'local_only' => true, 'native_write_supported' => false ] );
+        return self::response( [ 'resources' => $result, 'coverage' => [ 'total' => count( $result ), 'required' => $required, 'configured' => $configured, 'system_managed' => $managed_configured, 'unconfigured' => $required - $configured ], 'local_only' => true, 'native_write_supported' => false ] );
     }
 
     public static function creation( $request ) {
         $permission = self::can_admin( $request ); if ( is_wp_error( $permission ) ) { return $permission; }
         $resource = self::resource( $request->get_param( 'resource_id' ) ); if ( is_wp_error( $resource ) ) { return $resource; }
-        $state = self::load(); if ( is_wp_error( $state ) ) { return $state; }
-        $record = self::record( $state, $resource['id'] );
+        if ( self::managed( $resource ) ) { $native = self::native_record( $resource ); return is_wp_error( $native ) ? $native : self::response( self::public_record( $native, $resource['id'] ) ); }
+        $state = self::load(); if ( is_wp_error( $state ) ) { return $state; } $record = self::record( $state, $resource['id'] );
         if ( $record && ! empty( $record['reference']['reference_id'] ) ) { $permission = self::can_target( $record['reference']['reference_type'], $record['reference']['reference_id'] ); if ( is_wp_error( $permission ) ) { return $permission; } }
         $public = self::public_record( $record, $resource['id'] );
         if ( $record ) { $live = self::live_source( $record ); $public['needs_refresh'] = is_wp_error( $live ); }
@@ -220,8 +256,13 @@ final class Nova_Bridge_Suite_Endpoint_Mappings {
         if ( ! is_string( $type ) || is_wp_error( $id ) ) { return is_wp_error( $id ) ? $id : self::error( 'reference', 'Supply the reference type.' ); }
         $mapping = self::read( $resource, $type, $id ); if ( is_wp_error( $mapping ) ) { return $mapping; }
         $source_version = self::document_version( $mapping );
-        $state = self::load(); if ( is_wp_error( $state ) ) { return $state; }
-        if ( $id ) { $mapping = self::enrich( $mapping, self::record( $state, $resource['id'] ) ); }
+        if ( self::managed( $resource ) ) {
+            $paths = array_keys( array_filter( $mapping['fields'], static function ( $field ) { return ! empty( $field['writable'] ) && empty( $field['protected'] ); } ) );
+            $mapping = self::enrich( $mapping, [ 'instructions' => $mapping['instructions'] ?? '', 'field_descriptions' => self::native_descriptions( $mapping, $paths ) ] );
+        } else {
+            $state = self::load(); if ( is_wp_error( $state ) ) { return $state; }
+            if ( $id ) { $mapping = self::enrich( $mapping, self::record( $state, $resource['id'] ) ); }
+        }
         $preview = false === ( $mapping['provider']['preview_read_only'] ?? true ) ? '' : self::preview_url( $type, $id, $resource );
         return self::response( [ 'resource_id' => $resource['id'], 'schema_version' => 1, 'document_version' => self::document_version( $mapping ), 'source_document_version' => $source_version, 'preview_url' => $preview, 'mapping' => $mapping, 'local_only' => true, 'native_write_supported' => false ] );
     }
@@ -229,6 +270,7 @@ final class Nova_Bridge_Suite_Endpoint_Mappings {
     private static function capture( array $body ) {
         if ( array_diff( array_keys( $body ), [ 'resource_id', 'reference_type', 'reference_id', 'selected_fields', 'field_descriptions', 'instructions', 'label', 'expected_revision', 'source_document_version' ] ) ) { return self::error( 'request', 'The creation request contains unsupported properties.' ); }
         $resource = self::resource( $body['resource_id'] ?? null ); if ( is_wp_error( $resource ) ) { return $resource; }
+        if ( self::managed( $resource ) ) { return self::error( 'system_managed', 'NOVA supplies this native mapping. Client setup cannot replace it.', 403 ); }
         if ( false === ( $resource['creation_supported'] ?? true ) ) { return self::error( 'creation_unsupported', 'This endpoint does not support a local creation mapping.', 409 ); }
         $type = $body['reference_type'] ?? null; $id = self::reference_id( $body['reference_id'] ?? null );
         if ( ! is_string( $type ) || is_wp_error( $id ) ) { return is_wp_error( $id ) ? $id : self::error( 'reference', 'Supply the reference type.' ); }
@@ -306,21 +348,25 @@ final class Nova_Bridge_Suite_Endpoint_Mappings {
         $body = self::body( $request ); if ( is_wp_error( $body ) ) { return $body; }
         if ( array_diff( array_keys( $body ), [ 'mapping', 'mapping_id', 'revision' ] ) || ! is_array( $body['mapping'] ?? null ) || ! in_array( $body['mapping']['mode'] ?? '', [ 'existing', 'creation' ], true ) ) { return self::error( 'mapping', 'Supply a complete document mapping for round-trip validation.' ); }
         $mapping = $body['mapping']; $resource = self::resource( $mapping['resource_id'] ?? null ); if ( is_wp_error( $resource ) ) { return $resource; }
-        $state = self::load(); if ( is_wp_error( $state ) ) { return $state; }
-        $record = self::record( $state, $resource['id'] );
+        if ( self::managed( $resource ) ) { $record = self::native_record( $resource ); if ( is_wp_error( $record ) ) { return $record; } }
+        else { $state = self::load(); if ( is_wp_error( $state ) ) { return $state; } $record = self::record( $state, $resource['id'] ); }
         if ( 'creation' === $mapping['mode'] ) {
             if ( ! $record || ! is_string( $body['mapping_id'] ?? null ) || ! is_int( $body['revision'] ?? null ) || $body['mapping_id'] !== $record['mapping_id'] || $body['revision'] !== $record['revision'] ) { return self::error( 'needs_refresh', 'Select the current exact creation mapping identity and revision.', 409 ); }
             $source = self::live_source( $record ); if ( is_wp_error( $source ) ) { return $source; }
             $checked = self::check_values( $mapping, $record['mapping'], $record['selected_fields'] ); if ( is_wp_error( $checked ) ) { return $checked; }
-            $native = Nova_Bridge_Suite_Document_Mapping::blank( $source, $record['selected_fields'] ); if ( is_wp_error( $native ) ) { return $native; }
+            $native = Nova_Bridge_Suite_Document_Mapping::blank( $source, $record['selected_fields'], (string) ( $source['instructions'] ?? '' ) ); if ( is_wp_error( $native ) ) { return $native; }
             foreach ( $mapping['fields'] as $path => $field ) { $native['fields'][$path]['value'] = $field['value']; }
             $checked = Nova_Bridge_Suite_Document_Mapping::validate( $native ); if ( is_wp_error( $checked ) ) { return $checked; }
-            return self::response( [ 'valid' => true, 'mapping' => self::enrich( $checked, $record ), 'mapping_id' => $record['mapping_id'], 'revision' => $record['revision'], 'document_version' => $record['document_version'], 'needs_refresh' => false, 'local_only' => true, 'native_write_supported' => false ] );
+            return self::response( [ 'valid' => true, 'mapping' => self::enrich( $checked, $record ), 'mapping_id' => $record['mapping_id'], 'revision' => $record['revision'], 'document_version' => $record['document_version'], 'needs_refresh' => false, 'system_managed' => self::managed( $resource ), 'local_only' => true, 'native_write_supported' => false ] );
         }
         $target = $mapping['target'] ?? []; $type = $target['reference_type'] ?? null; $id = self::reference_id( $target['reference_id'] ?? null );
         if ( ! is_string( $type ) || is_wp_error( $id ) || ! $id ) { return self::error( 'reference', 'An existing mapping requires its actual reference.' ); }
         $fresh = self::read( $resource, $type, $id ); if ( is_wp_error( $fresh ) ) { return $fresh; }
         if ( ( $mapping['baseline'] ?? null ) !== ( $fresh['baseline'] ?? null ) ) { return self::error( 'needs_refresh', 'The existing item changed. Read its current full document before validating.', 409 ); }
+        if ( self::managed( $resource ) ) {
+            $paths = array_keys( array_filter( $fresh['fields'], static function ( $field ) { return ! empty( $field['writable'] ) && empty( $field['protected'] ); } ) );
+            $record = [ 'instructions' => $fresh['instructions'] ?? '', 'field_descriptions' => self::native_descriptions( $fresh, $paths ) ];
+        }
         $expected = self::enrich( $fresh, $record );
         $checked = self::check_values( $mapping, $expected ); if ( is_wp_error( $checked ) ) { return $checked; }
         foreach ( $mapping['fields'] ?? [] as $path => $field ) {

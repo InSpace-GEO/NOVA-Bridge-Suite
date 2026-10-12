@@ -18,7 +18,7 @@ function document_canary_data($response,$status=200){document_canary_check($resp
 try {
     $catalog=document_canary_data(document_canary_request('GET','endpoints'));
     $ids=array_column($catalog['resources'],'id');
-    document_canary_check(in_array('post_type:page',$ids,true)&&in_array('post_type:post',$ids,true)&&in_array('taxonomy:category',$ids,true),'Missing native endpoint coverage.');
+    document_canary_check(in_array('post_type:page',$ids,true)&&in_array('post_type:post',$ids,true)&&in_array('taxonomy:product_cat',$ids,true),'Missing primary content endpoint coverage.');
     $nativeTypes=function_exists('nova_bridge_suite_get_managed_blog_post_types')?(array)nova_bridge_suite_get_managed_blog_post_types():[];
     if(post_type_exists('service_page')){$nativeTypes[]='service_page';}
     foreach(array_unique($nativeTypes) as $type){
@@ -29,7 +29,7 @@ try {
         if($items){$nativeId=(int)$items[0]->ID;$digest=hash('sha256',serialize([get_post($nativeId,ARRAY_A),get_post_meta($nativeId)]));$native=document_canary_data(document_canary_request('GET','existing',['resource_id'=>'post_type:'.$type,'reference_type'=>'post','reference_id'=>$nativeId]));document_canary_check($native['mapping']['provider']['id']!=='core'&&$digest===hash('sha256',serialize([get_post($nativeId,ARRAY_A),get_post_meta($nativeId)])),'A dedicated native read omitted its provider or changed the existing item.');}
     }
     $terms=get_terms(['taxonomy'=>'category','hide_empty'=>false,'number'=>1]);
-    if(!is_wp_error($terms)&&$terms){$term=document_canary_data(document_canary_request('GET','existing',['resource_id'=>'taxonomy:category','reference_type'=>'term','reference_id'=>(int)$terms[0]->term_id]));document_canary_check($term['mapping']['fields']['/core/description']['value']===$terms[0]->description,'Existing taxonomy content was not captured in full.');}
+    if(in_array('taxonomy:category',$ids,true)&&!is_wp_error($terms)&&$terms){$term=document_canary_data(document_canary_request('GET','existing',['resource_id'=>'taxonomy:category','reference_type'=>'term','reference_id'=>(int)$terms[0]->term_id]));document_canary_check($term['mapping']['fields']['/core/description']['value']===$terms[0]->description,'Existing taxonomy content was not captured in full.');}
     $empty=document_canary_data(document_canary_request('GET','existing',['resource_id'=>'post_type:nova_map_canary','reference_type'=>'post','reference_id'=>0]));
     document_canary_check($empty['mapping']['target']['reference_id']===0&&$empty['mapping']['fields']['/core/content']['value']==='','Zero-item endpoint does not support standard blank fields.');
     $page=document_canary_data(document_canary_request('GET','existing',['resource_id'=>'post_type:page','reference_type'=>'post','reference_id'=>5267]));
