@@ -46,6 +46,14 @@
 		return !['title', 'body', 'html', 'shortcode', 'address', 'map_url', 'video_url'].some(function (key) { return Boolean(data[key]); }) &&
 			!['images', 'buttons', 'items', 'post_ids'].some(function (key) { return Array.isArray(data[key]) && data[key].length > 0; });
 	}
+	function dropOffset(sections, id, targetId, after) {
+		var from = sections.findIndex(function (section) { return section.id === id; });
+		var target = sections.findIndex(function (section) { return section.id === targetId; });
+		if (from < 0 || target < 0 || id === targetId) { return 0; }
+		var insertion = target + (after ? 1 : 0);
+		if (from < insertion) { insertion--; }
+		return insertion - from;
+	}
 
 	function mount(core, window, document) {
 		if (!core || !core.root || !core.preview || !core.preview.frame || core.root.getAttribute('data-visual-mounted')) { return null; }
@@ -53,7 +61,8 @@
 		if (config.mode && config.mode !== 'page' || !config.isV2) { return null; }
 		var root = core.root, preview = core.preview, inspector = core.getInspector(), registry = config.sections || {};
 		var selected = '', selectedPath = '', selectedKind = '', activeEdit = null, richCounter = 0, inMetadata = false;
-		var frameDocument = null, deviceButtons = {}, lastFocus = null;
+		var frameDocument = null, deviceButtons = {}, lastFocus = null, pendingScroll = null, restoringScroll = false;
+		var overlays = {}, hovered = '', drag = null, paintQueued = false;
 		root.setAttribute('data-visual-mounted', '1');
 		function node(tag, attributes, text) {
 			var result = document.createElement(tag);
@@ -76,8 +85,8 @@
 		var structure = node('aside', {className: 'nova-visual-structure', 'aria-label': 'Page sections', hidden: ''});
 		var inspectorDrawer = node('aside', {className: 'nova-visual-inspector', 'aria-label': 'Selected section settings', hidden: ''});
 		var richPanel = node('section', {className: 'nova-visual-rich-panel', role: 'dialog', 'aria-label': 'Edit rich text', hidden: ''});
-		var sectionTools = node('div', {className: 'nova-visual-section-tools', role: 'toolbar', 'aria-label': 'Selected section', hidden: ''});
-		var sectionLabel = node('strong', {className: 'nova-visual-section-label'});
+		var overlayLayer = node('div', {className: 'nova-visual-section-overlays'});
+		var dropLine = node('div', {className: 'nova-visual-drop-target', hidden: '', 'aria-hidden': 'true'});
 		var fieldTools = node('span', {className: 'nova-visual-field-tools'});
 		var structureList = node('ol', {className: 'nova-visual-structure-list'});
 		function panel(target, title, close) {
@@ -93,14 +102,16 @@
 			inspectorDrawer.hidden = !open; root.classList.toggle('is-inspector-open', open);
 			if (open) { showStructure(false); filterInspector(); }
 		}
-		var structureToggle = button('Sections', function () { showStructure(structure.hidden); });
+		var structureToggle = button('Sections', function () { showStructure(structure.hidden); }, 'button nova-visual-structure-toggle');
 		structureToggle.setAttribute('aria-expanded', 'false'); toolbar.appendChild(structureToggle);
+		var deviceGroup = node('div', {className: 'nova-visual-device-controls', role: 'group', 'aria-label': 'Canvas width'}); toolbar.appendChild(deviceGroup);
 		['desktop', 'phone'].forEach(function (device) {
 			var control = button(device === 'desktop' ? 'Desktop' : 'Phone', function () {
 				core.setDevice(device); root.classList.toggle('is-phone', device === 'phone');
 				Object.keys(deviceButtons).forEach(function (name) { deviceButtons[name].setAttribute('aria-pressed', String(name === device)); });
+				paintOverlays();
 			});
-			control.setAttribute('aria-pressed', String(device === preview.device)); deviceButtons[device] = control; toolbar.appendChild(control);
+			control.setAttribute('aria-pressed', String(device === preview.device)); deviceButtons[device] = control; deviceGroup.appendChild(control);
 		});
 		var undo = button('Undo', function () { if (!activeEdit) { run(function () { core.undo(); }); } }); toolbar.appendChild(undo);
 		var redo = button('Redo', function () { if (!activeEdit) { run(function () { core.redo(); }); } }); toolbar.appendChild(redo);
@@ -123,20 +134,8 @@
 			else if (result && result.id) { select(result.id); }
 		}));
 		var inspectorContent = panel(inspectorDrawer, 'Section settings', function () { showInspector(false); });
+		inspectorContent.appendChild(fieldTools);
 		if (inspector) { inspectorContent.appendChild(inspector); }
-		sectionTools.appendChild(sectionLabel);
-		var moveUp = button('Move up', function () { if (finishEdit(true)) { run(function () { core.move(selected, -1); }); } }, 'button button-small'); sectionTools.appendChild(moveUp);
-		var moveDown = button('Move down', function () { if (finishEdit(true)) { run(function () { core.move(selected, 1); }); } }, 'button button-small'); sectionTools.appendChild(moveDown);
-		sectionTools.appendChild(button('Duplicate', function () {
-			if (!finishEdit(true)) { return; } var result = run(function () { return core.duplicate(selected); });
-			if (typeof result === 'string') { select(result); } else if (result && result.id) { select(result.id); }
-		}, 'button button-small'));
-		var hide = button('Hide', function () { if (finishEdit(true)) { run(function () { core.toggle(selected); }); } }, 'button button-small'); sectionTools.appendChild(hide);
-		sectionTools.appendChild(button('Settings', function () { if (finishEdit(true)) { showInspector(inspectorDrawer.hidden); } }, 'button button-small'));
-		sectionTools.appendChild(button('Remove', function () {
-			if (!finishEdit(true)) { return; } run(function () { core.remove(selected); }); selected = ''; selectedPath = ''; updateSelection(); announce('Section removed. Undo restores it.');
-		}, 'button button-small button-link-delete'));
-		sectionTools.appendChild(fieldTools);
 		root.appendChild(toolbar);
 		if (config.onboardingRequired) {
 			var setupNotice = node('div', {className: 'nova-visual-setup-notice', role: 'note'});
@@ -145,7 +144,7 @@
 			else { setupNotice.appendChild(node('span', {}, 'Ask an administrator to finish setup.')); }
 			root.appendChild(setupNotice);
 		}
-		root.appendChild(body); body.appendChild(preview.pane); body.appendChild(structure); body.appendChild(inspectorDrawer); body.appendChild(sectionTools); body.appendChild(richPanel);
+		root.appendChild(body); body.appendChild(preview.pane); body.appendChild(overlayLayer); overlayLayer.appendChild(dropLine); body.appendChild(structure); body.appendChild(inspectorDrawer); body.appendChild(richPanel);
 		root.classList.add('nova-service-visual-mode'); document.body.classList.add('nova-service-visual-open'); root.classList.toggle('is-phone', preview.device === 'phone');
 		preview.pane.hidden = false; preview.workspace.classList.remove('is-preview-hidden', 'is-preview-expanded');
 		preview.frame.setAttribute('title', 'Visual editor of your service page');
@@ -154,6 +153,129 @@
 		});
 
 		function getSelected() { return selected ? core.getSection(selected) : null; }
+		function icon(label, title, symbol, action, type) {
+			var control = button('', function (event) { event.preventDefault(); event.stopPropagation(); action(event); }, 'nova-visual-icon-button' + (type === 'remove' ? ' is-destructive' : ''));
+			control.setAttribute('title', title); control.setAttribute('aria-label', title); control.setAttribute('data-section-action', type);
+			control.appendChild(node('span', {className: 'dashicons dashicons-' + symbol, 'aria-hidden': 'true'}));
+			var text = node('span', {className: 'screen-reader-text'}, label); control.appendChild(text); control.novaLabel = text;
+			return control;
+		}
+		function sectionAction(id, action) {
+			if (!finishEdit(true)) { return; } select(id);
+			if (action === 'settings') { showInspector(true); return; }
+			if (action === 'duplicate') { var result = run(function () { return core.duplicate(id); }); if (result) { select(typeof result === 'string' ? result : result.id); } return; }
+			if (action === 'hide') { var section = core.getSection(id); if (section && section.sharedEnabled !== false) { run(function () { core.toggle(id); }); } return; }
+			if (action === 'remove') { run(function () { core.remove(id); }); selected = ''; selectedPath = ''; updateSelection(); announce('Section removed. Undo restores it.'); }
+		}
+		function sectionControls(container, id, keyboard) {
+			var section = core.getSection(id); if (!section) { return null; }
+			var controls = node('div', {className: keyboard ? 'nova-visual-structure-actions' : 'nova-visual-section-controls', role: 'toolbar', 'aria-label': 'Actions for ' + sectionName(section, registry, 0)});
+			if (keyboard) { ['up', 'down'].forEach(function (direction) {
+				var offset = direction === 'up' ? -1 : 1, label = direction === 'up' ? 'Move up' : 'Move down';
+				var control = icon(label, label, 'arrow-' + direction + '-alt2', function () { if (finishEdit(true)) { run(function () { core.move(id, offset); }); select(id); } }, direction);
+				var sections = core.getDocument().sections, index = sections.findIndex(function (entry) { return entry.id === id; }); control.disabled = index + offset < 0 || index + offset >= sections.length; controls.appendChild(control);
+			}); }
+			controls.appendChild(icon('Settings', 'Section settings', 'admin-generic', function () { sectionAction(id, 'settings'); }, 'settings'));
+			controls.appendChild(icon('Duplicate', 'Duplicate section', 'admin-page', function () { sectionAction(id, 'duplicate'); }, 'duplicate'));
+			var hide = icon(section.enabled === false ? 'Show' : 'Hide', section.enabled === false ? 'Show section' : 'Hide section', section.enabled === false ? 'visibility' : 'hidden', function () { sectionAction(id, 'hide'); }, 'hide');
+			if (section.sharedEnabled === false) { hide.disabled = true; hide.novaLabel.textContent = 'Hidden in defaults'; hide.setAttribute('aria-label', 'Hidden in client defaults'); hide.setAttribute('title', 'Hidden in client defaults'); }
+			controls.appendChild(hide);
+			controls.appendChild(icon('Remove', 'Remove section', 'trash', function () { sectionAction(id, 'remove'); }, 'remove'));
+			container.appendChild(controls); return {controls: controls, hide: hide};
+		}
+		function captureScroll() {
+			var view = preview.frame.contentWindow;
+			return {x: view ? view.scrollX || 0 : 0, y: view ? view.scrollY || 0 : 0, parentX: window.scrollX || 0, parentY: window.scrollY || 0, viewportX: preview.viewport.scrollLeft || 0, viewportY: preview.viewport.scrollTop || 0};
+		}
+		function restoreScroll(position) {
+			if (!position) { return; } restoringScroll = true; preview.scrollY = position.y;
+			try {
+				preview.viewport.scrollLeft = position.viewportX; preview.viewport.scrollTop = position.viewportY;
+				if (preview.frame.contentWindow && preview.frame.contentWindow.scrollTo) { preview.frame.contentWindow.scrollTo({left: position.x, top: position.y, behavior: 'auto'}); }
+				if (window.scrollTo) { window.scrollTo({left: position.parentX, top: position.parentY, behavior: 'auto'}); }
+			} finally { restoringScroll = false; }
+			paintOverlays();
+		}
+		function sectionRect(source) {
+			if (!source.getBoundingClientRect || !preview.frame.getBoundingClientRect || !preview.viewport.getBoundingClientRect || !body.getBoundingClientRect) { return null; }
+			var frameRect = preview.frame.getBoundingClientRect(), viewportRect = preview.viewport.getBoundingClientRect(), bodyRect = body.getBoundingClientRect(), local = source.getBoundingClientRect();
+			var width = preview.frame.contentWindow && preview.frame.contentWindow.innerWidth || preview.frame.clientWidth || frameRect.width;
+			var scale = frameRect.width / (width || frameRect.width || 1);
+			var rect = {left: frameRect.left + local.left * scale, top: frameRect.top + local.top * scale, right: frameRect.left + local.right * scale, bottom: frameRect.top + local.bottom * scale};
+			return {rect: rect, viewport: viewportRect, body: bodyRect, left: Math.max(rect.left, viewportRect.left), top: Math.max(rect.top, viewportRect.top), right: Math.min(rect.right, viewportRect.right), bottom: Math.min(rect.bottom, viewportRect.bottom)};
+		}
+		function paintOverlays() {
+			overlayLayer.hidden = Boolean(preview.framePending || inMetadata);
+			Object.keys(overlays).forEach(function (id) {
+				var entry = overlays[id], section = core.getSection(id), bounds = sectionRect(entry.source);
+				entry.node.classList.toggle('is-selected', id === selected); entry.node.classList.toggle('is-hovered', id === hovered); entry.node.classList.toggle('is-dragging', Boolean(drag && drag.started && drag.id === id));
+				entry.node.hidden = !section || section.enabled === false || section.sharedEnabled === false || inMetadata || Boolean(bounds && (bounds.right <= bounds.left || bounds.bottom <= bounds.top));
+				if (bounds) { entry.node.style.left = (bounds.left - bounds.body.left) + 'px'; entry.node.style.top = (bounds.top - bounds.body.top) + 'px'; entry.node.style.width = Math.max(0, bounds.right - bounds.left) + 'px'; entry.node.style.height = Math.max(0, bounds.bottom - bounds.top) + 'px'; }
+			});
+		}
+		function queuePaint() {
+			if (paintQueued) { return; } paintQueued = true;
+			var schedule = window.requestAnimationFrame || function (callback) { callback(); };
+			schedule(function () { paintQueued = false; paintOverlays(); });
+		}
+		function installOverlays() {
+			overlayLayer.textContent = ''; overlays = {}; overlayLayer.appendChild(dropLine);
+			frameDocument.querySelectorAll('[data-nova-service-section-id]').forEach(function (source) {
+				var id = source.getAttribute('data-nova-service-section-id'); if (!core.getSection(id) || overlays[id]) { return; }
+				var overlay = node('div', {className: 'nova-visual-section-overlay', 'data-section-id': id});
+				var handle = icon('Move', 'Move section', 'move', function () { select(id); announce('Drag the handle to move this section. You can also use the Up and Down arrow keys.'); }, 'drag'); handle.classList.add('nova-visual-section-handle'); overlay.appendChild(handle);
+				handle.addEventListener('pointerdown', function (event) { beginDrag(id, handle, event); });
+				handle.addEventListener('keydown', function (event) {
+					if (event.key === 'ArrowUp' || event.key === 'ArrowDown') { event.preventDefault(); if (finishEdit(true)) { run(function () { core.move(id, event.key === 'ArrowUp' ? -1 : 1); }); select(id); announce('Section moved.'); } }
+				});
+				var actions = sectionControls(overlay, id, false); overlayLayer.appendChild(overlay); overlays[id] = {node: overlay, source: source, handle: handle, actions: actions};
+				overlay.addEventListener('mouseenter', function () { hovered = id; paintOverlays(); });
+				overlay.addEventListener('mouseleave', function () { if (hovered === id) { hovered = ''; paintOverlays(); } });
+			}); paintOverlays();
+		}
+		function updateDrop(clientX, clientY) {
+			var choice = null, distance = Infinity;
+			Object.keys(overlays).forEach(function (id) {
+				var section = core.getSection(id); if (id === drag.id || !section || section.enabled === false || section.sharedEnabled === false) { return; } var bounds = sectionRect(overlays[id].source); if (!bounds) { return; }
+				var rect = bounds.rect, dx = Math.max(rect.left - clientX, 0, clientX - rect.right), dy = Math.max(rect.top - clientY, 0, clientY - rect.bottom), score = dx + dy;
+				if (score < distance) { distance = score; choice = {id: id, after: clientY >= (rect.top + rect.bottom) / 2, bounds: bounds}; }
+			});
+			drag.target = choice; dropLine.hidden = !choice;
+			if (choice) { var bounds = choice.bounds, top = choice.after ? bounds.rect.bottom : bounds.rect.top; top = Math.max(bounds.viewport.top, Math.min(bounds.viewport.bottom, top));
+				dropLine.classList.toggle('is-before', !choice.after); dropLine.classList.toggle('is-after', choice.after); dropLine.style.left = (bounds.left - bounds.body.left) + 'px'; dropLine.style.top = (top - bounds.body.top) + 'px'; dropLine.style.width = Math.max(0, bounds.right - bounds.left) + 'px';
+			}
+		}
+		function autoScrollDrag() {
+			if (!drag || !drag.started || !window.requestAnimationFrame || !preview.viewport.getBoundingClientRect) { return; }
+			var rect = preview.viewport.getBoundingClientRect(), margin = 56, speed = drag.y < rect.top + margin ? -Math.min(22, (rect.top + margin - drag.y) / 3) : drag.y > rect.bottom - margin ? Math.min(22, (drag.y - rect.bottom + margin) / 3) : 0;
+			if (speed && preview.frame.contentWindow) { var view = preview.frame.contentWindow; view.scrollTo({top: Math.max(0, view.scrollY + speed), left: view.scrollX || 0, behavior: 'auto'}); updateDrop(drag.x, drag.y); paintOverlays(); }
+			drag.raf = window.requestAnimationFrame(autoScrollDrag);
+		}
+		function beginDrag(id, handle, event) {
+			if (drag || event.button !== undefined && event.button !== 0 || !finishEdit(true)) { return; } event.preventDefault(); event.stopPropagation(); select(id);
+			core.setEditing(true); drag = {id: id, handle: handle, pointerId: event.pointerId, x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, started: false, target: null};
+			if (handle.setPointerCapture && event.pointerId !== undefined) { handle.setPointerCapture(event.pointerId); }
+			updateSelection();
+		}
+		function moveDrag(event) {
+			if (!drag || event.pointerId !== undefined && drag.pointerId !== undefined && event.pointerId !== drag.pointerId) { return; }
+			drag.x = event.clientX; drag.y = event.clientY;
+			if (!drag.started && Math.abs(drag.x - drag.startX) + Math.abs(drag.y - drag.startY) < 6) { return; }
+			if (!drag.started) { drag.started = true; root.classList.add('is-section-dragging'); autoScrollDrag(); }
+			event.preventDefault(); updateDrop(drag.x, drag.y); paintOverlays();
+		}
+		function endDrag(cancel, event) {
+			if (!drag) { return; }
+			if (event && event.pointerId !== undefined && drag.pointerId !== undefined && event.pointerId !== drag.pointerId) { return; }
+			if (event && typeof event.clientX === 'number' && typeof event.clientY === 'number') { drag.x = event.clientX; drag.y = event.clientY; if (drag.started) { updateDrop(drag.x, drag.y); } }
+			var viewportRect = preview.viewport.getBoundingClientRect ? preview.viewport.getBoundingClientRect() : null;
+			var inside = !viewportRect || drag.x >= viewportRect.left && drag.x <= viewportRect.right && drag.y >= viewportRect.top && drag.y <= viewportRect.bottom;
+			var ended = drag; drag = null; dropLine.hidden = true; root.classList.remove('is-section-dragging');
+			if (ended.raf && window.cancelAnimationFrame) { window.cancelAnimationFrame(ended.raf); }
+			if (ended.handle.releasePointerCapture && ended.pointerId !== undefined) { try { ended.handle.releasePointerCapture(ended.pointerId); } catch (error) {} }
+			if (!cancel && inside && ended.started && ended.target) { var offset = dropOffset(core.getDocument().sections, ended.id, ended.target.id, ended.target.after); if (offset) { run(function () { core.move(ended.id, offset); }); announce('Section moved. Undo restores its position.'); } }
+			core.setEditing(false); updateSelection();
+		}
 		function filterInspector() {
 			if (!inspector) { return; }
 			inspector.querySelectorAll('.nova-service-section').forEach(function (entry) {
@@ -166,7 +288,7 @@
 			structureList.textContent = '';
 			(core.getDocument().sections || []).forEach(function (raw, index) {
 				var section = core.getSection(raw.id) || raw;
-				var row = node('li', {className: 'nova-visual-structure-item' + (selected === raw.id ? ' is-selected' : '')});
+				var row = node('li', {className: 'nova-visual-structure-item' + (selected === raw.id ? ' is-selected' : ''), 'data-section-id': raw.id});
 				var data = section.effectiveData || section.data || {};
 				var name = sectionName(section, registry, index) + (data.title ? ' · ' + data.title : '');
 				row.appendChild(button((index + 1) + '. ' + name, function () {
@@ -174,6 +296,7 @@
 					if (section.enabled === false || section.sharedEnabled === false || isEmpty(section)) { showInspector(true); }
 				}, 'nova-visual-section-select'));
 				if (section.enabled === false || section.sharedEnabled === false || isEmpty(section)) { row.appendChild(node('small', {className: 'nova-visual-section-state'}, section.sharedEnabled === false ? 'Hidden in client defaults' : section.enabled === false ? 'Hidden' : 'Empty')); }
+				sectionControls(row, raw.id, true);
 				structureList.appendChild(row);
 			});
 		}
@@ -191,16 +314,9 @@
 			}, 'button button-small')); }
 		}
 		function updateSelection() {
-			var section = getSelected(), sections = core.getDocument().sections || [];
-			sectionTools.hidden = !section || inMetadata; undo.disabled = Boolean(activeEdit) || !core.canUndo(); redo.disabled = Boolean(activeEdit) || !core.canRedo();
-			if (section) {
-				var index = sections.findIndex(function (entry) { return entry.id === selected; });
-				sectionLabel.textContent = sectionName(section, registry, index); moveUp.disabled = index <= 0; moveDown.disabled = index === sections.length - 1;
-				hide.disabled = section.sharedEnabled === false;
-				hide.textContent = section.sharedEnabled === false ? 'Hidden in defaults' : section.enabled === false ? 'Show' : 'Hide';
-			}
+			undo.disabled = Boolean(activeEdit || drag) || !core.canUndo(); redo.disabled = Boolean(activeEdit || drag) || !core.canRedo();
 			if (frameDocument) { frameDocument.querySelectorAll('[data-nova-service-section-id]').forEach(function (entry) { entry.classList.toggle('nova-service-preview-selected', entry.getAttribute('data-nova-service-section-id') === selected); }); }
-			filterInspector(); renderStructure(); updateFieldTools();
+			filterInspector(); renderStructure(); updateFieldTools(); paintOverlays();
 		}
 		function select(id, path, kind, scroll) {
 			selected = id || ''; selectedPath = path || ''; selectedKind = kind || '';
@@ -216,13 +332,13 @@
 		}
 		function finishEdit(apply) {
 			if (!activeEdit) { return true; }
-			var edit = activeEdit;
+			var edit = activeEdit, position = captureScroll();
 			try {
 				if (apply) {
 					var value = edit.read(); edit.transaction.set(value); edit.transaction.apply();
 				} else { edit.transaction.cancel(); }
 			} catch (error) { announce(error.message, true); return false; }
-			activeEdit = null; edit.cleanup(apply); root.classList.remove('is-inline-editing'); core.setEditing(false); updateSelection();
+			pendingScroll = position; activeEdit = null; edit.cleanup(apply); root.classList.remove('is-inline-editing'); core.setEditing(false); updateSelection(); restoreScroll(position);
 			announce(apply ? 'Edit applied to this page. Save page to publish it.' : 'Edit cancelled.'); return true;
 		}
 		function hasPendingChanges() {
@@ -283,8 +399,8 @@
 				return value === initialEditorHTML || value === edit.original ? edit.original : value;
 			}, cleanup: function () {
 				if (window.wp && window.wp.editor) { window.wp.editor.remove(editorId); }
-				richPanel.removeEventListener('keydown', richKey); richPanel.hidden = true; richPanel.textContent = ''; lastFocus = {id: id, path: path};
-				if (target.isConnected) { target.focus({preventScroll: true}); }
+				richPanel.removeEventListener('keydown', richKey); richPanel.hidden = true; richPanel.textContent = ''; lastFocus = null;
+				if (preview.frame.focus) { preview.frame.focus({preventScroll: true}); }
 			}};
 			if (window.wp && window.wp.editor) {
 				window.wp.editor.initialize(editorId, {tinymce: {wpautop: true, height: 280, menubar: false, block_formats: 'Paragraph=p;Heading 2=h2;Heading 3=h3;Heading 4=h4', toolbar1: 'formatselect bold italic bullist numlist blockquote link unlink undo redo', toolbar2: '', setup: function (editor) {
@@ -339,11 +455,21 @@
 			current.addEventListener('keydown', function (event) {
 				if ((event.key === 'Enter' || event.key === ' ') && event.target.hasAttribute('data-nova-service-field') && event.target.getAttribute('contenteditable') !== 'true') { activate(event); }
 			});
-			current.addEventListener('submit', function (event) { event.preventDefault(); }); updateSelection(); restoreFocus();
+			current.addEventListener('mousemove', function (event) { var section = event.target.closest && event.target.closest('[data-nova-service-section-id]'); hovered = section ? section.getAttribute('data-nova-service-section-id') : ''; paintOverlays(); });
+			current.addEventListener('pointermove', function (event) { if (drag && preview.frame.getBoundingClientRect) { var rect = preview.frame.getBoundingClientRect(), scale = rect.width / (preview.frame.contentWindow.innerWidth || rect.width); moveDrag({pointerId: event.pointerId, clientX: rect.left + event.clientX * scale, clientY: rect.top + event.clientY * scale, preventDefault: function () { event.preventDefault(); }}); } });
+			current.addEventListener('pointerup', function (event) { if (drag && preview.frame.getBoundingClientRect) { var rect = preview.frame.getBoundingClientRect(), scale = rect.width / (preview.frame.contentWindow.innerWidth || rect.width); endDrag(false, {pointerId: event.pointerId, clientX: rect.left + event.clientX * scale, clientY: rect.top + event.clientY * scale}); } }); current.addEventListener('pointercancel', function (event) { endDrag(true, event); });
+			current.addEventListener('keydown', function (event) { if (event.key === 'Escape' && drag) { event.preventDefault(); endDrag(true); } });
+			if (preview.frame.contentWindow && preview.frame.contentWindow.addEventListener) { preview.frame.contentWindow.addEventListener('scroll', function () { if (pendingScroll && !restoringScroll && !activeEdit) { pendingScroll = captureScroll(); } queuePaint(); }); }
+			current.addEventListener('submit', function (event) { event.preventDefault(); }); installOverlays(); updateSelection(); restoreFocus();
+			if (pendingScroll) { var position = pendingScroll; pendingScroll = null; restoreScroll(position); }
 			if (current.documentElement) { current.documentElement.setAttribute('data-nova-visual-ready', 'true'); }
-			preview.framePending = false; preview.viewport.classList.remove('is-frame-loading');
+			preview.framePending = false; preview.viewport.classList.remove('is-frame-loading'); paintOverlays();
 		}
 		preview.frame.addEventListener('load', attachFrame);
+		document.addEventListener('pointermove', moveDrag); document.addEventListener('pointerup', function (event) { endDrag(false, event); }); document.addEventListener('pointercancel', function (event) { endDrag(true, event); });
+		document.addEventListener('keydown', function (event) { if (event.key === 'Escape' && drag) { event.preventDefault(); endDrag(true); } });
+		if (window.addEventListener) { window.addEventListener('resize', queuePaint); window.addEventListener('blur', function () { if (drag) { endDrag(true); } }); }
+		if (window.ResizeObserver) { var overlayResize = new window.ResizeObserver(queuePaint); overlayResize.observe(preview.viewport); }
 		if (window.addEventListener) { window.addEventListener('beforeunload', function (event) {
 			// Buffered edits have not reached the document yet. Warn before leaving
 			// without committing them, so merely opening or cancelling an inherited
@@ -354,14 +480,14 @@
 			if (event && event.type === 'beforeSave') { var completed = finishEdit(true); if (!completed && event.preventDefault) { event.preventDefault(); } return completed; }
 			if (!event || event.type === 'model') { updateSelection(); }
 			if (event && event.type === 'frame') { attachFrame(); updateSelection(); restoreFocus(); }
-			if (event && event.type === 'status') { announce(event.message || (preview.status && preview.status.textContent) || ''); }
+			if (event && event.type === 'status') { announce(event.message || (preview.status && preview.status.textContent) || ''); paintOverlays(); }
 		});
 		updateSelection(); attachFrame(); core.setDevice(preview.device || 'desktop');
 		announce('Click text to edit. Click an image or select Section settings for other changes.');
 		return {select: select, finishEdit: finishEdit, openInspector: function (id) { select(id); showInspector(true); }, isEditing: function () { return Boolean(activeEdit); }, hasPendingChanges: hasPendingChanges};
 	}
 
-	var api = {mount: mount, transaction: transaction, fieldState: fieldState, mediaImage: mediaImage, isEmpty: isEmpty};
+	var api = {mount: mount, transaction: transaction, fieldState: fieldState, mediaImage: mediaImage, isEmpty: isEmpty, dropOffset: dropOffset};
 	if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
 	if (host && host.document) {
 		host.novaServiceVisualEditor = api;

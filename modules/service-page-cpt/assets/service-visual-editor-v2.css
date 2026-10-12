@@ -55,7 +55,7 @@ body.folded.nova-service-visual-open #nova-service-editor.nova-service-visual-mo
 #nova-service-editor .nova-visual-setup-notice a { margin-left: 8px; color: var(--nova-visual-accent); font-weight: 600; }
 #nova-service-editor .nova-visual-toolbar .button,
 #nova-service-editor .nova-visual-panel-heading .button,
-#nova-service-editor .nova-visual-section-tools .button,
+#nova-service-editor .nova-visual-field-tools .button,
 #nova-service-editor .nova-visual-rich-actions .button {
 	display: inline-flex;
 	align-items: center;
@@ -78,13 +78,26 @@ body.folded.nova-service-visual-open #nova-service-editor.nova-service-visual-mo
 }
 #nova-service-editor .nova-visual-toolbar .button:hover,
 #nova-service-editor .nova-visual-panel-heading .button:hover,
-#nova-service-editor .nova-visual-section-tools .button:hover,
+#nova-service-editor .nova-visual-field-tools .button:hover,
 #nova-service-editor .nova-visual-rich-actions .button:hover { border-color: var(--nova-visual-ink); background: var(--nova-visual-wash); }
 #nova-service-editor .nova-visual-toolbar .button-primary,
 #nova-service-editor .nova-visual-rich-actions .button-primary { border-color: var(--nova-visual-green); color: var(--nova-visual-ink); background: var(--nova-visual-green); }
 #nova-service-editor .nova-visual-toolbar .button-primary:hover,
 #nova-service-editor .nova-visual-rich-actions .button-primary:hover { border-color: var(--nova-visual-ink); background: var(--nova-visual-green); }
 #nova-service-editor .nova-visual-toolbar [aria-pressed="true"] { border-color: var(--nova-visual-accent); color: var(--nova-visual-accent); background: #f7effd; }
+#nova-service-editor .nova-visual-toolbar .nova-visual-structure-toggle {
+	gap: 7px;
+	border-color: var(--nova-visual-accent);
+	color: #fff;
+	background: var(--nova-visual-accent);
+}
+#nova-service-editor .nova-visual-toolbar .nova-visual-structure-toggle:hover,
+#nova-service-editor .nova-visual-toolbar .nova-visual-structure-toggle[aria-expanded="true"] { border-color: #6510a3; color: #fff; background: #6510a3; }
+#nova-service-editor .nova-visual-structure-toggle .dashicons { width: 18px; height: 18px; font-size: 18px; }
+#nova-service-editor .nova-visual-device-controls { display: inline-flex; flex: 0 0 auto; gap: 0; margin-left: 10px; padding: 3px; border: 1px solid var(--nova-visual-line); border-radius: 8px; background: var(--nova-visual-wash); }
+#nova-service-editor .nova-visual-device-controls .button { min-height: 28px; padding: 3px 10px; border: 0; border-radius: 5px; color: var(--nova-visual-muted); background: transparent; }
+#nova-service-editor .nova-visual-device-controls .button:hover { border: 0; color: var(--nova-visual-ink); background: #e9ebe6; }
+#nova-service-editor .nova-visual-device-controls .button[aria-pressed="true"] { border: 0; color: #fff; background: var(--nova-visual-ink); }
 #nova-service-editor.nova-service-visual-mode :is(button, a, input, select, textarea, summary):focus-visible { outline: 2px solid var(--nova-visual-accent); outline-offset: 3px; }
 #nova-service-editor.nova-service-visual-mode button:disabled { cursor: default; opacity: .45; }
 #nova-service-editor .nova-visual-status { flex: 1 1 140px; margin: 0 6px; color: var(--nova-visual-muted); font-size: 12px; line-height: 1.5; text-align: right; }
@@ -181,31 +194,81 @@ body.folded.nova-service-visual-open #nova-service-editor.nova-service-visual-mo
 #nova-service-editor .nova-visual-section-state { flex: 0 0 auto; padding: 2px 6px; border-radius: 4px; color: var(--nova-visual-muted); background: #efefef; font-size: 11px; line-height: 1.5; }
 #nova-service-editor .nova-visual-add-type { width: 100%; max-width: 100%; min-height: 36px; margin-bottom: 8px; }
 
-#nova-service-editor.nova-service-visual-mode .nova-visual-section-tools {
-	position: absolute;
-	bottom: 16px;
-	left: 16px;
-	z-index: 45;
-	display: flex;
-	flex-wrap: wrap;
-	align-items: center;
-	gap: 7px;
-	width: max-content;
-	max-width: calc(100% - 32px);
-	margin: 0;
-	padding: 10px 12px;
-	border: 1px solid var(--nova-visual-line);
-	border-radius: 10px;
-	background: #fff;
-	box-shadow: var(--nova-visual-shadow);
-}
-#nova-service-editor.nova-service-visual-mode.is-structure-open .nova-visual-section-tools { left: 358px; max-width: calc(100% - 374px); }
-#nova-service-editor.nova-service-visual-mode.is-inspector-open .nova-visual-section-tools { max-width: calc(100% - 434px); }
-#nova-service-editor.nova-service-visual-mode.is-structure-open.is-inspector-open .nova-visual-section-tools { max-width: calc(100% - 776px); }
+#nova-service-editor.nova-service-visual-mode .nova-visual-section-tools { display: none !important; }
 #nova-service-editor .nova-visual-section-label { flex: 0 1 auto; min-width: 0; max-width: 250px; margin-right: 3px; color: var(--nova-visual-ink); font-size: 13px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
 #nova-service-editor .nova-visual-source-note { color: var(--nova-visual-muted); font-size: 12px; line-height: 1.5; }
 #nova-service-editor .nova-visual-field-tools { display: flex; flex: 0 1 auto; flex-wrap: wrap; align-items: center; gap: 7px; min-width: 0; }
 #nova-service-editor .nova-visual-field-tools select { max-width: 240px; min-height: 34px; margin: 0; font-size: 13px; }
+#nova-service-editor .nova-visual-inspector .nova-visual-field-tools { margin: 0 0 14px; padding: 11px 12px; border: 1px solid var(--nova-visual-line); border-radius: 7px; background: var(--nova-visual-wash); }
+#nova-service-editor .nova-visual-inspector .nova-visual-field-tools:empty { display: none; }
+#nova-service-editor .nova-visual-shared-link { color: var(--nova-visual-accent); font-size: 12px; line-height: 1.5; text-underline-offset: 2px; }
+
+/* Controls sit in the parent document; the public page keeps its own markup. */
+#nova-service-editor.nova-service-visual-mode .nova-visual-section-overlays { position: absolute; inset: 0; z-index: 45; overflow: hidden; pointer-events: none; }
+#nova-service-editor.nova-service-visual-mode .nova-visual-section-overlay { position: absolute; min-width: 0; margin: 0; border: 0; pointer-events: none; }
+#nova-service-editor .nova-visual-section-controls {
+	position: absolute;
+	top: 8px;
+	right: 8px;
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	padding: 3px;
+	border: 1px solid var(--nova-visual-line);
+	border-radius: 8px;
+	background: #fff;
+	box-shadow: 0 3px 14px rgba(11, 11, 12, .13);
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity .12s ease;
+}
+#nova-service-editor .nova-visual-icon-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 32px;
+	min-width: 32px;
+	height: 32px;
+	margin: 0;
+	padding: 5px;
+	border: 0;
+	border-radius: 5px;
+	color: var(--nova-visual-ink);
+	background: transparent;
+	font: inherit;
+	line-height: 1;
+	cursor: pointer;
+	pointer-events: inherit;
+	box-shadow: none;
+}
+#nova-service-editor .nova-visual-icon-button .dashicons { display: block; width: 20px; height: 20px; font-size: 20px; line-height: 1; pointer-events: none; }
+#nova-service-editor .nova-visual-icon-button:hover { color: var(--nova-visual-accent); background: #f7effd; }
+#nova-service-editor .nova-visual-icon-button.is-destructive:hover { color: #b32d2e; background: #fff0f0; }
+#nova-service-editor .nova-visual-icon-button:disabled { cursor: default; opacity: .4; }
+#nova-service-editor .nova-visual-section-overlay > .nova-visual-section-handle {
+	position: absolute;
+	top: 8px;
+	left: 8px;
+	width: 36px;
+	min-width: 36px;
+	height: 36px;
+	border: 1px solid var(--nova-visual-line);
+	border-radius: 7px;
+	background: #fff;
+	box-shadow: 0 3px 14px rgba(11, 11, 12, .13);
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity .12s ease;
+}
+#nova-service-editor .nova-visual-section-handle { cursor: grab; touch-action: none; user-select: none; }
+#nova-service-editor .nova-visual-section-handle:active,
+#nova-service-editor .nova-visual-section-overlay.is-dragging .nova-visual-section-handle { cursor: grabbing; }
+#nova-service-editor .nova-visual-section-overlay:is(.is-hovered, .is-selected, .is-dragging, :focus-within) .nova-visual-section-controls,
+#nova-service-editor .nova-visual-section-overlay:is(.is-hovered, .is-selected, .is-dragging, :focus-within) > .nova-visual-section-handle { opacity: 1; pointer-events: auto; }
+#nova-service-editor .nova-visual-section-overlay.is-dragging { outline: 2px dashed var(--nova-visual-accent); outline-offset: -2px; background: rgba(133, 17, 217, .04); }
+#nova-service-editor .nova-visual-section-overlay.is-dragging .nova-visual-section-controls { opacity: .4; pointer-events: none; }
+#nova-service-editor .nova-visual-drop-target { position: absolute; z-index: 5; height: 3px; border-radius: 2px; background: var(--nova-visual-accent); box-shadow: 0 0 0 2px #fff; pointer-events: none; }
+#nova-service-editor .nova-visual-drop-target::before { position: absolute; top: -3px; left: -4px; width: 9px; height: 9px; border: 2px solid var(--nova-visual-accent); border-radius: 50%; background: #fff; content: ''; }
 
 #nova-service-editor.nova-service-visual-mode .nova-visual-rich-panel {
 	position: absolute;
@@ -233,8 +296,6 @@ body.folded.nova-service-visual-open #nova-service-editor.nova-service-visual-mo
 @media (max-width: 960px) {
 	body.auto-fold.nova-service-visual-open #nova-service-editor.nova-service-visual-mode { left: 36px; }
 	#nova-service-editor.nova-service-visual-mode .nova-visual-inspector { width: min(360px, calc(100% - 24px)); }
-	#nova-service-editor.nova-service-visual-mode.is-inspector-open .nova-visual-section-tools { max-width: calc(100% - 404px); }
-	#nova-service-editor.nova-service-visual-mode.is-structure-open.is-inspector-open .nova-visual-section-tools { left: 16px; max-width: calc(100% - 404px); }
 }
 
 @media (max-width: 782px) {
@@ -243,16 +304,15 @@ body.folded.nova-service-visual-open #nova-service-editor.nova-service-visual-mo
 	body.auto-fold.nova-service-visual-open #nova-service-editor.nova-service-visual-mode { top: 46px; left: 0; }
 	body.nova-service-visual-open #wpadminbar { position: fixed; }
 	#nova-service-editor .nova-visual-toolbar { gap: 6px; min-height: 58px; padding: 8px; }
+	#nova-service-editor .nova-visual-device-controls { margin-left: 4px; }
 	#nova-service-editor .nova-visual-status { flex-basis: 100%; margin: 0; text-align: left; }
 	#nova-service-editor.nova-service-visual-mode .nova-visual-structure,
 	#nova-service-editor.nova-service-visual-mode .nova-visual-inspector { top: auto; right: 8px; bottom: 8px; left: 8px; width: auto; height: min(56%, 470px); max-height: calc(100% - 90px); border-radius: 12px; }
-	#nova-service-editor.nova-service-visual-mode .nova-visual-section-tools,
-	#nova-service-editor.nova-service-visual-mode.is-structure-open .nova-visual-section-tools,
-	#nova-service-editor.nova-service-visual-mode.is-inspector-open .nova-visual-section-tools,
-	#nova-service-editor.nova-service-visual-mode.is-structure-open.is-inspector-open .nova-visual-section-tools { top: 8px; right: 8px; bottom: auto; left: 8px; width: max-content; max-width: calc(100% - 16px); gap: 5px; padding: 7px 8px; }
 	#nova-service-editor .nova-visual-section-label { max-width: 170px; }
 	#nova-service-editor .nova-visual-source-note { flex-basis: 100%; }
 	#nova-service-editor .nova-visual-field-tools select { max-width: 190px; }
+	#nova-service-editor .nova-visual-section-controls { top: 5px; right: 5px; }
+	#nova-service-editor .nova-visual-section-overlay > .nova-visual-section-handle { top: 5px; left: 5px; }
 	#nova-service-editor.nova-service-visual-mode .nova-visual-rich-panel { width: calc(100% - 16px); max-height: calc(100% - 16px); }
 	#nova-service-editor .nova-visual-panel-heading { padding: 10px 12px; }
 	#nova-service-editor .nova-visual-panel-body { padding: 12px; }
@@ -261,8 +321,13 @@ body.folded.nova-service-visual-open #nova-service-editor.nova-service-visual-mo
 	#nova-service-editor .nova-visual-rich-actions { padding: 10px 12px; }
 }
 
+@media (pointer: coarse) {
+	#nova-service-editor .nova-visual-icon-button { width: 38px; min-width: 38px; height: 38px; }
+	#nova-service-editor .nova-visual-section-overlay > .nova-visual-section-handle { width: 42px; min-width: 42px; height: 42px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
 	#nova-service-editor.nova-service-visual-mode *,
 	#nova-service-editor.nova-service-visual-mode *::before,
-	#nova-service-editor.nova-service-visual-mode *::after { scroll-behavior: auto !important; }
+	#nova-service-editor.nova-service-visual-mode *::after { scroll-behavior: auto !important; transition: none !important; }
 }

@@ -40,7 +40,7 @@ equal(visual.isEmpty({type: 'related', data: {}}), false, 'automatic related ser
 equal(visual.isEmpty({type: 'video', data: {video_url: 'https://www.youtube.com/watch?v=example'}}), false, 'configured media sections remain visible');
 
 class Element {
-	constructor(tag, document) { this.tagName = tag; this.ownerDocument = document; this.children = []; this.parentNode = null; this.attributes = {}; this.listeners = {}; this.className = ''; this._text = ''; this.innerHTML = ''; this.value = ''; this.disabled = false; this.hidden = false; this.open = false; this.isConnected = true; }
+	constructor(tag, document) { this.tagName = tag; this.ownerDocument = document; this.children = []; this.parentNode = null; this.attributes = {}; this.listeners = {}; this.className = ''; this.style = {}; this._text = ''; this.innerHTML = ''; this.value = ''; this.disabled = false; this.hidden = false; this.open = false; this.isConnected = true; }
 	get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
 	set textContent(value) { this._text = String(value); this.children = []; }
 	setAttribute(name, value) { this.attributes[name] = String(value); if (name === 'hidden') this.hidden = true; if (name === 'id') this.id = String(value); }
@@ -73,6 +73,7 @@ function fixture() {
 	const root = document.createElement('div'); document.body.appendChild(root);
 	const pane = document.createElement('div'), viewport = document.createElement('div'), frame = document.createElement('iframe'), workspace = document.createElement('div'), inspector = document.createElement('div');
 	workspace.className = 'nova-service-workspace'; inspector.className = 'nova-service-edit-pane'; workspace.appendChild(pane); workspace.appendChild(inspector); root.appendChild(workspace); pane.appendChild(viewport); viewport.appendChild(frame); frame.contentDocument = frameDocument;
+	frame.contentWindow = {scrollX: 0, scrollY: 0, innerWidth: 1200, scrollTo(options) { this.scrollX = options.left || 0; this.scrollY = options.top || 0; }, addEventListener() {}};
 	let doc = {version: 2, sections: [
 		{id: 'hero', type: 'hero', data: {title: 'Approved title', body: '<p>Hero copy.</p>'}},
 		{id: 'copy', type: 'rich_text', content_slot: 'rich_text_1', shared_key: 'default_copy', data: {}},
@@ -92,9 +93,9 @@ function fixture() {
 	function fieldNode(id, path, kind, tag = 'div') { let sectionNode = frameDocument.body.children.find(entry => entry.getAttribute('data-nova-service-section-id') === id); if (!sectionNode) { sectionNode = frameDocument.createElement('section'); sectionNode.setAttribute('data-nova-service-section-id', id); frameDocument.body.appendChild(sectionNode); } const element = frameDocument.createElement(tag); element.setAttribute('data-nova-service-field', path); element.setAttribute('data-nova-service-kind', kind); element.textContent = 'Rendered value'; element.innerHTML = '<span>Rendered value</span>'; sectionNode.appendChild(element); return element; }
 	const mediaEvents = {}, wp = {media() { return {on(name, callback) { mediaEvents[name] = callback; }, open() {}, state() { return {get() { return {first() { return {toJSON() { return {id: 99, url: '/selected.jpg', alt: 'Selected office'}; }}; }}; }}; }}; }};
 	const windowHandlers = {};
-	const window = {wp, addEventListener(name, handler) { (windowHandlers[name] ||= []).push(handler); }};
+	const window = {wp, scrollX: 0, scrollY: 0, scrollTo(options) { this.scrollX = options.left || 0; this.scrollY = options.top || 0; }, addEventListener(name, handler) { (windowHandlers[name] ||= []).push(handler); }};
 	function beforeUnload() { const event = {prevented: false, returnValue: undefined, preventDefault() { this.prevented = true; }}; for (const handler of windowHandlers.beforeunload || []) handler(event); return event; }
-	function button(text) { const result = root.querySelectorAll('button').find(entry => entry.textContent === text); assert.ok(result, 'Button exists: ' + text); return result; }
+	function button(text) { const selectedRow = root.querySelectorAll('.nova-visual-structure-item').find(entry => entry.classList.contains('is-selected')); const selectedButtons = selectedRow ? selectedRow.querySelectorAll('button') : []; const result = selectedButtons.find(entry => entry.textContent === text) || root.querySelectorAll('button').find(entry => entry.textContent === text); assert.ok(result, 'Button exists: ' + text); return result; }
 	return {core, window, document, frameDocument, root, inspector, mutations, fieldNode, button, mediaEvents, beforeUnload, notify: emit, get editing() { return editing; }, get saves() { return saves; }};
 }
 
@@ -261,5 +262,78 @@ equal(setupLink.getAttribute('href'), setupAdmin.core.config.onboardingUrl, 'an 
 const setupAuthor = fixture(); Object.assign(setupAuthor.core.config, {onboardingRequired: true, canManage: false, onboardingUrl: 'https://site.example/wp-admin/setup'}); visual.mount(setupAuthor.core, setupAuthor.window, setupAuthor.document);
 ok(setupAuthor.root.querySelectorAll('.nova-visual-setup-notice')[0].textContent.includes('Ask an administrator to finish setup.'), 'an author sees the correct required-setup action without an inaccessible settings link');
 equal(setupAuthor.root.querySelectorAll('a').length, 0, 'the setup banner exposes no administrator link to an author');
+
+const dragOrder = [{id: 'hero'}, {id: 'copy'}, {id: 'hidden'}, {id: 'office'}, {id: 'empty'}];
+equal(visual.dropOffset(dragOrder, 'hero', 'office', false), 2, 'dropping before a visible target counts hidden canonical sections');
+equal(visual.dropOffset(dragOrder, 'hero', 'office', true), 3, 'dropping after a target accounts for removing the source first');
+equal(visual.dropOffset(dragOrder, 'office', 'copy', false), -2, 'upward drops preserve every unrelated canonical position');
+equal(visual.dropOffset(dragOrder, 'copy', 'hidden', false), 0, 'dropping in the existing position is a no-op');
+equal(visual.dropOffset(dragOrder, 'missing', 'office', true), 0, 'unknown sources cannot reorder the document');
+equal(visual.dropOffset(dragOrder, 'copy', 'copy', true), 0, 'a section cannot be dropped into itself');
+equal(app.root.querySelectorAll('.nova-visual-section-tools').length, 0, 'the permanent bottom action row is removed');
+equal(app.root.querySelectorAll('.nova-visual-device-controls')[0].getAttribute('role'), 'group', 'desktop and phone are a dedicated semantic device group');
+ok(app.button('Sections').classList.contains('nova-visual-structure-toggle'), 'Sections is a distinct layout control');
+
+function rect(left, top, width, height) { return {left, top, width, height, right: left + width, bottom: top + height}; }
+function dragFixture() {
+	const test = fixture(); const hero = test.fieldNode('hero', 'title', 'text', 'h1'), copy = test.fieldNode('copy', 'body', 'html'), office = test.fieldNode('office', 'images.0', 'image', 'img');
+	const viewport = rect(100, 100, 1200, 800); test.core.preview.frame.getBoundingClientRect = () => viewport; test.core.preview.viewport.getBoundingClientRect = () => viewport;
+	const mounted = visual.mount(test.core, test.window, test.document); test.root.querySelectorAll('.nova-visual-body')[0].getBoundingClientRect = () => viewport;
+	for (const [field, top] of [[hero, 0], [copy, 250], [office, 600]]) { field.parentNode.getBoundingClientRect = () => rect(0, top - test.core.preview.frame.contentWindow.scrollY, 1200, 200); }
+	mounted.select('hero');
+	function overlay(id) { return test.root.querySelectorAll('.nova-visual-section-overlay').find(entry => entry.getAttribute('data-section-id') === id); }
+	function handle(id) { return overlay(id).querySelectorAll('button').find(entry => entry.getAttribute('data-section-action') === 'drag'); }
+	function start(id = 'hero', pointerId = 1) { handle(id).emit('pointerdown', {button: 0, pointerId, clientX: 120, clientY: 120}); }
+	function move(x, y) { test.document.emit('pointermove', {pointerId: 1, clientX: x, clientY: y}); }
+	function drop(x, y) { test.document.emit('pointerup', {pointerId: 1, clientX: x, clientY: y}); }
+	return Object.assign(test, {mounted, overlay, handle, start, move, drop});
+}
+const mouse = dragFixture(), dragBefore = mouse.core.getDocument();
+equal(mouse.overlay('hero').querySelectorAll('.nova-visual-section-handle').length, 1, 'each rendered section has its own accessible drag handle');
+equal(mouse.overlay('hero').querySelectorAll('.nova-visual-section-controls')[0].children.length, 4, 'each section has settings, duplicate, visibility and remove icons');
+mouse.start(); ok(mouse.editing, 'dragging pauses renderer replacement'); mouse.move(500, 860); mouse.drop(500, 860);
+equal(mouse.core.getDocument().sections.map(entry => entry.id), ['copy', 'proof', 'office', 'hero', 'empty-copy'], 'a mouse drop commits the canonical order including hidden and empty sections');
+equal(mouse.mutations, ['move'], 'a complete drag is one undoable document mutation');
+for (const original of dragBefore.sections) { equal(mouse.core.getSection(original.id).data, original.data, 'dragging preserves all fields for ' + original.id); }
+equal(mouse.editing, false, 'dropping releases renderer replacement'); mouse.button('Undo').emit('click'); equal(mouse.core.getDocument(), dragBefore, 'one Undo restores the entire pre-drag document');
+
+const cancelledDrag = dragFixture(), cancelOrder = cancelledDrag.core.getDocument();
+cancelledDrag.start(); cancelledDrag.move(500, 850); cancelledDrag.document.emit('keydown', {key: 'Escape'});
+equal(cancelledDrag.core.getDocument(), cancelOrder, 'Escape cancels a drag without changing canonical order'); equal(cancelledDrag.mutations, [], 'cancelled drags create no undo entries');
+cancelledDrag.start(); cancelledDrag.move(500, 850); cancelledDrag.document.emit('pointercancel'); equal(cancelledDrag.mutations, [], 'pointer cancellation leaves content and history untouched');
+cancelledDrag.start(); cancelledDrag.move(500, 850); cancelledDrag.drop(20, 850); equal(cancelledDrag.mutations, [], 'dropping outside the canvas cancels the reorder');
+cancelledDrag.start(); cancelledDrag.drop(120, 120); equal(cancelledDrag.mutations, [], 'clicking the handle without dragging is a no-op');
+equal(cancelledDrag.core.getDocument(), cancelOrder, 'every cancelled gesture preserves hidden sections and field values');
+cancelledDrag.handle('hero').emit('keydown', {key: 'ArrowDown'}); equal(cancelledDrag.core.getDocument().sections.map(entry => entry.id), ['copy', 'hero', 'proof', 'office', 'empty-copy'], 'the drag handle also provides keyboard ordering');
+cancelledDrag.core.preview.framePending = true; cancelledDrag.notify({type: 'status'}); equal(cancelledDrag.root.querySelectorAll('.nova-visual-section-overlays')[0].hidden, true, 'old canvas controls are inaccessible while a new frame is loading');
+
+const scrollClose = fixture(), scrollField = scrollClose.fieldNode('copy', 'body', 'html');
+const canvasView = scrollClose.core.preview.frame.contentWindow; canvasView.scrollX = 4; canvasView.scrollY = 720; scrollClose.window.scrollX = 3; scrollClose.window.scrollY = 160;
+let obsoleteFieldFocuses = 0; scrollField.focus = () => { obsoleteFieldFocuses++; canvasView.scrollY = 0; };
+scrollClose.window.wp.editor = {initialize() {}, remove() { canvasView.scrollY = 0; scrollClose.window.scrollY = 0; }};
+const scrollController = visual.mount(scrollClose.core, scrollClose.window, scrollClose.document);
+scrollClose.frameDocument.emit('click', {target: scrollField}); scrollController.finishEdit(false);
+equal([canvasView.scrollX, canvasView.scrollY, scrollClose.window.scrollX, scrollClose.window.scrollY], [4, 720, 3, 160], 'closing TinyMCE restores exact canvas and WordPress reading positions after editor cleanup');
+equal(obsoleteFieldFocuses, 0, 'closing rich text never refocuses the old rendered field');
+equal(scrollClose.mutations, [], 'scroll restoration does not commit a cancelled inherited field');
+const replacementDocument = new Document(), replacementSection = replacementDocument.createElement('section'), replacementField = replacementDocument.createElement('div');
+replacementSection.setAttribute('data-nova-service-section-id', 'copy'); replacementField.setAttribute('data-nova-service-field', 'body'); replacementField.setAttribute('data-nova-service-kind', 'html'); replacementField.textContent = 'Re-rendered copy'; replacementSection.appendChild(replacementField); replacementDocument.body.appendChild(replacementSection);
+scrollClose.core.preview.frame.contentDocument = replacementDocument; canvasView.scrollY = 0; scrollClose.core.preview.frame.emit('load');
+equal(canvasView.scrollY, 720, 'a later safe iframe refresh preserves the captured reading position');
+
+const multiplePointers = dragFixture(); multiplePointers.start('hero', 1); multiplePointers.move(500, 860); multiplePointers.start('copy', 2);
+multiplePointers.document.emit('pointerup', {pointerId: 2, clientX: 500, clientY: 860});
+equal(multiplePointers.mutations, [], 'a second pointer cannot end or commit the active drag');
+equal(multiplePointers.editing, true, 'a second pointer release leaves the first gesture active');
+multiplePointers.document.emit('pointercancel', {pointerId: 2}); equal(multiplePointers.editing, true, 'a different pointer cancellation leaves the first gesture active');
+equal(multiplePointers.mutations, [], 'another pointer cancellation does not change document history');
+multiplePointers.drop(500, 860);
+equal(multiplePointers.core.getDocument().sections.map(section => section.id), ['copy', 'proof', 'office', 'hero', 'empty-copy'], 'a second pointerdown cannot replace the source of the first drag');
+equal(multiplePointers.mutations, ['move'], 'the original pointer still commits exactly one reorder');
+const framePointers = dragFixture(); framePointers.start('hero', 7); framePointers.document.emit('pointermove', {pointerId: 7, clientX: 500, clientY: 860});
+framePointers.frameDocument.emit('pointerup', {pointerId: 8, clientX: 400, clientY: 760}); equal(framePointers.editing, true, 'iframe-forwarded pointerup retains its pointer identity');
+framePointers.frameDocument.emit('pointercancel', {pointerId: 8}); equal(framePointers.editing, true, 'iframe-forwarded pointercancel ignores other pointers');
+framePointers.frameDocument.emit('pointercancel', {pointerId: 7}); equal(framePointers.editing, false, 'the matching iframe cancellation ends the original gesture');
+equal(framePointers.mutations, [], 'matching cancellation ends the drag without creating history');
 
 console.log('Passed ' + checks + ' visual editor checks.');

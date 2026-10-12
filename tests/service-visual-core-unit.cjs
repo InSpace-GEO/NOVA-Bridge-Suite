@@ -26,7 +26,7 @@ const context = {
     clone: plain, root: {querySelector() { return 'inspector'; }},
     document: {getElementById(id) { return id === 'title' ? title : id === 'publish' ? publisher : id === 'save-post' ? draftSaver : null; }, dispatchEvent(event) { dispatches.push(event.type); }},
     window: {clearTimeout() {}, CustomEvent: class { constructor(type) { this.type = type; } }},
-    write() {}, updatePreviewSavedState() {}, renderOrderContext() {}, schedulePreview(value) { refreshes.push(value); }, removeEditors() {},
+    write() {}, updatePreviewSavedState() {}, renderOrderContext() {}, schedulePreview(value) { if (context.preview.editing) { context.preview.pending = true; return; } refreshes.push(value); }, removeEditors() {},
     render() { context.visualNotify('model'); }, focusPreviewSection(id, previewId, scroll) { scrolls.push({id, scroll}); }, fitPreviewFrame() {},
     sectionLabel(section) { return section.type; }, richTextSlot(section) { return section.content_slot || ''; }, uniqueId() { return 'new-' + (++context.ids); }, ids: 0,
 };
@@ -76,6 +76,17 @@ rejects(() => core.resetField('missing', 'body'), 'an unavailable client default
 equal(core.getField('missing', 'body'), 'Keep local content', 'missing-version reset preserves the existing text');
 core.setEditing(true); equal(context.aborts, 1, 'typing cancels an already queued renderer response');
 ok(context.preview.editing, 'typing holds the canvas transaction'); core.setEditing(false); ok(!context.preview.editing && refreshes.at(-1), 'commit or cancel resumes one fresh render');
+context.preview.appliedSerial = context.preview.serial; const settledRefreshes = refreshes.length;
+core.setEditing(true); core.setEditing(false); equal(refreshes.length, settledRefreshes, 'opening and cancelling an unchanged field does not reload the canvas');
+equal(context.preview.appliedSerial, context.preview.serial, 'an unchanged close retains a settled renderer state');
+core.setEditing(true); core.setField('hero', 'body', '<p>Changed while the canvas was paused.</p>');
+ok(context.preview.pending, 'a completed edit queues the canonical document render while paused');
+core.setEditing(false); equal(refreshes.length, settledRefreshes + 1, 'applying a real edit resumes exactly one renderer request');
+context.preview.appliedSerial = context.preview.serial; context.preview.serial++;
+core.setEditing(true); core.setEditing(false); equal(refreshes.length, settledRefreshes + 2, 'an earlier pending render resumes even if the field was cancelled');
+const pendingSerial = context.preview.serial, appliedBeforeDuplicateClose = context.preview.appliedSerial;
+core.setEditing(false); equal(context.preview.serial, pendingSerial, 'duplicate close callbacks leave the active render token intact');
+equal(context.preview.appliedSerial, appliedBeforeDuplicateClose, 'duplicate close callbacks cannot advertise an unfinished render as applied');
 core.setField('hero', '__page_title', 'New WordPress title'); equal(title.value, 'New WordPress title', 'editing the fallback heading updates the WordPress title');
 core.undo(); equal(title.value, 'Saved service title', 'undo restores title and document together');
 core.subscribe(event => event.type === 'beforeSave' ? false : undefined); ok(context.visualNotify('beforeSave') === false, 'a failed edit transaction can block normal WordPress submission');
