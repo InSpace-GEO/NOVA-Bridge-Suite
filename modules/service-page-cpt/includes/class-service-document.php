@@ -88,7 +88,7 @@ final class ServiceDocument {
 			'hero' => [ 'label' => 'Hero and first CTA', 'description' => 'Clear service offer, supporting image and first conversion action high on the page.' ],
 			'rich_text' => [ 'label' => 'Rich text', 'description' => 'A generic rich-text section with an optional heading. Preserve the source content and reading order.' ],
 			'people' => [ 'label' => 'People', 'description' => 'Real staff or customer images, with useful alt text and captions.' ],
-			'location' => [ 'label' => 'Location images', 'description' => 'One or more genuine images of the business location.' ],
+			'location' => [ 'label' => 'Location images', 'description' => 'Genuine images of the business location: show a gallery or let each page select one consistent photo from the client pool.' ],
 			'map' => [ 'label' => 'Google Maps and address', 'description' => 'Verified address and a Google Maps embed URL; no invented location.' ],
 			'reviews' => [ 'label' => 'Reviews and social proof', 'description' => 'Verified customer reviews with attribution and optional source link/rating.' ],
 			'credentials' => [ 'label' => 'Awards and certifications', 'description' => 'Verified awards, certifications and qualifications, optionally linking to evidence.' ],
@@ -150,6 +150,7 @@ final class ServiceDocument {
 			'link_sources' => [ 'type' => 'boolean', 'description' => 'Optional clickable source links for manually supplied reviews/provider summaries and evidence image/link anchors for credentials; default true. false keeps branding and credential content. Stored URLs still identify branding; live provider attribution is retained where required.' ],
 			'width' => [ 'type' => 'string', 'enum' => [ 'full', 'half' ], 'description' => 'Full row by default. Place two half-row sections next to one another in the section order for a two-column row; mobile uses one column. This presentation field can inherit from a shared section.' ],
 			'images' => [ 'type' => 'array', 'maxItems' => 20, 'items' => $image ],
+			'image_selection' => [ 'type' => 'string', 'enum' => [ 'all', 'one_per_page' ], 'description' => 'Optional location photo selection. Omit on a linked section to inherit the client selection. Without a configured mode, the existing all-images gallery is retained. all displays the complete gallery; one_per_page selects one shared-pool photo consistently for this page and section, including after pool reordering. A local images override containing one image supplies a fixed page photo; inherit images to restore the client pool. No per-post media selection is required.' ],
 			'buttons' => [ 'type' => 'array', 'maxItems' => 10, 'items' => [ 'type' => 'object', 'additionalProperties' => false, 'properties' => [ 'label' => $text, 'url' => $url ] ] ],
 			'items' => [ 'type' => 'array', 'maxItems' => 80, 'items' => $item ],
 			'address' => $text, 'map_url' => $url, 'html' => [ 'type' => 'string', 'description' => 'Safe HTML and native form controls. GET/POST forms require HTTPS or site-relative actions. Scripts/events are stripped; iframes require an approved HTTPS provider.' ],
@@ -206,6 +207,7 @@ final class ServiceDocument {
 			$ids[] = $section['id'];
 			$data = (array) $section['data'];
 			if ( array_key_exists( 'link_sources', $data ) && ! is_bool( $data['link_sources'] ) ) { return self::error( 'link_sources must be a JSON boolean.' ); }
+			if ( array_key_exists( 'image_selection', $data ) && ! in_array( $data['image_selection'], [ 'all', 'one_per_page' ], true ) ) { return self::error( 'image_selection must be all or one_per_page.' ); }
 			foreach ( [ 'images' => [ 'url' ], 'buttons' => [ 'url' ], 'items' => [ 'url', 'image', 'author_url', 'author_image', 'source_url' ] ] as $collection => $fields ) {
 				foreach ( $data[ $collection ] ?? [] as $row ) {
 					foreach ( $fields as $field ) {
@@ -411,6 +413,7 @@ final class ServiceDocument {
 			if ( isset( $data['layout'] ) ) { $clean['layout'] = in_array( $data['layout'], self::LAYOUTS, true ) ? $data['layout'] : 'default'; }
 			if ( array_key_exists( 'link_sources', $data ) && is_bool( $data['link_sources'] ) ) { $clean['link_sources'] = $data['link_sources']; }
 			if ( isset( $data['width'] ) ) { $clean['width'] = 'half' === $data['width'] ? 'half' : 'full'; }
+			if ( array_key_exists( 'image_selection', $data ) && in_array( $data['image_selection'], [ 'all', 'one_per_page' ], true ) ) { $clean['image_selection'] = $data['image_selection']; }
 			foreach ( [ 'images' => 20, 'buttons' => 10, 'items' => 80 ] as $collection => $limit ) {
 				if ( ! isset( $data[ $collection ] ) || ! is_array( $data[ $collection ] ) ) { continue; }
 				$clean[ $collection ] = [];
@@ -541,6 +544,7 @@ final class ServiceDocument {
 		foreach ( (array) ( $value['section_overrides'] ?? [] ) as $override ) {
 			$data = (array) ( ( (array) $override )['data'] ?? [] );
 			if ( array_key_exists( 'link_sources', $data ) && ! is_bool( $data['link_sources'] ) ) { return self::error( 'link_sources must be a JSON boolean.' ); }
+			if ( array_key_exists( 'image_selection', $data ) && ! in_array( $data['image_selection'], [ 'all', 'one_per_page' ], true ) ) { return self::error( 'image_selection must be all or one_per_page.' ); }
 		}
 		$schema = self::content_schema();
 		// Old requests are accepted internally, without advertising old field names.
@@ -777,6 +781,7 @@ final class ServiceDocument {
 		foreach ( $slots as $index => $slot ) { $descriptions[ $slot ] = 'Generic rich text with optional title and safe HTML body. For substantial content, use roughly ' . $percentages[ $index ] . '% of the remaining body here in reading order. Split only at intact heading, paragraph, list or table boundaries; short content may stay in one slot.'; }
 		if ( array_key_exists( 'faq', $content ) ) { $descriptions['faq'] = 'Existing or source-supported {question,answer} pairs; answers accept safe rich HTML. Do not duplicate these FAQs in the rich-text sections or invent FAQs while redistributing existing content.'; }
 		$descriptions['section_overrides'] = 'All overrides are optional, keyed by an existing document section ID: data, enabled, shared_key and inherit. Omit to follow client defaults. data may contain buttons [{label,url}] for CTAs/hero; html or shortcode for custom CTAs; images [{id,url,alt,caption}] for people/location; address and map_url for maps; items for credentials/reviews, including optional publisher source_logo and credential issuer organization, image, evidence url and separate source link label; section source_logo configures a shared review publisher logo once; review_source for imported proof; video_url and poster for video; title, body, layout, width or heading_level for presentation. Credential layouts support logo_rail, featured_membership, editorial, credential_tiles, trust_band and evidence_accordion, plus existing default/cards/list/badges/logos/compact layouts. Reviews support editorial, conversation, spotlight, publisher_cards, compact_rail and signature, plus existing default/cards/list/compact layouts. Both presentation controls are optional and can inherit from client defaults. Manual reviews may use source text/logo without any item, source or profile URL or review_source. Optional link_sources is a JSON boolean, default true: false hides clickable review source/profile/author links while retaining source branding, and hides credential evidence image/link anchors while retaining credential content. Stored URLs still identify branding and live provider attribution is retained where required. Supplied data keys override whole fields; empty strings/arrays clear fields. inherit removes named local overrides so shared values apply again. Variant keys must match the section type.';
+		$descriptions['section_overrides'] .= ' Optional location image_selection is all (gallery) or one_per_page. Omit it to inherit the client selection; without a configured mode, the existing gallery is retained. one_per_page displays one consistent photo from the client images pool for this page and section; reordering the pool keeps its choice. A local images array containing one image supplies a fixed page photo. inherit:["images"] restores the shared pool, while inherit:["image_selection"] restores its selection mode. These are optional overrides; routine posting need not supply images or image_selection.';
 		$descriptions['nova_service_document'] = 'Advanced complete replacement of the ordered version-2 document; include every section to retain. Routine posting should use nova_service_content instead.';
 		return $descriptions;
 	}
@@ -792,6 +797,7 @@ final class ServiceDocument {
 		$segments[] = 'Preserve all existing text and reading order exactly. Split only at complete heading, paragraph, list and table boundaries; keep a heading with its following content. Do not rewrite, summarize, duplicate, omit or invent content merely to reach percentages. Short content may use one slot and leave the others empty; exact percentages are guidance, not a forced split.';
 		if ( array_key_exists( 'faq', self::get_content( $post_id ) ) ) { $segments[] = 'Put source-supported FAQ pairs in faq so they render as accordions; do not duplicate them in rich text or create new FAQs while only redistributing existing content.'; }
 		$segments[] = 'Disabled content fields are omitted from nova_service_content and meta_descriptions. Client-configured CTAs, forms, media, team, locations, maps, videos and proof apply by default. Related service cards are automatic; routine posting supplies no related IDs. Optional section_overrides can change an existing section’s data, visibility or same-type shared variant for this page, or remove local overrides with inherit. Omitting these overrides retains client defaults.';
+		$segments[] = 'Client location photos can use image_selection:one_per_page to display one consistent shared-pool image per page and section. Routine posting need not select it. A local one-image override supplies a fixed photo; inherit images to restore the client pool.';
 		$segments[] = 'Content writes patch only supplied keys. Omitted values and existing visibility stay unchanged; empty strings or arrays intentionally clear supplied fields. New pages inherit the client layout. Write nova_service_document only for a complete structural replacement. Stored legacy fields remain available for rollback but do not drive native rendering.';
 		return implode( ' ', $segments );
 	}

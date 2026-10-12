@@ -91,6 +91,49 @@ equal(tabs[2].href, 'https://external.example/reference', 'external links are no
 targetContext.selectedPreviewId = 0; targetContext.syncPreviewTargetContext();
 equal(new URL(tabs[0].href).searchParams.get('preview_post_id'), null, 'the sample target clears stale selection parameters');
 
+function officeSelector(section, editorMode = 'page', preset = {data: {images: [
+	{id: 11, url: '/office-a.jpg', alt: 'Eindhoven office'},
+	{id: 12, url: '/office-b.jpg', alt: 'Office reception'}
+]}}) {
+	const fields = []; let redraws = 0;
+	const context = {
+		editorMode, presetFor: () => preset, clone: plain,
+		hasOwn: (object, key) => Object.hasOwn(object, key),
+		field(container, label, value, setter, options) { fields.push({label, value, setter, options}); },
+		removeEditors() {}, render() { redraws++; }
+	};
+	vm.createContext(context);
+	vm.runInContext(segment('renderOfficePhotoSelector(', 'renderImages('), context);
+	context.renderOfficePhotoSelector({}, section);
+	return {fields, preset, get redraws() { return redraws; }};
+}
+const officeSection = {id: 'office', type: 'location', shared_key: 'default_location', data: {title: 'Visit us'}};
+const officeBefore = JSON.stringify(officeSection);
+const office = officeSelector(officeSection);
+equal(office.fields[0].value, 'shared', 'linked office photos initially follow the shared pool');
+equal(JSON.stringify(officeSection), officeBefore, 'displaying the office selector preserves sparse inheritance');
+equal(office.fields[0].options.choices['photo-1'], 'Photo 2 — Office reception', 'a fixed choice identifies the actual shared photo');
+office.fields[0].setter('photo-1');
+equal(officeSection.data, {title: 'Visit us', images: [{id: 12, url: '/office-b.jpg', alt: 'Office reception'}]}, 'a fixed photo overrides only the existing Images field');
+officeSection.data.images[0].alt = 'Custom alternative text';
+equal(office.preset.data.images[1].alt, 'Office reception', 'editing a fixed photo cannot change the shared pool');
+equal(officeSelector(officeSection).fields[0].value, 'photo-1', 'a saved fixed photo remains selected when reopening the editor');
+office.fields[0].setter('shared');
+equal(officeSection.data, {title: 'Visit us'}, 'returning to the pool deletes only the image override');
+equal(office.redraws, 2, 'changing a photo refreshes the editor and inherited controls');
+officeSection.data.images = [];
+equal(officeSelector(officeSection).fields[0].value, 'custom', 'an intentionally empty image override never pretends to inherit');
+officeSection.data.images = [{url: '/private-office.jpg'}];
+const customOffice = officeSelector(officeSection);
+equal(customOffice.fields[0].value, 'custom', 'a local photo outside the pool is clearly identified');
+const customBefore = JSON.stringify(officeSection);
+customOffice.fields[0].setter('custom'); customOffice.fields[0].setter('photo-99');
+equal(JSON.stringify(officeSection), customBefore, 'custom and invalid choices preserve local content');
+equal(officeSelector(officeSection, 'library').fields.length, 0, 'client defaults retain the pool editor rather than a per-page selector');
+equal(officeSelector(officeSection, 'template').fields.length, 0, 'the starting layout does not acquire a fixed page photo');
+equal(officeSelector({type: 'location', data: {}}).fields.length, 0, 'local sections continue to use the ordinary image editor');
+equal(officeSelector(officeSection, 'page', {data: {images: []}}).fields.length, 0, 'empty pools do not offer unavailable fixed photos');
+
 function previewHarness(mode, supportsAbort = true) {
 	const timers = new Map(); const calls = []; let timerId = 0; let collections = 0;
 	const preview = {

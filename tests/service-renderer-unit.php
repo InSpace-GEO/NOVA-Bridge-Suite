@@ -164,6 +164,37 @@ namespace {
 	$assert( false !== strpos( $html, 'Team member' ), 'CTA image needed by legacy migration was lost.' );
 	$assert( 3 === substr_count( $html, '<img ' ), 'Multiple image gallery lost images.' );
 	$assert( false !== strpos( $html, 'href="#appointment"' ), 'Same-page CTA link was lost.' );
+	$office_images = [ [ 'url' => 'https://example.test/office-front.jpg', 'alt' => 'Office front' ], [ 'url' => 'https://example.test/office-inside.jpg', 'alt' => 'Office interior' ], [ 'url' => 'https://example.test/office-meeting.jpg', 'alt' => 'Meeting room' ] ];
+	$office_data = [ 'title' => 'Visit our office', 'body' => '<p>Office introduction.</p>', 'address' => "Campus 91\nEindhoven", 'layout' => 'split', 'images' => $office_images ];
+	$html = $render( [ $section( 'office', 'location', $office_data ) ] );
+	$assert( 3 === substr_count( $html, '<img ' ) && false !== strpos( $html, 'nova-service__gallery--multiple' ), 'Older location sections without a selection mode must keep their complete gallery.' );
+	$office_data['image_selection'] = 'all';
+	$assert( 3 === substr_count( $render( [ $section( 'office', 'location', $office_data ) ] ), '<img ' ), 'Explicit all mode must keep every location photo.' );
+	$office_data['image_selection'] = 'one_per_page';
+	$office_document = [ 'version' => 2, 'sections' => [ $section( 'office', 'location', $office_data ) ] ];
+	$office_before = $office_document;
+	$office_first = ServiceRenderer::render_candidate( 1, $office_document, 'Service one' );
+	$assert( 1 === substr_count( $office_first, '<img ' ) && false !== strpos( $office_first, 'nova-service__gallery--single' ) && false !== strpos( $office_first, 'Office introduction.' ) && false !== strpos( $office_first, 'Campus 91' ) && false !== strpos( $office_first, 'nova-service__layout--split' ), 'Pooled office rendering must show one photo beside retained introduction and address.' );
+	$assert( $office_first === ServiceRenderer::render_candidate( 1, $office_document, 'Service one' ) && $office_before === $office_document, 'Repeated office renders must be identical without mutating the candidate or pool.' );
+	$reordered_office = $office_document; $reordered_office['sections'][0]['data']['images'] = array_reverse( $office_images );
+	$assert( $office_first === ServiceRenderer::render_candidate( 1, $reordered_office, 'Service one' ), 'Reordering the shared photo pool must not change a page selection.' );
+	$office_choices = [];
+	for ( $office_post_id = 1; $office_post_id <= 24; $office_post_id++ ) {
+		$office_html = ServiceRenderer::render_candidate( $office_post_id, $office_document, 'Office service' );
+		$assert( 1 === substr_count( $office_html, '<img ' ), 'Each page using a nonempty office pool must display exactly one photo.' );
+		preg_match( '/<img\\b[^>]*\\bsrc="([^"]+)"/', $office_html, $office_match );
+		$office_choices[] = $office_match[1] ?? '';
+	}
+	$assert( count( array_unique( $office_choices ) ) > 1, 'The office pool must provide variation across service pages rather than always selecting its first image.' );
+	$office_with_blanks = $office_document; $office_with_blanks['sections'][0]['data']['images'][] = [ 'id' => 0, 'url' => '', 'alt' => '' ]; $office_with_blanks['sections'][0]['data']['images'][] = [ 'id' => 999, 'url' => '' ];
+	$assert( $office_first === ServiceRenderer::render_candidate( 1, $office_with_blanks, 'Service one' ), 'Blank and missing-attachment pool entries must not suppress a usable office photo.' );
+	$empty_office = $office_document; $empty_office['sections'][0]['data']['images'] = [];
+	$empty_office_html = ServiceRenderer::render_candidate( 1, $empty_office, 'Service one' );
+	$assert( false === strpos( $empty_office_html, '<img ' ) && false !== strpos( $empty_office_html, 'Office introduction.' ) && false !== strpos( $empty_office_html, 'Campus 91' ), 'An empty office pool must retain its content and address without fabricating a photo.' );
+	$fixed_office = $office_document; $fixed_office['sections'][0]['data']['images'] = [ [ 'url' => 'https://example.test/chosen-office.jpg', 'alt' => 'Chosen office photo' ] ];
+	$assert( false !== strpos( ServiceRenderer::render_candidate( 1, $fixed_office, 'Service one' ), 'src="https://example.test/chosen-office.jpg"' ) && false !== strpos( ServiceRenderer::render_candidate( 24, $fixed_office, 'Service twenty-four' ), 'src="https://example.test/chosen-office.jpg"' ), 'A one-image local override must stay fixed independently of the page seed.' );
+	$html = $render( [ $section( 'team', 'people', [ 'image_selection' => 'one_per_page', 'images' => $office_images ] ) ] );
+	$assert( 3 === substr_count( $html, '<img ' ), 'Office pool selection must not silently change people or other image galleries.' );
 	$html = $render( [ $section( 'split', 'rich_text', [ 'layout' => 'split', 'body' => 'Copy next to image', 'images' => [ [ 'id' => 10 ] ] ] ), $section( 'compact', 'credentials', [ 'layout' => 'compact', 'items' => [ [ 'title' => 'Verified award', 'image' => 'https://example.test/award.jpg' ] ] ] ), $section( 'invalid-layout', 'rich_text', [ 'layout' => 'bad" onclick="alert(1)', 'body' => 'Safe layout' ] ) ] );
 	$assert( false !== strpos( $html, 'nova-service__layout--split' ) && false !== strpos( $html, 'nova-service__content-grid' ) && false !== strpos( $html, 'nova-service__layout--compact' ) && false !== strpos( $html, 'nova-service__credential-copy' ), 'Presentation variations need usable text/media and credential wrappers.' );
 	$assert( false === strpos( $html, 'onclick=' ) && false !== strpos( $html, 'nova-service__layout--default' ), 'Unrecognized layout values must fall back safely.' );

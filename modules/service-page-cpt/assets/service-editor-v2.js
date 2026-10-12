@@ -486,6 +486,29 @@
 		changed(); render();
 	}
 	function uniqueId() { return 'section-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8); }
+	function renderOfficePhotoSelector(container, section) {
+		if (editorMode !== 'page' || !section.shared_key) { return; }
+		var preset = presetFor(section), pool = preset && preset.data && preset.data.images;
+		if (!Array.isArray(pool) || !pool.some(function (image) { return image && image.url; })) { return; }
+		var choices = {shared: 'Use shared photo pool'}, current = 'shared';
+		var hasOverride = hasOwn(section.data, 'images'), localImages = hasOverride ? section.data.images : null;
+		if (hasOverride) { choices.custom = 'Custom image override'; current = 'custom'; }
+		pool.forEach(function (image, index) {
+			if (!image || !image.url) { return; }
+			var key = 'photo-' + index;
+			choices[key] = 'Photo ' + (index + 1) + (image.alt ? ' — ' + image.alt : '');
+			if (Array.isArray(localImages) && localImages.length === 1 && localImages[0] && localImages[0].url === image.url) { current = key; }
+		});
+		field(container, 'Office photo for this page', current, function (value) {
+			if (value === 'custom') { return; }
+			var index = value === 'shared' ? -1 : Number(value.slice(6));
+			if (!hasOwn(choices, value) || (value !== 'shared' && (!pool[index] || !pool[index].url))) { return; }
+			removeEditors();
+			if (value === 'shared') { delete section.data.images; }
+			else { section.data.images = [clone(pool[index])]; }
+			render();
+		}, {choices: choices, help: 'Choose a fixed office photo for this page, or use the pool from Client defaults. A fixed choice overrides only Images; the rest of this section stays linked.'});
+	}
 	function renderImages(container, section) {
 		var images = collection(section, 'images');
 		var group = element('div', {className: 'nova-service-group'});
@@ -893,6 +916,10 @@
 		appearances.compact = 'Compact';
 		dataField(content, section, 'layout', 'Section appearance', {choices: appearances, help: 'Site fonts, colors and shared styling form the baseline. Choose a layout variant only when this section needs a different presentation; linked sections can inherit their library appearance.'});
 		if (richTypes.indexOf(section.type) >= 0) { dataField(content, section, 'body', section.type === 'hero' ? 'Introductory copy' : 'Rich text', {rich: true}); }
+		if (section.type === 'location') {
+			dataField(content, section, 'image_selection', 'Office photo selection', {choices: {all: 'Show all photos', one_per_page: 'One photo per page'}, help: 'Add multiple office photos here or in Client defaults. One photo per page selects a stable photo from the pool, even when you reorder it. An Images override with one photo fixes that photo for the page.'});
+			renderOfficePhotoSelector(content, section);
+		}
 		if (imageTypes.indexOf(section.type) >= 0 || section.type === 'rich_text') { collectionGroup(content, section, 'images', 'Images', renderImages); }
 		if (buttonTypes.indexOf(section.type) >= 0) { collectionGroup(content, section, 'buttons', 'Buttons', renderButtons); }
 		if (section.type === 'location' || section.type === 'map') { dataField(content, section, 'address', 'Location address', {multiline: true, rows: 2}); }

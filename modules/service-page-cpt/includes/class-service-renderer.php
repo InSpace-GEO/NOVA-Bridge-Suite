@@ -159,6 +159,7 @@ final class ServiceRenderer {
 				case 'people':
 				case 'location':
 					$address = '';
+					if ( 'location' === $type ) { $data['images'] = self::location_images( $data, $post_id, (string) ( $section['id'] ?? $id ) ); }
 					if ( 'location' === $type && ! empty( $data['address'] ) ) {
 						$address = '<address class="nova-service__address">' . \nl2br( \esc_html( $data['address'] ) ) . '</address>';
 					}
@@ -267,6 +268,23 @@ final class ServiceRenderer {
 	private static function content_headings( string $html ): string {
 		// Imported HTML and plugin CTAs share the page's one native H1 hierarchy.
 		return (string) \preg_replace( '/<(\/?)h1(?=\s|>)/i', '<$1h2', $html );
+	}
+
+	/** Resolve a location pool without writes or reload-dependent randomness. */
+	private static function location_images( array $data, int $post_id, string $section_id ): array {
+		$images = \is_array( $data['images'] ?? null ) ? $data['images'] : [];
+		if ( 'one_per_page' !== ( $data['image_selection'] ?? 'all' ) ) { return $images; }
+		$selected = null;
+		$best_score = '';
+		foreach ( $images as $image ) {
+			if ( ! \is_array( $image ) || '' === self::image( $image ) ) { continue; }
+			$identity = ! empty( $image['id'] ) ? 'id:' . (int) $image['id'] : 'url:' . (string) ( $image['url'] ?? '' );
+			// Rendezvous hashing keeps the winner when pool order changes. An added
+			// or removed image can change the winner, but page reloads cannot.
+			$score = \hash( 'sha256', $post_id . '|' . $section_id . '|' . $identity );
+			if ( null === $selected || \strcmp( $score, $best_score ) > 0 ) { $selected = $image; $best_score = $score; }
+		}
+		return null === $selected ? [] : [ $selected ];
 	}
 
 	private static function text_media( array $data, string $extra_copy = '' ): string {

@@ -115,7 +115,7 @@ $context = $context_method->invoke( null, Shared::get_presets(), Shared::get_tem
 $targets = array_column( $context['previewTargets'], null, 'id' );
 $assert( isset( $targets[5461], $targets[5618] ) && ! isset( $targets[168] ), 'Preview selector includes native examples and excludes legacy pages' );
 $assert( array_column( $targets[5618]['sectionOrder'], 'id' ) === array_column( Document::get_document( 5618 )['sections'], 'id' ), 'Editor context follows the saved page section order' );
-$assert( count( $context['presetUsage']['vital_example_reviews'] ) >= 1 && ! empty( $context['presetMeta']['default_reviews']['unused'] ), 'Settings distinguish used review presets from the unused default that caused confusion' );
+$assert( count( $context['presetUsage']['vital_example_reviews'] ) >= 1 && count( $context['presetUsage']['default_reviews'] ) >= 1 && empty( $context['presetMeta']['default_reviews']['unused'] ), 'Settings identify the clinic variant and activated InSpace review default as used' );
 $wrong_type_library = [ 'version' => 2, 'sections' => [ [ 'id' => 'vital_example_reviews', 'type' => 'credentials', 'enabled' => true, 'data' => [ 'body' => '' ] ] ] ];
 $wrong_context = $context_method->invoke( null, $wrong_type_library, Shared::get_template() );
 $wrong_targets = array_column( $wrong_context['previewTargets'], null, 'id' );
