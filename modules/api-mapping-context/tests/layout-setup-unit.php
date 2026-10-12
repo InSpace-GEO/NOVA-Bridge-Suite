@@ -83,4 +83,13 @@ check(strpos($html,'nova-layout-saved')===false&&strpos($html,'Start guided setu
 $wpdb->rows=$saved_rows;Nova_Bridge_Suite_Content_Rules::$saved=$saved_profiles;
 $administrator=false;ob_start();Nova_Bridge_Suite_Layout_Setup_Admin::render();$html=ob_get_clean();
 check($html==='','Non-administrator could render saved layout setup information');
+$administrator=true;
+require dirname(__DIR__).'/includes/class-nova-bridge-suite-endpoint-mappings-admin.php';
+$_GET=['tab'=>'layouts'];ob_start();nova_bridge_suite_render_settings_page();$html=ob_get_clean();
+check(strpos($html,'id="nova-endpoint-mappings-app"')!==false,'The main Layouts route did not mount endpoint onboarding');
+check(strpos($html,'How should your articles fit your website?')===false,'The legacy approach chooser still competes with endpoint onboarding');
+check(preg_match('/<details class="nova-layout-saved nova-layout-legacy-tools"><summary>Other layout tools<\/summary>/', $html)===1,'Legacy layout tools are not collapsed');
+check(strpos($html,'Reference field editor')!==false&&strpos($html,'Elementor content rules')!==false&&strpos($html,'reference_id=17')!==false,'Legacy editor links or saved reference identities were lost');
+$administrator=false;ob_start();Nova_Bridge_Suite_Layout_Setup_Admin::render();$html=ob_get_clean();
+check($html==='','Endpoint onboarding bypassed the shared administrator check');
 echo 'PASS '.$checks." guided layout navigation and saved-reference checks.\n";

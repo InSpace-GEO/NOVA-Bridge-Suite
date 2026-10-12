@@ -1,6 +1,8 @@
 # WordPress layout onboarding
 
-Open **NOVA settings → Layouts**. Choose how an article should fit the website. The two approaches are independent; a site can save setups for both.
+Open **NOVA settings → Layouts** for the endpoint checklist and guided creation-default setup. Existing content is inspected directly as a filled mapping. See [Endpoint defaults and live document mappings](endpoint-document-mappings.md) for the current main flow and local API.
+
+The two older editors described below remain under the collapsed **Other layout tools** section. Their saved drafts and rules are retained independently from endpoint creation defaults.
 
 Each settings section has its own title: **Layouts**, **NOVA connection** or **Modules**. The two layout editors stay under **Layouts**.
 

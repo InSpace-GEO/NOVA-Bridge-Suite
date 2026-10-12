@@ -68,7 +68,7 @@ final class Nova_Bridge_Suite_Layout_Setup_Admin {
         $base = self::asset_base();
         wp_enqueue_style( 'nova-layout-fonts', $base . 'brand/fonts.css', [], (string) filemtime( $directory . 'brand/fonts.css' ) );
         $dependencies = [ 'nova-layout-fonts' ];
-        foreach ( [ 'nova-content-rules', 'nova-strategy-mapping', 'nova-mapping-drafts' ] as $style ) {
+        foreach ( [ 'nova-content-rules', 'nova-strategy-mapping', 'nova-mapping-drafts', 'nova-endpoint-mappings' ] as $style ) {
             if ( wp_style_is( $style, 'enqueued' ) ) { $dependencies[] = $style; }
         }
         wp_enqueue_style( 'nova-layout-brand', $base . 'mapping-brand.css', $dependencies, (string) filemtime( $directory . 'mapping-brand.css' ) );
@@ -113,6 +113,13 @@ final class Nova_Bridge_Suite_Layout_Setup_Admin {
 
     public static function render(): void {
         if ( ! current_user_can( 'manage_options' ) ) { return; }
+        if ( class_exists( 'Nova_Bridge_Suite_Endpoint_Mappings_Admin' ) ) {
+            Nova_Bridge_Suite_Endpoint_Mappings_Admin::render();
+            echo '<details class="nova-layout-saved nova-layout-legacy-tools"><summary>Other layout tools</summary><p>Existing reference drafts and Elementor content rules remain available separately from endpoint creation defaults.</p><p><a href="' . esc_url( self::url( 'strategy-mapping', [ 'view' => 'workspace' ] ) ) . '">Reference field editor</a> · <a href="' . esc_url( self::url( 'content-rules', [ 'view' => 'workspace' ] ) ) . '">Elementor content rules</a></p>';
+            self::saved();
+            echo '</details>';
+            return;
+        }
         echo '<section class="nova-layout-start"><p class="nova-brand-kicker">GUIDED SETUP</p><h2>How should your articles fit your website?</h2>';
         echo '<p>Choose an approach for this layout. We will walk you through it. You can save other setups and edit them in a workspace afterward.</p>';
         echo '<form method="get" action="' . esc_url( admin_url( 'options-general.php' ) ) . '"><input type="hidden" name="page" value="nova-settings"><input type="hidden" name="view" value="setup"><input type="hidden" name="new" value="1">';
