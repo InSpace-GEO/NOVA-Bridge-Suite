@@ -121,4 +121,16 @@ $wrong_context = $context_method->invoke( null, $wrong_type_library, Shared::get
 $wrong_targets = array_column( $wrong_context['previewTargets'], null, 'id' );
 $assert( empty( $wrong_context['presetUsage']['vital_example_reviews'] ) && ! empty( $wrong_context['presetMeta']['vital_example_reviews']['unused'] ) && empty( $wrong_context['presetMeta']['vital_example_reviews']['usedByTemplate'] ) && ! in_array( 'vital_example_reviews', $wrong_targets[5618]['refKeys'], true ), 'Missing or wrong-type shared references are not falsely marked as used' );
 $assert( $before === $snapshot(), 'All preview, validation, permissions and usage checks leave client storage unchanged' );
+$office_page = Document::get_document( 5461 );
+$office_render = \SEORAI\ServicePageCPT\ServiceRenderer::render( 5461 );
+$office_dom = new DOMDocument(); $office_errors = libxml_use_internal_errors( true );
+try { $office_dom->loadHTML( '<?xml encoding="utf-8" ?>' . $office_render, LIBXML_NONET ); } finally { libxml_clear_errors(); libxml_use_internal_errors( $office_errors ); }
+$office_xpath = new DOMXPath( $office_dom );
+$office_root = '//*[@id="nova-service-location"]';
+$assert( 1 === $office_xpath->query( $office_root . '//div[contains(concat(" ",normalize-space(@class)," ")," nova-service__content-copy ")]//div[contains(concat(" ",normalize-space(@class)," ")," nova-service__location-map ")]/iframe' )->length, 'The active office map is embedded in the paragraph column' );
+$assert( 0 === $office_xpath->query( $office_root . '//address' )->length && 1 === $office_xpath->query( $office_root . '//img' )->length, 'Office maps replace visible address text while retaining one pooled photo' );
+$office_preview = $request( [ 'mode' => 'page', 'post_id' => 5461, 'document' => $office_page ] );
+$office_preview_html = $office_preview->get_data()['html'] ?? '';
+$assert( 200 === $office_preview->get_status() && false !== strpos( $office_preview_html, 'nova-service__location-map' ) && false === strpos( $office_preview_html, '<iframe' ), 'Office-map live previews retain the compact wrapper and deactivate external embeds' );
+$assert( $before === $snapshot(), 'Office rendering and preview checks leave all saved page and client data unchanged' );
 echo wp_json_encode( [ 'result' => 'PASS', 'read_only' => true, 'checks' => $checks ], JSON_PRETTY_PRINT ) . "\n";

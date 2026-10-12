@@ -923,8 +923,8 @@
 		if (imageTypes.indexOf(section.type) >= 0 || section.type === 'rich_text') { collectionGroup(content, section, 'images', 'Images', renderImages); }
 		if (buttonTypes.indexOf(section.type) >= 0) { collectionGroup(content, section, 'buttons', 'Buttons', renderButtons); }
 		if (section.type === 'location' || section.type === 'map') { dataField(content, section, 'address', 'Location address', {multiline: true, rows: 2}); }
-		if (section.type === 'map') {
-			dataField(content, section, 'map_url', 'Google Maps embed URL', {type: 'url', help: 'In Google Maps choose Share → Embed a map, then paste only the iframe src URL (https://www.google.com/maps/embed?…).'});
+		if (section.type === 'location' || section.type === 'map') {
+			dataField(content, section, 'map_url', section.type === 'location' ? 'Google Maps embed URL (optional)' : 'Google Maps embed URL', {type: 'url', help: (section.type === 'location' ? 'Show a Google map below the paragraph instead of the address. Leave empty to show the location address. ' : '') + 'In Google Maps choose Share → Embed a map, then paste only the HTTPS iframe src URL (https://www.google.com/maps/embed?…). No API key is needed.'});
 		}
 		if (section.type === 'reviews') {
 			dataCheckbox(content, section, 'link_sources', 'Link to review sources', true, 'Source URLs are optional. Turn this off to show publisher labels and logos without clickable source links. Linked sections follow Client defaults unless you override this setting.');

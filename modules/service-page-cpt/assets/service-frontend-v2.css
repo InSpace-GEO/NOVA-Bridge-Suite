@@ -641,6 +641,9 @@ body.nova-service-v2-page .content-area:has(#nova-service-primary) {
 #nova-service-v2 .nova-service__section--custom_cta.nova-service__width--full > .nova-service__container > .nova-service__rich { max-width: none; }
 #nova-service-v2 .nova-service__map { width: 100%; margin-top: 1.75rem; overflow: hidden; border: 1px solid var(--nova-service-line); border-radius: var(--nova-service-radius); }
 #nova-service-v2 .nova-service__map iframe { display: block; width: 100%; height: clamp(300px, 42vw, 480px); border: 0; }
+#nova-service-v2 .nova-service__location-map { margin-top: 1.25rem; height: 220px; }
+#nova-service-v2 .nova-service__location-map > iframe { height: 100%; min-height: 0; }
+#nova-service-v2 .nova-service__location-map > .nova-service__preview-placeholder { display: grid; place-items: center; height: 100%; margin: 0; padding: 1rem; }
 #nova-service-v2 .nova-service__review-widget iframe { height: clamp(300px, 32vw, 360px); }
 #nova-service-v2 .nova-service__video { width: 100%; margin-top: 1.75rem; overflow: hidden; border: 1px solid var(--nova-service-line); border-radius: var(--nova-service-radius); background: #111; }
 #nova-service-v2 .nova-service__video > :is(iframe, video) { display: block; width: 100%; max-width: 100%; min-width: 0; height: auto; min-height: 0; max-height: none; aspect-ratio: 16 / 9; object-fit: contain; border: 0; }

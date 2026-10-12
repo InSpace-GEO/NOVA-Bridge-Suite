@@ -195,6 +195,30 @@ namespace {
 	$assert( false !== strpos( ServiceRenderer::render_candidate( 1, $fixed_office, 'Service one' ), 'src="https://example.test/chosen-office.jpg"' ) && false !== strpos( ServiceRenderer::render_candidate( 24, $fixed_office, 'Service twenty-four' ), 'src="https://example.test/chosen-office.jpg"' ), 'A one-image local override must stay fixed independently of the page seed.' );
 	$html = $render( [ $section( 'team', 'people', [ 'image_selection' => 'one_per_page', 'images' => $office_images ] ) ] );
 	$assert( 3 === substr_count( $html, '<img ' ), 'Office pool selection must not silently change people or other image galleries.' );
+	$office_map_document = $office_document;
+	$office_map_document['sections'][0]['data']['map_url'] = 'https://www.google.com/maps/embed?pb=verified-office';
+	$office_map_before = $office_map_document;
+	$office_map_html = ServiceRenderer::render_candidate( 1, $office_map_document, 'Current service' );
+	$assert( 1 === substr_count( $office_map_html, '<iframe ' ) && 1 === substr_count( $office_map_html, '<img ' ) && 1 === substr_count( $office_map_html, '<h2' ) && false !== strpos( $office_map_html, 'class="nova-service__map nova-service__location-map"' ) && false !== strpos( $office_map_html, 'title="Visit our office — Google Maps"' ) && false !== strpos( $office_map_html, 'loading="lazy"' ), 'A location map must appear once with an accessible lazy iframe and one stable pool photo.' );
+	$assert( false === strpos( $office_map_html, '<address ' ) && false === strpos( $office_map_html, 'Campus 91' ) && false === strpos( $office_map_html, 'Open in Google Maps' ) && $office_map_before === $office_map_document, 'A location map replaces the visible plain address without duplicate content, source links, or changes to its stored address.' );
+	if ( class_exists( '\\DOMDocument' ) ) {
+		$office_dom = new \DOMDocument(); @$office_dom->loadHTML( $office_map_html ); $office_xpath = new \DOMXPath( $office_dom );
+		$office_copy = '//section[@id="nova-service-office"]//div[@class="nova-service__content-copy"]';
+		$assert( 1 === $office_xpath->query( $office_copy . '/div[@class="nova-service__rich"]/following-sibling::div[@class="nova-service__map nova-service__location-map"]/iframe' )->length && 1 === $office_xpath->query( '//section[@id="nova-service-office"]//div[@class="nova-service__content-media"]//img' )->length, 'The office embed must sit directly after its paragraph in the text column, with the photo in the separate media column.' );
+	}
+	$GLOBALS['nova_test_document'] = $office_map_document;
+	$assert( $office_map_html === ServiceRenderer::render( 1 ), 'Saved frontend and request-local candidate must use the same office map structure and selected photo.' );
+	$blank_office_map = $office_map_document; $blank_office_map['sections'][0]['data']['map_url'] = '';
+	$blank_office_map_html = ServiceRenderer::render_candidate( 1, $blank_office_map, 'Current service' );
+	$legacy_office_map = $office_map_document; unset( $legacy_office_map['sections'][0]['data']['map_url'] );
+	$assert( false === strpos( $blank_office_map_html, '<iframe ' ) && false !== strpos( $blank_office_map_html, '<address class="nova-service__address">Campus 91' ) && $blank_office_map_html === ServiceRenderer::render_candidate( 1, $legacy_office_map, 'Current service' ), 'Empty and omitted location map URLs must keep the legacy plain address without generating an embed.' );
+	foreach ( [ 'https://evil.test/maps/embed?pb=office', 'https://google.com.evil.test/maps/embed?pb=office', 'http://www.google.com/maps/embed?pb=office', 'https://user:password@www.google.com/maps/embed?pb=office', 'https://www.google.com:444/maps/embed?pb=office', 'https://www.google.com/maps/place/Our-office/' ] as $unsafe_office_map_url ) {
+		$unsafe_office_map = $office_map_document; $unsafe_office_map['sections'][0]['data']['map_url'] = $unsafe_office_map_url;
+		$unsafe_office_html = ServiceRenderer::render_candidate( 1, $unsafe_office_map, 'Current service' );
+		$assert( false === strpos( $unsafe_office_html, '<iframe ' ) && false === strpos( $unsafe_office_html, 'nova-service__location-map' ) && false !== strpos( $unsafe_office_html, '<address class="nova-service__address">Campus 91' ) && 1 === substr_count( $unsafe_office_html, '<img ' ), 'A defensively invalid location map must retain the plain address and selected photo.' );
+	}
+	$map_without_address = $office_map_document; $map_without_address['sections'][0]['data']['address'] = ''; $map_without_address['sections'][0]['data']['body'] = '';
+	$assert( 1 === substr_count( ServiceRenderer::render_candidate( 1, $map_without_address, 'Current service' ), '<iframe ' ), 'A configured location embed must remain usable without an optional address or paragraph.' );
 	$html = $render( [ $section( 'split', 'rich_text', [ 'layout' => 'split', 'body' => 'Copy next to image', 'images' => [ [ 'id' => 10 ] ] ] ), $section( 'compact', 'credentials', [ 'layout' => 'compact', 'items' => [ [ 'title' => 'Verified award', 'image' => 'https://example.test/award.jpg' ] ] ] ), $section( 'invalid-layout', 'rich_text', [ 'layout' => 'bad" onclick="alert(1)', 'body' => 'Safe layout' ] ) ] );
 	$assert( false !== strpos( $html, 'nova-service__layout--split' ) && false !== strpos( $html, 'nova-service__content-grid' ) && false !== strpos( $html, 'nova-service__layout--compact' ) && false !== strpos( $html, 'nova-service__credential-copy' ), 'Presentation variations need usable text/media and credential wrappers.' );
 	$assert( false === strpos( $html, 'onclick=' ) && false !== strpos( $html, 'nova-service__layout--default' ), 'Unrecognized layout values must fall back safely.' );

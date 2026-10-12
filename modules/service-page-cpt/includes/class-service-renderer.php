@@ -158,12 +158,18 @@ final class ServiceRenderer {
 					break;
 				case 'people':
 				case 'location':
-					$address = '';
+					$location_detail = '';
 					if ( 'location' === $type ) { $data['images'] = self::location_images( $data, $post_id, (string) ( $section['id'] ?? $id ) ); }
-					if ( 'location' === $type && ! empty( $data['address'] ) ) {
-						$address = '<address class="nova-service__address">' . \nl2br( \esc_html( $data['address'] ) ) . '</address>';
+					if ( 'location' === $type ) {
+						$map_url = self::google_maps_url( (string) ( $data['map_url'] ?? '' ) );
+						if ( '' !== $map_url && ServiceDocument::valid_map_url( $map_url ) ) {
+							$title = ! empty( $data['title'] ) ? $data['title'] . ' — Google Maps' : \__( 'Our location on Google Maps', 'nova-bridge-suite' );
+							$location_detail = self::map_embed( $map_url, $title, true );
+						} elseif ( ! empty( $data['address'] ) ) {
+							$location_detail = '<address class="nova-service__address">' . \nl2br( \esc_html( $data['address'] ) ) . '</address>';
+						}
 					}
-					$content = self::text_media( $data, $address );
+					$content = self::text_media( $data, $location_detail );
 					break;
 				case 'video':
 					$content = self::video( $data );
@@ -387,6 +393,11 @@ final class ServiceRenderer {
 		return '<img class="nova-service__image" src="' . $url . '" alt="' . \esc_attr( (string) ( $image['alt'] ?? '' ) ) . '" loading="' . ( $eager ? 'eager' : 'lazy' ) . '" decoding="async"' . ( $eager ? ' fetchpriority="high"' : '' ) . ' />';
 	}
 
+	/** Embed URLs are validated or generated from an address by the callers. */
+	private static function map_embed( string $url, string $title, bool $location = false ): string {
+		return '<div class="nova-service__map' . ( $location ? ' nova-service__location-map' : '' ) . '"><iframe src="' . \esc_url( $url ) . '" title="' . \esc_attr( $title ) . '" loading="lazy" referrerpolicy="no-referrer-when-downgrade" allowfullscreen></iframe></div>';
+	}
+
 	private static function map( array $data ): string {
 		$url     = self::google_maps_url( (string) ( $data['map_url'] ?? '' ) );
 		$address = \trim( (string) ( $data['address'] ?? '' ) );
@@ -406,7 +417,7 @@ final class ServiceRenderer {
 		$html = self::heading( $data ) . self::rich_body( $data['body'] ?? '' );
 		if ( '' !== $embed ) {
 			$title = ! empty( $data['title'] ) ? $data['title'] : \__( 'Our location on Google Maps', 'nova-bridge-suite' );
-			$html .= '<div class="nova-service__map"><iframe src="' . \esc_url( $embed ) . '" title="' . \esc_attr( $title ) . '" loading="lazy" referrerpolicy="no-referrer-when-downgrade" allowfullscreen></iframe></div>';
+			$html .= self::map_embed( $embed, $title );
 		}
 		if ( '' !== $address ) {
 			$html .= '<address class="nova-service__address">' . \nl2br( \esc_html( $address ) ) . '</address>';
