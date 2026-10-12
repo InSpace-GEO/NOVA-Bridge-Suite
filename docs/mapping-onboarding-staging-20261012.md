@@ -30,3 +30,18 @@ Site: `https://inspace-seo.online/`. WordPress 7.1.3, PHP 8.1.34, Elementor 3.35
 - Service connection remained `enabled=false`, `paused=true`, with no new delivery bindings. Existing Avada missing-provider and Elementor script-dependency notices were pre-existing and did not prevent testing.
 
 The official InSpace wordmark and self-hosted licensed web fallback fonts are scoped to the plugin admin. Customer reference previews and generated Elementor content retain the site's own design.
+
+## Focused onboarding follow-up
+
+The follow-up removes the cookie-banner toggle, fills the available WordPress admin width and suppresses unrelated theme/plugin notice callbacks only on NOVA settings. Core and NOVA notices remain. On staging the Avada dependency notice disappeared from NOVA settings and remained on the WordPress dashboard.
+
+- The app and available admin content widths both measured 1690px, with `max-width: none` and no horizontal page overflow.
+- Existing-layout setup now gates reference confirmation, field review and confirmed saving. Step 2 has one supported field beside an open preview, without the layout sidebar, strategy tools or reference selector. The measured columns were approximately 942px/628px. Review and completion hide the preview; the full workspace restores its tools.
+- Cookie controls are absent. The reference iframe initializes with the always-on known-banner hiding class; refresh preserves it. Standalone tests also cover late class/ID assignment and confirm no consent writes.
+- Saved **Onboarding demo — focused heading** for reference 5267. One heading was described; **Skip for now** did not change another field. Review showed one described field, zero deliberate skips, and undecided fields retained. Save unlocked completion and the workspace. Reopening preserved the exact reference and human purpose.
+- Grouped-page search finds member titles, paths and IDs. A unique search for **NOVA onboarding staging demo** labels and selects reference 5267, rather than the group's first reference. Existing meaningful and saved field purposes are retained; new guided fields avoid the exact generic bridge-description boilerplate.
+- All 11 standalone PHP and five JavaScript suites passed. The final mapping suite contains 37 cases; rules editor contains 18. Changed runtime syntax and whitespace checks passed. PHP 7.4 compatibility was reviewed statically; local execution used PHP 8.5 and staging uses PHP 8.1.
+- Private backups are retained at `/data/sites/web/inspace-seoonline/nova-focused-onboarding-20261012/`. All 15 pre-existing options and both reference pages/native Elementor data were unchanged after the UI test. All seven deployed runtime files matched the final source manifest and use readable 0644 permissions. The one-shot PHP cache helper invalidated the changed admin helper and removed itself.
+- Browser screenshot capture was unavailable during this follow-up; live DOM, computed layout, preview bindings, persisted records and runtime hashes were verified instead.
+
+Elementor content-rule generation, the posting-service, nova-agents-backend, connection settings, delivery bindings and page publication were not changed.

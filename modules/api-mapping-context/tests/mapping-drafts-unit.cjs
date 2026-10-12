@@ -77,11 +77,11 @@ class Element {
  click(){return this.events.click?.({preventDefault(){}});}
  all(){return [this,...this.children.flatMap(child=>child.all())];}
 }
-async function editorFixture(saved=null,options={},externalChrome=false){
+async function editorFixture(saved=null,options={},externalChrome=false,fixtureOptions={}){
  const document={createElement:tag=>new Element(tag,document)},host=new Element('div',document),calls=[],responses=[];
  const chrome=externalChrome?new Element('div',document):null;if(chrome){const sibling=new Element('p',document);sibling.textContent='Independent sibling';chrome.appendChild(sibling);}
  global.fetch=async(url,options)=>{calls.push({url,options});if(responses.length){const response=responses.shift();return {ok:true,status:200,json:async()=>response};}return {ok:true,status:200,json:async()=>({draft:saved,reference:{signature:layout.signature},warnings:[]})};};
- const controller=drafts.mount(host,{...layout,fields:[{path:'/title',label:'Hero title',type:'text',writable:true},{path:'/form',label:'Form',type:'object',writable:false}]},{mappingUrl:'/mapping',nonce:'test-nonce',postingIntegration:true,...options},{},{chromeHost:chrome});await controller.ready;
+ const controller=drafts.mount(host,{...layout,fields:fixtureOptions.fields||[{path:'/title',label:'Hero title',type:'text',writable:true},{path:'/form',label:'Form',type:'object',writable:false}]},{mappingUrl:'/mapping',nonce:'test-nonce',postingIntegration:true,...options},fixtureOptions.callbacks||{},{chromeHost:chrome});await controller.ready;
  return {host,chrome,calls,responses,controller,button:label=>host.all().find(item=>item.tag==='button'&&item.ownText===label),control:label=>host.all().find(item=>item.tag==='label'&&item.ownText===label)?.parentNode.children.find(item=>['input','select','textarea'].includes(item.tag))};
 }
 test('new destination editor operates offline, creates rules and groups, saves and never attempts backend sync',async()=>{
@@ -93,7 +93,7 @@ test('new destination editor operates offline, creates rules and groups, saves a
   view.button('Describe a fixed existing group').click();const chosen=view.control('Add a field to this existing slot');chosen.value='/title';chosen.events.change();const first=view.controller.getDraft().destination_groups[0].slots[0];assert.deepEqual(first.fields,['/title']);
   const type=view.control('What this field can hold');type.value='list';type.events.change();assert.equal(view.controller.getDraft().fields['/title'].description.value_type,'text');assert(view.host.textContent.includes('Unassign this field'));
   view.button('Unassign field').click();type.value='list';type.events.change();assert(!view.control('Maximum characters'));assert(view.control('Minimum list items'));assert.deepEqual(view.controller.getDraft().fields['/title'].description.constraints,{});
-  const current=view.controller.getDraft();current.revision='saved-destination';current.destination_groups=[];view.responses.push({draft:current,warnings:[]});await view.button('Save setup').click();const request=view.calls[1];assert.equal(request.options.method,'POST');const sent=JSON.parse(request.options.body);assert.equal(sent.catalog_mode,'destination');assert.equal(sent.fields['/title'].mode,'adapt');assert.equal(sent.fields['/title'].source_path,'');assert.equal(view.calls.length,2);assert(view.host.textContent.includes('Setup saved on this site'));
+  view.button('Use this reference').click();view.button('Review setup').click();const current=view.controller.getDraft();current.revision='saved-destination';current.destination_groups=[];view.responses.push({draft:current,warnings:[]});await view.button('Save setup').click();const request=view.calls[1];assert.equal(request.options.method,'POST');const sent=JSON.parse(request.options.body);assert.equal(sent.catalog_mode,'destination');assert.equal(sent.fields['/title'].mode,'adapt');assert.equal(sent.fields['/title'].source_path,'');assert.equal(view.calls.length,2);assert(view.host.textContent.includes('Setup saved on this site'));
  }finally{view?.controller.destroy();global.fetch=originalFetch;}
 });
 test('backend description export rejects a changed saved revision before downloading',async()=>{
@@ -140,7 +140,7 @@ test('explicit saved workspace and setup links keep distinct journeys; reference
   const saved=drafts.initialDraft(layout);saved.revision='local-revision';saved.fields['/title']=drafts.adaptField({path:'/title',label:'Keep this description'});
   view=await editorFixture(saved,{view:'workspace'});assert(view.button('Save changes'));assert(!view.button('1. Choose reference'));assert.equal(view.host.all().find(item=>item.className?.split(' ').includes('nmd-delivery-advanced')).hidden,false);
   view.controller.destroy();view=await editorFixture(saved,{view:'setup'});assert(view.button('1. Choose reference'));assert.equal(view.host.all().find(item=>item.className?.split(' ').includes('nmd-choose')).hidden,false);
-  const before=view.controller.getDraft();view.controller.selectField('/title');assert.equal(view.host.all().find(item=>item.className?.split(' ').includes('nmd-stage-fields')).hidden,false);assert.deepEqual(view.controller.getDraft(),before);
+  const before=view.controller.getDraft();view.controller.selectField('/title');assert.equal(view.host.all().find(item=>item.className?.split(' ').includes('nmd-stage-fields')).hidden,true,'Reference selection is confirmed before preview fields can advance the guide');view.button('Use this reference').click();view.controller.selectField('/title');assert.equal(view.host.all().find(item=>item.className?.split(' ').includes('nmd-stage-fields')).hidden,false);assert.deepEqual(view.controller.getDraft(),before);
  }finally{view?.controller.destroy();global.fetch=originalFetch;}
 });
 
@@ -157,9 +157,48 @@ test('full-width external guide chrome has one stepper and preserves the inspect
  try{
   view=await editorFixture(null,{view:'setup'},true);const chromeButton=label=>view.chrome.all().find(item=>item.tag==='button'&&item.ownText===label),steppers=()=>view.chrome.all().filter(item=>item.className==='nmd-steps');
   assert.equal(steppers().length,1);assert.equal(view.host.all().filter(item=>item.className==='nmd-steps').length,0,'The inspector does not duplicate the relocated navigation');assert(view.chrome.textContent.includes('Set up this existing layout'));
-  chromeButton('2. Describe fields').click();const mode=view.control('Field behavior');mode.value='adapt';mode.events.change();const label=view.control('Destination label');label.value='External chrome edit';label.events.input();const before=view.controller.getDraft();assert(view.chrome.textContent.includes('Unsaved changes'));
-  chromeButton('3. Review setup').click();chromeButton('2. Describe fields').click();assert.deepEqual(view.controller.getDraft(),before);assert.equal(view.control('Destination label').value,'External chrome edit');assert.equal(steppers().length,1);assert.equal(view.calls.length,1);
-  chromeButton('3. Review setup').click();const saved=view.controller.getDraft();saved.revision='external-chrome-saved';view.responses.push({draft:saved,warnings:[]});await view.button('Save setup').click();assert.equal(steppers().length,1);assert(view.chrome.textContent.includes('Saved locally'));assert.equal(view.controller.getDraft().fields['/title'].description.label,'External chrome edit');
+  assert.equal(chromeButton('2. Describe fields').disabled,true);view.button('Use this reference').click();const mode=view.control('Field behavior');mode.value='adapt';mode.events.change();const label=view.control('Destination label');label.value='External chrome edit';label.events.input();const before=view.controller.getDraft();assert(view.chrome.textContent.includes('Unsaved changes'));
+  view.button('Review setup').click();chromeButton('2. Describe fields').click();assert.deepEqual(view.controller.getDraft(),before);assert.equal(view.control('Destination label').value,'External chrome edit');assert.equal(steppers().length,1);assert.equal(view.calls.length,1);
+  view.button('Review setup').click();const saved=view.controller.getDraft();saved.revision='external-chrome-saved';view.responses.push({draft:saved,warnings:[]});await view.button('Save setup').click();assert.equal(steppers().length,1);assert(view.chrome.textContent.includes('Saved locally'));assert.equal(view.controller.getDraft().fields['/title'].description.label,'External chrome edit');
   view.button('Open saved setup').click();assert.equal(steppers().length,0,'Saved workspace keeps the header and omits onboarding navigation');assert(view.chrome.textContent.includes('Saved locally'));view.controller.destroy();assert.equal(view.chrome.textContent,'Independent sibling','Destroy removes only this mount’s chrome');
+ }finally{view?.controller.destroy();global.fetch=originalFetch;}
+});
+
+test('guided content inventory prioritizes editable layout content and leaves technical discovery intact',()=>{
+ const fields=[{path:'/title',type:'text'},{path:'/status',type:'text'},{path:'/content',type:'html'},{path:'/elements/heading/title',builder:'elementor',type:'text'},{path:'/elements/heading/color',builder:'elementor',type:'text'},{path:'/form',type:'object',writable:false},{path:'/repeater',type:'repeater'},{path:'/acf/body',source:'acf',type:'wysiwyg'},{path:'/author/name',type:'text'},{path:'/missing',type:'text',writable:false},{path:'/elements/text/editor',builder:'elementor',type:'wysiwyg'}];
+ const before=structuredClone(fields);assert.deepEqual(drafts.guidedFields(fields).map(field=>field.path),['/elements/heading/title','/acf/body','/elements/text/editor','/content','/title']);assert.deepEqual(fields,before,'The guide only filters its view; discovery and writer capabilities are unchanged');
+});
+
+test('focused guide navigates one field and synchronizes preview selection without changing skipped or retained bindings',async()=>{
+ const originalFetch=global.fetch;let view;
+ try{
+  const fields=[{path:'/title',label:'Post title',type:'text'},{path:'/hero',label:'Heading',builder:'elementor',type:'text',current_value:'<h1>First heading</h1>'},{path:'/body',label:'Article',builder:'elementor',type:'wysiwyg',current_value:'Current article'},{path:'/legacy',label:'Earlier heading',builder:'elementor',type:'text'},{path:'/form',label:'Form',type:'object',writable:false}],saved=drafts.initialDraft(layout),selections=[],journeys=[];
+  saved.revision='retained';saved.fields['/body']={mode:'protected',instructions:'Keep original',required:false,source_path:''};saved.fields['/legacy']={mode:'mapped',source_path:'content.title',required:true,instructions:'Prior rule'};const before=structuredClone(saved);
+  view=await editorFixture(saved,{view:'setup'},false,{fields,callbacks:{onSelectField:path=>selections.push(path),onJourneyChange:journey=>journeys.push(journey)}});
+  const fieldCards=()=>view.host.all().filter(item=>item.className==='nmd-field');view.button('Use this reference').click();assert.equal(fieldCards().length,1);assert.equal(fieldCards()[0].dataset.path,'/hero');assert(view.control('Choose a content field').children.some(option=>option.textContent.includes('First heading')));
+  view.button('Skip for now').click();assert.equal(fieldCards()[0].dataset.path,'/body');assert.equal(selections.at(-1),'/body');assert.deepEqual(view.controller.getDraft(),before);assert.equal(view.controller.isDirty(),false,'Skipping never marks preservation or changes a field');
+  view.button('Next field').click();assert.equal(fieldCards()[0].dataset.path,'/legacy');assert.equal(selections.at(-1),'/legacy');assert(!view.control('Field behavior'),'Earlier source bindings cannot be silently converted in the guide');assert.deepEqual(view.controller.getDraft(),before);
+  view.controller.selectField('/hero');assert.equal(fieldCards()[0].dataset.path,'/hero','A preview selection rebuilds the one-field card and dropdown');assert.equal(view.control('Choose a content field').value,'/hero');const mode=view.control('Field behavior');mode.value='adapt';mode.events.change();const purpose=view.control('What content belongs here?');purpose.value='Introduce the article in one clear heading';purpose.events.input();
+  assert.equal(view.controller.getDraft().fields['/hero'].description.purpose,purpose.value);assert.deepEqual(view.controller.getDraft().fields['/body'],before.fields['/body']);assert.deepEqual(view.controller.getDraft().fields['/legacy'],before.fields['/legacy']);assert.equal(view.host.all().find(item=>item.className==='nmd-field-advanced').open,undefined,'Optional constraints stay collapsed');
+  view.button('Review setup').click();assert.equal(journeys.at(-1).step,3);assert.equal(view.calls.length,1,'Review does not save, activate or synchronize');view.button('Back to fields').click();assert.equal(view.control('What content belongs here?').value,purpose.value);
+ }finally{view?.controller.destroy();global.fetch=originalFetch;}
+});
+
+test('a fresh workspace URL still requires reference confirmation and reviewed save before completion',async()=>{
+ const originalFetch=global.fetch;let view;
+ try{
+  const journeys=[];view=await editorFixture(null,{view:'workspace'},false,{callbacks:{onJourneyChange:journey=>journeys.push(journey)}});assert.equal(journeys.at(-1).view,'setup');assert.equal(journeys.at(-1).step,1);view.controller.selectField('/title');assert.equal(journeys.at(-1).step,1,'A stale workspace link cannot bypass choosing a reference');
+  view.controller.goStep(3);view.button('3. Review setup').click();await view.button('Save setup').click();assert.equal(journeys.at(-1).step,1);assert.equal(view.calls.length,1,'Hidden or disabled actions also refuse forward bypasses');
+  view.button('Use this reference').click();view.controller.goStep(4);assert.equal(journeys.at(-1).step,2);view.button('Review setup').click();const saved=view.controller.getDraft();saved.revision='reviewed';view.responses.push({draft:saved,warnings:[]});await view.button('Save setup').click();assert.equal(journeys.at(-1).step,4);assert.equal(view.calls.length,2);view.button('Open saved setup').click();assert.equal(journeys.at(-1).view,'workspace');assert.equal(view.calls.length,2,'Destination workspace does not call remote services');
+ }finally{view?.controller.destroy();global.fetch=originalFetch;}
+});
+
+test('new guided descriptions replace exact bridge boilerplate with a blank human prompt while retaining meaningful and saved purposes',async()=>{
+ const originalFetch=global.fetch;let view;
+ try{
+  const boilerplate='Actual field returned by the NOVA bridge for the selected source document.',meaningful='Explain the service benefit for a first-time visitor',fields=[{path:'/hero',label:'Heading',builder:'elementor',type:'text',native_description:boilerplate},{path:'/body',label:'Article',builder:'elementor',type:'wysiwyg',native_description:meaningful},{path:'/title',label:'Saved heading',type:'text',native_description:boilerplate}],saved=drafts.initialDraft(layout);saved.revision='retained-purpose';saved.fields['/title']=drafts.adaptField(fields[2]);
+  view=await editorFixture(saved,{view:'setup'},false,{fields});view.button('Use this reference').click();let mode=view.control('Field behavior');mode.value='adapt';mode.events.change();assert.equal(view.controller.getDraft().fields['/hero'].description.purpose,'');assert.equal(view.control('What content belongs here?').value,'');assert(view.control('What content belongs here?').parentNode.textContent.includes('a short heading introducing this section'),'The empty new purpose retains a human example');
+  view.controller.selectField('/body');mode=view.control('Field behavior');mode.value='adapt';mode.events.change();assert.equal(view.control('What content belongs here?').value,meaningful);assert.equal(view.controller.getDraft().fields['/body'].description.purpose,meaningful);
+  view.controller.selectField('/title');mode=view.control('Field behavior');mode.value='adapt';mode.events.change();assert.equal(view.control('What content belongs here?').value,boilerplate,'Even an earlier saved boilerplate purpose is preserved until a human edits it');assert.equal(drafts.describeField(fields[0]).purpose,boilerplate,'Library and workspace defaults retain their prior contract');
  }finally{view?.controller.destroy();global.fetch=originalFetch;}
 });

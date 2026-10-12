@@ -2,7 +2,7 @@
 
 	'use strict';
 
-	var root, config, scopeChosen = false, controlId = 0, state = { hideConsent: true, importOpen: false, data: null, selected: '', dirty: false, busy: false, filter: 'all', scope: 'all', workflow: 'nova', draftEditor: null, epoch: 0, layout: null, activeField: '', frame: null, statuses: {}, frameReady: false };
+	var root, config, scopeChosen = false, controlId = 0, state = { search: '', importOpen: false, data: null, selected: '', dirty: false, busy: false, filter: 'all', scope: 'all', workflow: 'nova', draftEditor: null, epoch: 0, layout: null, activeField: '', frame: null, statuses: {}, frameReady: false };
 
 	var sources = [ [ '', 'Guidance only / no direct source' ], [ 'leave_empty', 'Leave empty (do not send)' ], [ 'h1', 'Visible heading (H1)', 'Content' ], [ 'content', 'Full content', 'Content' ], [ 'top_content', 'Intro', 'Content' ], [ 'bottom_content', 'Main content', 'Content' ], [ 'title', 'SEO title', 'SEO metadata' ], [ 'meta_description', 'Meta description', 'SEO metadata' ], [ 'primary_keyword', 'Primary keyword', 'SEO metadata' ], [ 'secondary_keywords', 'Secondary keywords', 'SEO metadata' ], [ 'featured_media', 'Uploaded WordPress image ID', 'Image data' ], [ 'image_url', 'Primary image URL', 'Image data' ], [ 'image_urls', 'All image URLs', 'Image data' ], [ 'image_alt', 'Image alternative text', 'Image data' ] ];
 
@@ -99,9 +99,23 @@
 
 	}
 
+	function layoutSearch( entry, query ) {
+		query = String( query || '' ).trim().toLowerCase();
+		var layout = entry.layout, label = entry.unresolved ? ( entry.rows.length > 1 ? entry.row.parent_path + '… · ' + entry.rows.length + ' URLs' : entry.row.path ) : ( layout.label || layout.title || 'Untitled layout' );
+		function memberText( member ) { return [ member.title, member.path, member.reference_id, member.reference_type + ':' + member.reference_id ].join( ' ' ).toLowerCase(); }
+		var references = layout ? arr( layout.members ) : [], matches = query ? references.filter( function ( member ) { return memberText( member ).indexOf( query ) >= 0; } ) : [];
+		var reference = matches.length === 1 ? matches[0] : null;
+		var text = label + ' ' + ( layout ? [ layout.post_type, arr( layout.builders ).join( ' ' ), layout.path, layout.reference_id ].join( ' ' ) + ' ' + references.map( memberText ).join( ' ' ) : entry.rows.map( function ( row ) { return row.path + ' ' + row.id; } ).join( ' ' ) );
+		return { visible: ! query || text.toLowerCase().indexOf( query ) >= 0, label: reference ? reference.title || reference.path || '#' + reference.reference_id : label, reference: reference };
+	}
+
 	function statusText( entry ) { return entry.unresolved ? 'Choose reference' : state.workflow === 'nova' ? 'Reference available' : { mapped: 'Mapping saved', native: 'Native fields', unmapped: 'Needs mapping' }[ entry.layout.mapping_status ]; }
 
 	function disposeDraftEditor() { if ( state.draftEditor ) { state.draftEditor.destroy(); state.draftEditor = null; } }
+	function guidedVisibility( journey ) {
+		var workspace = journey.view === 'workspace', choosing = ! workspace && journey.step === 1;
+		return { workspace: workspace, sidebar: workspace || choosing, referencePicker: workspace || choosing, referenceSummary: ! workspace && ! choosing, preview: workspace || journey.step <= 2, technical: workspace };
+	}
 
 	function render() {
 
@@ -110,7 +124,7 @@
 		var header = el( 'header', 'ns-header' ), text = el( 'div' ); text.appendChild( el( 'div', 'ns-eyebrow', 'LAYOUTS / EXISTING LAYOUT' ) ); text.appendChild( el( 'h2', '', 'Fill an existing layout' ) ); text.appendChild( el( 'p', '', 'Choose an existing page, describe its content fields, and save a setup for review and handover.' ) ); header.appendChild( text );
 
 		header.appendChild( button( 'Refresh inventory', 'button', function () { if ( canLeave() ) { refresh().catch( function ( e ) { notice( e.message, true ); } ); } } ) ); root.appendChild( header );
-		var routeNote = el( 'div', 'ns-route-note' ); routeNote.appendChild( el( 'p', '', 'Starting a fresh page from article content?' ) ); var buildLink = el( 'a', 'button', 'Build new content' ); buildLink.href = config.buildUrl || 'options-general.php?page=nova-settings&tab=content-rules&view=setup'; buildLink.addEventListener( 'click', function ( event ) { if ( ! canLeave() ) { event.preventDefault(); } } ); routeNote.appendChild( buildLink ); routeNote.appendChild( el( 'span', 'ns-help', 'Build uses local content rules and works independently of this setup.' ) ); root.appendChild( routeNote );
+		var routeNote = el( 'div', 'ns-route-note' ); routeNote.hidden = ( state.flowView || config.view ) !== 'workspace'; routeNote.appendChild( el( 'p', '', 'Starting a fresh page from article content?' ) ); var buildLink = el( 'a', 'button', 'Build new content' ); buildLink.href = config.buildUrl || 'options-general.php?page=nova-settings&tab=content-rules&view=setup'; buildLink.addEventListener( 'click', function ( event ) { if ( ! canLeave() ) { event.preventDefault(); } } ); routeNote.appendChild( buildLink ); routeNote.appendChild( el( 'span', 'ns-help', 'Build uses local content rules and works independently of this setup.' ) ); root.appendChild( routeNote );
 
 		var scopeBar = el( 'div', 'ns-scope' );
 
@@ -123,7 +137,7 @@
 		scope.addEventListener( 'change', function () { if ( ! canLeave() ) { scope.value = state.scope; return; } setScope( scope.value ); state.selected = ''; refresh().catch( function ( e ) { notice( e.message, true ); } ); } );
 
 		scopeBar.appendChild( el( 'p', 'ns-help', 'Without a strategy, all layouts are shown. Your scope choice is remembered in this browser; mappings outside the scope are kept.' ) );
-		var inventoryOptions = el( 'details', 'ns-inventory-options' ); inventoryOptions.appendChild( el( 'summary', '', 'Filter layouts and manage strategy files (optional)' ) ); inventoryOptions.appendChild( scopeBar ); root.appendChild( inventoryOptions );
+		var inventoryOptions = el( 'details', 'ns-inventory-options' ); inventoryOptions.hidden = ( state.flowView || config.view ) !== 'workspace'; inventoryOptions.appendChild( el( 'summary', '', 'Filter layouts and manage strategy files (optional)' ) ); inventoryOptions.appendChild( scopeBar ); root.appendChild( inventoryOptions );
 
 		renderImport( inventoryOptions );
 
@@ -141,19 +155,22 @@
 
 		filter.addEventListener( 'change', function () { if ( ! canLeave() ) { filter.value = state.filter; return; } state.filter = filter.value; state.dirty = false; render(); } ); navhead.appendChild( filter );
 
-		var search = input( 'search' ); search.placeholder = 'Find a layout…'; search.setAttribute( 'aria-label', 'Find a layout' ); navhead.appendChild( search ); nav.appendChild( navhead );
+		var search = input( 'search', state.search ); search.placeholder = 'Find a page or layout…'; search.setAttribute( 'aria-label', 'Find a page or layout' ); navhead.appendChild( search ); nav.appendChild( navhead );
 
 		var all = entries().filter( function ( e ) { var pending = e.unresolved || e.layout.mapping_status === 'unmapped'; return state.filter === 'all' || ( state.filter === 'pending' ? pending : ! pending ); } );
 
 		if ( ! state.referenceMissing && ! all.some( function ( e ) { return e.key === state.selected; } ) ) { state.selected = all.length ? all[0].key : ''; }
 
+		var queueItems = [];
 		all.forEach( function ( entry ) {
 
-			var label = entry.unresolved ? ( entry.rows.length > 1 ? entry.row.parent_path + '… · ' + entry.rows.length + ' URLs' : entry.row.path ) : ( entry.layout.label || entry.layout.title || 'Untitled layout' );
-
-			var item = button( '', 'ns-queue-item' + ( entry.key === state.selected ? ' is-selected' : '' ), function () { if ( entry.key === state.selected || ! canLeave() ) { return; } state.initialReferenceApplied = true; state.referenceMissing = false; state.selected = entry.key; state.dirty = false; render(); } );
-
-			item.dataset.search = ( label + ' ' + ( entry.unresolved ? entry.rows.map( function ( r ) { return r.path; } ).join( ' ' ) : '' ) + ' ' + ( entry.layout ? entry.layout.post_type + ' ' + entry.layout.builders.join( ' ' ) + ' ' + entry.layout.path : '' ) ).toLowerCase(); item.setAttribute( 'aria-pressed', String( entry.key === state.selected ) ); item.appendChild( el( 'span', 'ns-queue-path', label ) );
+			var match = layoutSearch( entry, search.value );
+			var item = button( '', 'ns-queue-item' + ( entry.key === state.selected ? ' is-selected' : '' ), function () {
+				var reference = layoutSearch( entry, search.value ).reference, sameReference = ! reference || state.layout && state.layout.reference_type === reference.reference_type && Number( state.layout.reference_id ) === Number( reference.reference_id );
+				if ( entry.key === state.selected && sameReference || ! canLeave() ) { return; }
+				state.initialReferenceApplied = true; state.referenceMissing = false; state.selected = entry.key; state.nextReference = reference; state.dirty = false; render();
+			} );
+			var caption = el( 'span', 'ns-queue-path', match.label ); item.hidden = ! match.visible; item.setAttribute( 'aria-pressed', String( entry.key === state.selected ) ); item.appendChild( caption ); queueItems.push( { entry: entry, item: item, caption: caption } );
 
 			var meta = el( 'span', 'ns-queue-meta' ); meta.appendChild( el( 'span', 'ns-badge', statusText( entry ) ) ); if ( entry.layout ) { meta.appendChild( el( 'span', '', entry.layout.members.length + ' items' ) ); } item.appendChild( meta );
 
@@ -161,7 +178,7 @@
 
 		} );
 
-		search.addEventListener( 'input', function () { nav.querySelectorAll( '.ns-queue-item' ).forEach( function ( item ) { item.hidden = item.dataset.search.indexOf( search.value.trim().toLowerCase() ) < 0; } ); } );
+		search.addEventListener( 'input', function () { state.search = search.value; queueItems.forEach( function ( queued ) { var match = layoutSearch( queued.entry, search.value ); queued.item.hidden = ! match.visible; queued.caption.textContent = match.label; } ); } );
 
 		workspace.appendChild( nav ); var editor = el( 'section', 'ns-editor' ); workspace.appendChild( editor ); root.appendChild( workspace );
 
@@ -215,26 +232,29 @@
 	function renderEditor( entry, layout, parent ) {
 
 		parent.replaceChildren();
-		var chromeHost = null;
+		var chromeHost = null, stageNodes = [];
 		if ( state.workflow === 'nova' ) { chromeHost = el( 'div', 'ns-layout-chrome' ); parent.appendChild( chromeHost ); }
 		var saved = layout.profile || {}, top = el( 'div', 'ns-editor-head' ); top.appendChild( el( 'h3', '', saved.label || layout.title || 'Untitled layout' ) );
 
 		var examples = control( top, 'Reference page or layout', select( entry.layout.members.map( function ( m ) { return [ m.reference_type + ':' + m.reference_id, ( m.title || '#' + m.reference_id ) + ' · ' + m.post_status ]; } ), layout.reference_type + ':' + layout.reference_id ), 'Choose the existing page whose fields you want to describe. Its content is unchanged while you prepare this setup.' );
 
 		examples.addEventListener( 'change', function () { if ( ! canLeave() ) { examples.value = layout.reference_type + ':' + layout.reference_id; return; } state.dirty = false; var ref = entry.layout.members.find( function ( m ) { return m.reference_type + ':' + m.reference_id === examples.value; } ); loadLayout( entry, parent, ref ); } ); parent.appendChild( top );
+		var referenceSummary = el( 'div', 'ns-reference-summary' ); referenceSummary.append( el( 'span', '', 'Using: ' + ( layout.title || 'Selected reference' ) ), button( 'Change reference', 'button', function () { if ( state.draftEditor ) { state.draftEditor.goStep( 1 ); } } ) ); referenceSummary.hidden = true; parent.appendChild( referenceSummary );
 
 		var affected = el( 'details', 'ns-details' ); affected.appendChild( el( 'summary', '', ( state.workflow === 'nova' ? 'Similar layout on ' : 'Used by ' ) + entry.layout.members.length + ' site items · ' + entry.rows.length + ' strategy URLs' ) );
 		if ( state.workflow === 'nova' ) { affected.appendChild( el( 'p', 'ns-help', 'This draft targets the selected reference. Other pages need their own verified field bindings.' ) ); }
 
 		entry.layout.members.forEach( function ( m ) { affected.appendChild( el( 'p', 'ns-help', m.path || m.title + ' (draft/private reference)' ) ); } ); parent.appendChild( affected );
+		stageNodes.push( affected );
 		var replaceable = entry.rows.filter( function ( r ) { return ! r.post_id && ! r.term_id; } );
 		if ( replaceable.length ) {
 			var changeReference = el( 'details', 'ns-details' ); changeReference.appendChild( el( 'summary', '', 'Change strategy reference' ) );
 			changeReference.appendChild( el( 'p', 'ns-help', 'Choose a different example for selected future URLs. Existing layout mappings are kept; the new example uses its own layout mapping.' ) );
 			renderReference( { row: { candidates: [] }, rows: replaceable, changing: true }, changeReference ); parent.appendChild( changeReference );
+			stageNodes.push( changeReference );
 		}
 
-		entry.rows.filter( function ( r ) { return r.status === 'needs_parent' || r.status === 'needs_layout'; } ).forEach( function ( r ) { parent.appendChild( el( 'p', 'ns-notice', r.path + ': ' + r.basis + ' You can map this reference now.' ) ); } );
+		entry.rows.filter( function ( r ) { return r.status === 'needs_parent' || r.status === 'needs_layout'; } ).forEach( function ( r ) { var hint = el( 'p', 'ns-notice', r.path + ': ' + r.basis + ' You can map this reference now.' ); stageNodes.push( hint ); parent.appendChild( hint ); } );
 
 		var failed = arr( layout.providers ).filter( function ( p ) { return ! p.available; } );
 
@@ -243,6 +263,7 @@
 			warning.appendChild( el( 'p', '', p.label + ': ' + p.message + ' The field inventory is incomplete.' ) );
 			if ( p.module_enabled === false ) { warning.appendChild( enableBridgeButton( p ) ); }
 			parent.appendChild( warning );
+			stageNodes.push( warning );
 		} );
 
 		if ( state.workflow === 'legacy' && layout.unbound_fields ) { parent.appendChild( el( 'p', 'ns-notice ns-error', layout.unbound_fields + ' saved fields cannot be rebound to this reference. Choose the original mapped reference before saving; existing mappings are preserved.' ) ); }
@@ -254,7 +275,7 @@
 			guidance = control( parent, 'Layout instructions', textarea( saved.guidance || '', 3 ) ); label.addEventListener( 'input', markDirty ); guidance.addEventListener( 'input', markDirty );
 		}
 
-		var visual = el( 'div', 'ns-visual-workspace' ), page = el( 'section', 'ns-page-panel' ), inspector = el( 'section', 'ns-inspector' );
+		var visual = el( 'div', 'ns-visual-workspace' ), page = el( 'details', 'ns-page-panel ns-optional-preview' ), inspector = el( 'section', 'ns-inspector' ); page.appendChild( el( 'summary', '', 'View selected reference (optional)' ) ); page.open = state.workflow === 'legacy' || ( state.flowView || config.view ) === 'workspace';
 
 		page.appendChild( el( 'h3', '', 'Reference preview' ) ); page.appendChild( el( 'p', 'ns-help', 'This is the existing page. Select a highlighted region to find its field; generated content is not shown here.' ) );
 
@@ -279,8 +300,7 @@
 				} catch ( e ) { if ( state.frame === frame ) { previewStatus.textContent = e.message + ' If your login expired, sign in again and reload Mapping. Unsaved mappings have been kept here.'; } }
 				finally { refreshPreview.disabled = false; }
 			} ); page.appendChild( refreshPreview );
-			var consentLabel = el( 'label', 'ns-preview-consent ns-help' ), consent = input( 'checkbox' ); consent.checked = state.hideConsent;
-			consent.addEventListener( 'change', function () { state.hideConsent = consent.checked; postPreview( 'consent', { hidden: state.hideConsent } ); } ); consentLabel.appendChild( consent ); consentLabel.appendChild( el( 'span', '', 'Hide known cookie banners in this preview only' ) ); page.appendChild( consentLabel ); page.appendChild( frame );
+			page.appendChild( frame );
 
 			frame.addEventListener( 'load', function () { if ( state.frame === frame && ! state.frameReady ) { previewStatus.textContent = 'Waiting for preview controls. Use Refresh preview if this page shows an error. Your mappings remain available in the inspector.'; } } );
 
@@ -292,10 +312,20 @@
 			visual.appendChild( page ); visual.appendChild( inspector ); parent.appendChild( visual );
 			if ( ! window.NovaMappingDrafts ) { draftPanel.appendChild( el( 'p', 'ns-notice ns-error', 'The mapping editor could not load. Reload this page to try again.' ) ); return; }
 			var draftEpoch = state.epoch;
-			state.draftEditor = window.NovaMappingDrafts.mount( draftPanel, layout, config, {
+			state.draftEditor = window.NovaMappingDrafts.mount( draftPanel, layout, Object.assign( {}, config, { view: state.flowView || config.view } ), {
 				onDirty: function () { if ( state.epoch === draftEpoch && state.workflow === 'nova' ) { markDirty(); } },
 				onSaved: function () { if ( state.epoch === draftEpoch && state.workflow === 'nova' ) { state.dirty = false; } },
-				onSelectField: function ( path ) { if ( state.epoch === draftEpoch && state.workflow === 'nova' ) { selectField( path, true ); } }
+				onSelectField: function ( path ) { if ( state.epoch === draftEpoch && state.workflow === 'nova' ) { selectField( path, true ); } },
+				onJourneyChange: function ( journey ) {
+					if ( state.epoch !== draftEpoch || state.workflow !== 'nova' ) { return; }
+					var visible = guidedVisibility( journey ), previousStep = root.dataset.step; state.flowView = journey.view; root.dataset.view = journey.view; root.dataset.step = String( journey.step );
+					var sidebar = root.querySelector( '.ns-sidebar' ), container = root.querySelector( '.ns-workspace' ), inventory = root.querySelector( '.ns-inventory-options' ), routeNote = root.querySelector( '.ns-route-note' );
+					if ( sidebar ) { sidebar.hidden = ! visible.sidebar; } if ( container ) { container.classList.toggle( 'ns-guided-focus', ! visible.sidebar ); }
+					if ( inventory ) { inventory.hidden = ! visible.technical; } if ( routeNote ) { routeNote.hidden = ! visible.workspace; }
+					top.hidden = ! visible.referencePicker; referenceSummary.hidden = ! visible.referenceSummary; page.hidden = ! visible.preview; visual.classList.toggle( 'ns-guided-content', ! visible.workspace );
+					if ( journey.view === 'setup' && journey.step === 2 && previousStep !== '2' ) { page.open = true; }
+					stageNodes.forEach( function ( node ) { node.hidden = ! visible.technical; } );
+				}
 			}, { chromeHost: chromeHost } );
 			return;
 		}
@@ -374,7 +404,7 @@
 
 		var data = event.data, status = root.querySelector( '.ns-preview-status' );
 
-		if ( data.type === 'ready' ) { state.frameReady = true; status.textContent = 'Click a highlighted region to inspect its fields. Links and forms are disabled.'; postPreview( 'bind', { hideConsent: state.hideConsent, builders: state.layout.builders, providers: state.layout.providers, fields: arr( state.layout.fields ).map( function ( f ) { return { path: f.path, source: f.source, builder: f.builder, element: f.element, selector_data: f.selector_data, preview_text: f.preview_text }; } ) } ); }
+		if ( data.type === 'ready' ) { state.frameReady = true; status.textContent = 'Choose a supported field in the guide when you are ready. Links and forms are disabled in this reference preview.'; postPreview( 'bind', { hideConsent: true, builders: state.layout.builders, providers: state.layout.providers, fields: arr( state.layout.fields ).map( function ( f ) { return { path: f.path, source: f.source, builder: f.builder, element: f.element, selector_data: f.selector_data, preview_text: f.preview_text }; } ) } ); }
 
 		if ( data.type === 'unbound' && typeof data.label === 'string' ) {
 			selectField( '', false );
@@ -385,14 +415,15 @@
 			if ( provider && ! provider.available ) { message = provider.message; }
 			else if ( data.builder === 'gutenberg' ) { message = 'This is part of a Gutenberg document. The bridge reads and updates the complete block document; this block is not an independent write target.'; }
 			else if ( data.builder ) { message = 'This content has no verified visual binding. Check the existing fields below; a custom or dynamic source may require additional support.'; }
-			panel.appendChild( el( 'p', 'ns-help', message ) );
+			panel.appendChild( el( 'p', 'ns-help', 'Choose a supported field in the guide. This region has not been added as a writable field.' ) );
+			var technical = el( 'details', 'ns-unbound-details' ); technical.append( el( 'summary', '', 'Preview details' ), el( 'p', 'ns-help', message ) ); panel.appendChild( technical );
 			if ( provider && ! provider.available && provider.module_enabled === false ) {
-				panel.appendChild( enableBridgeButton( provider ) );
-				var link = el( 'a', 'button', 'Open Modules' ); link.href = config.modulesUrl; panel.appendChild( link );
+				technical.appendChild( enableBridgeButton( provider ) );
+				var link = el( 'a', 'button', 'Open Modules' ); link.href = config.modulesUrl; technical.appendChild( link );
 			}
 			if ( data.builder === 'gutenberg' && ( ! provider || provider.available ) ) { var docField = arr(state.layout.fields).find(function(f){return f.builder === 'gutenberg' && f.element === 'document';}); if(docField){panel.appendChild(button('Select document content','button',function(){selectField(docField.path,true);}));} }
 			panel.appendChild( button( 'Dismiss', 'button', function () { panel.replaceChildren(); postPreview('select',{path:''}); status.textContent='Select a page region or a field in the inspector.'; } ) );
-			status.textContent = message;
+			status.textContent = 'Choose a supported field in the guide.';
 		}
 		if ( data.type === 'clear-issue' ) { root.querySelector('.ns-region-choices').replaceChildren(); }
 		if ( data.type === 'bindings' && Array.isArray( data.fields ) ) {

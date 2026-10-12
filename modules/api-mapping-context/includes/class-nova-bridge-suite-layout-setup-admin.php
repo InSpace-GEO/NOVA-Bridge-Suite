@@ -10,6 +10,34 @@ final class Nova_Bridge_Suite_Layout_Setup_Admin {
         self::$bootstrapped = true;
         add_filter( 'nova_bridge_suite_settings_tabs', [ __CLASS__, 'tabs' ], 102 );
         add_action( 'admin_enqueue_scripts', [ __CLASS__, 'assets' ], 110 );
+        add_action( 'in_admin_header', [ __CLASS__, 'quiet_external_notices' ], PHP_INT_MAX );
+    }
+
+    /** Keep theme/plugin promotions out of this screen, retaining core and NOVA notices. */
+    public static function quiet_external_notices(): void {
+        $screen = get_current_screen();
+        if ( ! $screen || 'settings_page_nova-settings' !== $screen->id || ! current_user_can( 'manage_options' ) || ! defined( 'WP_CONTENT_DIR' ) ) { return; }
+        global $wp_filter;
+        $content = rtrim( strtolower( wp_normalize_path( realpath( WP_CONTENT_DIR ) ?: WP_CONTENT_DIR ) ), '/' ) . '/';
+        $suite = rtrim( strtolower( wp_normalize_path( realpath( NOVA_BRIDGE_SUITE_PLUGIN_DIR ) ?: NOVA_BRIDGE_SUITE_PLUGIN_DIR ) ), '/' ) . '/';
+        foreach ( [ 'admin_notices', 'all_admin_notices', 'user_admin_notices', 'network_admin_notices' ] as $name ) {
+            if ( ! isset( $wp_filter[ $name ]->callbacks ) ) { continue; }
+            foreach ( $wp_filter[ $name ]->callbacks as $priority => $callbacks ) {
+                foreach ( $callbacks as $entry ) {
+                    $callback = $entry['function'];
+                    try {
+                        if ( is_array( $callback ) && 2 === count( $callback ) ) { $reflection = new ReflectionMethod( $callback[0], $callback[1] ); }
+                        elseif ( is_string( $callback ) && false !== strpos( $callback, '::' ) ) { $parts = explode( '::', $callback, 2 ); $reflection = new ReflectionMethod( $parts[0], $parts[1] ); }
+                        elseif ( is_object( $callback ) && ! $callback instanceof Closure ) { $reflection = new ReflectionMethod( $callback, '__invoke' ); }
+                        else { $reflection = new ReflectionFunction( $callback ); }
+                        $file = $reflection->getFileName();
+                    } catch ( Throwable $exception ) { continue; }
+                    if ( ! is_string( $file ) ) { continue; }
+                    $file = strtolower( wp_normalize_path( $file ) );
+                    if ( 0 === strpos( $file, $content ) && 0 !== strpos( $file, $suite ) ) { remove_action( $name, $callback, $priority ); }
+                }
+            }
+        }
     }
 
     public static function url( string $tab, array $args = [] ): string {

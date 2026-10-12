@@ -2,6 +2,8 @@
 
 Open **NOVA settings → Layouts**. Choose how an article should fit the website. The two approaches are independent; a site can save setups for both.
 
+The NOVA screen uses the available WordPress admin width. External theme/plugin admin notices are suppressed on this screen only; WordPress core and NOVA notices remain available. Other admin screens are unaffected.
+
 | Approach | Use it when | What the mapping means |
 | --- | --- | --- |
 | **Fill an existing layout** | An existing page or supported content item has the design and content fields you want to keep. | Describe what belongs in each existing field and what stays unchanged. |
@@ -11,12 +13,16 @@ Elementor layout rules **are a mapping**. They do not require a second, fixed-fi
 
 ## Fill an existing layout
 
-1. **Choose reference.** Select an existing page or supported content item from this site's layout list. Inspect its reference preview and choose **Use this reference**.
-2. **Describe fields.** Give the setup a recognizable name. Explain the content each existing field should receive, or choose what to keep or leave empty. Optional repeated regions describe the layout's existing capacity; they do not create extra native rows. Choose **Review setup** to continue.
-3. **Review setup.** Check the field summary, intended use and any warnings, then choose **Save setup**. Saving retains the descriptions locally and leaves the reference unchanged.
+1. **Choose reference.** Select an existing page or supported content item from this site's layout list. Expand **View selected reference (optional)** if you want to inspect it, then choose **Use this reference**.
+2. **Describe fields.** Select a highlighted content region in the page preview, or use **Choose a content field** to select a supported field and see its existing content. The preview opens alongside one focused field editor; the layout list is hidden during this stage. Choose **Describe the content for this field**, then answer **What content belongs here?**—for example, a short section heading or a paragraph explaining its benefit. You can also keep existing content or leave a field undecided. Use **Previous field**, **Next field** or **Skip for now** to move through the choices. Formats and constraints stay under **Details and optional limits**; native paths and additional notes stay under **Target details**. Choose **Review setup** to continue.
+3. **Review setup.** Check the described, retained and undecided field counts. Give the setup a recognizable name, then choose **Save setup**. Saving retains the descriptions locally and leaves the reference unchanged; unfinished field preparation can also be saved.
 4. **Save & hand over.** Choose **Open saved setup** for the workspace or **Export handover** for the field descriptions. The export is a description for integration work; exporting does not make NOVA generate content for those fields automatically.
 
-Earlier delivered-field mappings remain available for review. Their synchronization and native writer approval are separate, advanced operations. Saving field descriptions does not complete those operations.
+Earlier delivered-field and repeat bindings are retained without edits during the guide. Their details become available in the saved workspace; synchronization and native writer approval remain separate, advanced operations. Saving field descriptions does not complete those operations.
+
+The guide advances through **Use this reference**, **Review setup** and a confirmed **Save setup**. Step numbers let you return to earlier stages; they cannot skip forward to save or completion. A save conflict keeps your edits and does not open the completion stage. After saving, **Open saved setup** opens the workspace, where all fields and advanced choices are available. Repeated regions there describe existing capacity; they do not create extra native rows.
+
+The reference preview shows the existing content, not a generated result. Known cookie banners and their overlays are hidden automatically, including after refresh or late loading. This affects the preview only and does not accept consent, change cookies or update site settings. **Refresh preview** requests a fresh authenticated link if the view has expired.
 
 ## Build new Elementor content
 
@@ -26,6 +32,8 @@ Earlier delivered-field mappings remain available for review. Their synchronizat
 4. **Create a draft.** Set a title and choose **Create Elementor draft** to create a real WordPress draft from the reviewed content and exact saved revision. Open **Edit with Elementor** to inspect native widgets and styling, or **Open WordPress draft** for the standard editor. **Finish setup without a draft** saves the setup for later without creating a page.
 
 The structure preview uses the renderer's planned native elements and a sandboxed content view. It checks order and grouping; it is not an exact Elementor/theme styling preview. Draft creation separately validates provider support, saves through Elementor and checks the stored native result. A failed or uncertain response does not count as verified creation: retry the same content to reconcile its retained operation. **Create another draft** is a separate, explicit action after verified success.
+
+In this guide, reviewing rules requires a complete preview of the current content and rules. Creating a draft or finishing setup also requires an exact saved revision without unsaved rule changes. Editing the rules or sample invalidates its old preview. Successful draft creation, or **Finish setup without a draft**, opens the saved workspace; an already-saved setup can also open its workspace directly.
 
 ## Return to a saved workspace
 
