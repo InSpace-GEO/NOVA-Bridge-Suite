@@ -54,13 +54,24 @@
 
 	function setScope( scope ) { state.scope = scope; scopeChosen = true; try { localStorage.setItem( 'nova-mapping-scope:' + config.mappingUrl, scope ); } catch ( e ) {} }
 
+	function selectInitialReference( data ) {
+		var requested = config.initialReference;
+		if ( ! requested || state.initialReferenceApplied ) { return; }
+		var layout = arr( data.layouts ).find( function ( item ) { return arr( item.members ).some( function ( member ) { return member.reference_type === requested.reference_type && Number( member.reference_id ) === Number( requested.reference_id ); } ); } );
+		if ( layout ) { state.initialReferenceApplied = true; state.referenceMissing = false; state.selected = layout.signature; state.nextReference = arr( layout.members ).find( function ( member ) { return member.reference_type === requested.reference_type && Number( member.reference_id ) === Number( requested.reference_id ); } ); }
+		else { state.referenceMissing = true; state.nextReference = null; state.selected = 'missing-saved-reference'; }
+	}
+
 	async function refresh( message ) {
 
 		var epoch = ++state.epoch;
+		// A saved setup identifies a concrete reference, independent of strategy imports.
+		// Keep failed lookups retryable, but never replace them with a default layout.
+		if ( config.initialReference && ! state.initialReferenceApplied ) { setScope( 'all' ); }
 
 		root.setAttribute( 'aria-busy', 'true' ); root.inert = true;
 
-		try { var data = await api( '?scope=' + state.scope, undefined, true ); if ( epoch !== state.epoch ) { return; } if ( ! scopeChosen ) { scopeChosen = true; if ( data.summary.strategy_urls > 0 && state.scope !== 'strategy' ) { setScope( 'strategy' ); return await refresh( message ); } } state.data = data; state.dirty = false; render(); if ( message ) { notice( message ); } }
+		try { var data = await api( '?scope=' + state.scope, undefined, true ); if ( epoch !== state.epoch ) { return; } if ( ! scopeChosen ) { scopeChosen = true; if ( data.summary.strategy_urls > 0 && state.scope !== 'strategy' ) { setScope( 'strategy' ); return await refresh( message ); } } state.data = data; selectInitialReference( data ); state.dirty = false; render(); if ( message ) { notice( message ); } }
 
 		finally { root.removeAttribute( 'aria-busy' ); root.inert = false; }
 
@@ -96,30 +107,33 @@
 
 		disposeDraftEditor(); ++state.epoch; state.frame = null; state.layout = null; root.replaceChildren();
 
-		var header = el( 'header', 'ns-header' ), text = el( 'div' ); text.appendChild( el( 'div', 'ns-eyebrow', 'NOVA / MAPPING' ) ); text.appendChild( el( 'h1', '', 'Map your site layouts' ) ); text.appendChild( el( 'p', '', 'Choose a reference and map its fields. Select content on the page or in the inspector.' ) ); header.appendChild( text );
+		var header = el( 'header', 'ns-header' ), text = el( 'div' ); text.appendChild( el( 'div', 'ns-eyebrow', 'LAYOUTS / EXISTING LAYOUT' ) ); text.appendChild( el( 'h2', '', 'Fill an existing layout' ) ); text.appendChild( el( 'p', '', 'Choose an existing page, describe its content fields, and save a setup for review and handover.' ) ); header.appendChild( text );
 
 		header.appendChild( button( 'Refresh inventory', 'button', function () { if ( canLeave() ) { refresh().catch( function ( e ) { notice( e.message, true ); } ); } } ) ); root.appendChild( header );
+		var routeNote = el( 'div', 'ns-route-note' ); routeNote.appendChild( el( 'p', '', 'Starting a fresh page from article content?' ) ); var buildLink = el( 'a', 'button', 'Build new content' ); buildLink.href = config.buildUrl || 'options-general.php?page=nova-settings&tab=content-rules&view=setup'; buildLink.addEventListener( 'click', function ( event ) { if ( ! canLeave() ) { event.preventDefault(); } } ); routeNote.appendChild( buildLink ); routeNote.appendChild( el( 'span', 'ns-help', 'Build uses local content rules and works independently of this setup.' ) ); root.appendChild( routeNote );
 
 		var scopeBar = el( 'div', 'ns-scope' );
 
-		var workflow = control( scopeBar, 'Workflow', select( [ [ 'nova', 'NOVA mappings' ], [ 'legacy', 'Saved legacy profiles' ] ], state.workflow ) );
+		var previous = el( 'details', 'ns-previous-workflows' ); previous.appendChild( el( 'summary', '', 'Earlier saved mappings' ) );
+		var workflow = control( previous, 'Editor', select( [ [ 'nova', 'Current field setup' ], [ 'legacy', 'Earlier layout profiles' ] ], state.workflow ) ); scopeBar.appendChild( previous );
 		workflow.addEventListener( 'change', function () { if ( ! canLeave() ) { workflow.value = state.workflow; return; } state.workflow = workflow.value; state.filter = 'all'; state.dirty = false; render(); } );
 
 		var scope = control( scopeBar, 'Mapping scope', select( [ [ 'all', 'All site layouts' ], [ 'strategy', 'Imported strategy' ] ], state.scope ) );
 
 		scope.addEventListener( 'change', function () { if ( ! canLeave() ) { scope.value = state.scope; return; } setScope( scope.value ); state.selected = ''; refresh().catch( function ( e ) { notice( e.message, true ); } ); } );
 
-		scopeBar.appendChild( el( 'p', 'ns-help', 'Without a strategy, all layouts are shown. Your scope choice is remembered in this browser; mappings outside the scope are kept.' ) ); root.appendChild( scopeBar );
+		scopeBar.appendChild( el( 'p', 'ns-help', 'Without a strategy, all layouts are shown. Your scope choice is remembered in this browser; mappings outside the scope are kept.' ) );
+		var inventoryOptions = el( 'details', 'ns-inventory-options' ); inventoryOptions.appendChild( el( 'summary', '', 'Filter layouts and manage strategy files (optional)' ) ); inventoryOptions.appendChild( scopeBar ); root.appendChild( inventoryOptions );
 
-		renderImport();
+		renderImport( inventoryOptions );
 
-		if ( state.data.source_host && state.data.source_host !== state.data.site_host ) { notice( 'The imported strategy belongs to ' + state.data.source_host + '. References are checked against this staging site.', true ); }
+		if ( state.data.source_host && state.data.source_host !== state.data.site_host ) { notice( 'The imported strategy belongs to ' + state.data.source_host + '. References are checked against this WordPress site.', true ); }
 
 		var summary = state.data.summary, stats = el( 'div', 'ns-stats' );
 
-		[ [ summary.site_layouts, 'Site layouts' ], [ summary.visible_layouts, 'In this scope' ], [ summary.strategy_urls, 'Strategy URLs' ], [ summary.unresolved, 'URLs needing references' ] ].forEach( function ( item ) { var card = el( 'div' ); card.appendChild( el( 'strong', '', item[0] ) ); card.appendChild( el( 'span', '', item[1] ) ); stats.appendChild( card ); } ); root.appendChild( stats );
+		[ [ summary.site_layouts, 'Site layouts' ], [ summary.visible_layouts, 'In this scope' ], [ summary.strategy_urls, 'Strategy URLs' ], [ summary.unresolved, 'URLs needing references' ] ].forEach( function ( item ) { var card = el( 'div' ); card.appendChild( el( 'strong', '', item[0] ) ); card.appendChild( el( 'span', '', item[1] ) ); stats.appendChild( card ); } ); inventoryOptions.appendChild( stats );
 
-		root.appendChild( el( 'p', 'ns-help', summary.site_items + ' eligible content items, including drafts. Native layouts remain visible; unsupported builder fields are flagged when inspected.' ) );
+		inventoryOptions.appendChild( el( 'p', 'ns-help', summary.site_items + ' eligible content items, including drafts. Native layouts remain visible; unsupported builder fields are flagged when inspected.' ) );
 
 		var workspace = el( 'div', 'ns-workspace' ), nav = el( 'aside', 'ns-sidebar' ), navhead = el( 'div', 'ns-sidebar-head' ); navhead.appendChild( el( 'h2', '', 'Layouts' ) );
 
@@ -131,13 +145,13 @@
 
 		var all = entries().filter( function ( e ) { var pending = e.unresolved || e.layout.mapping_status === 'unmapped'; return state.filter === 'all' || ( state.filter === 'pending' ? pending : ! pending ); } );
 
-		if ( ! all.some( function ( e ) { return e.key === state.selected; } ) ) { state.selected = all.length ? all[0].key : ''; }
+		if ( ! state.referenceMissing && ! all.some( function ( e ) { return e.key === state.selected; } ) ) { state.selected = all.length ? all[0].key : ''; }
 
 		all.forEach( function ( entry ) {
 
 			var label = entry.unresolved ? ( entry.rows.length > 1 ? entry.row.parent_path + '… · ' + entry.rows.length + ' URLs' : entry.row.path ) : ( entry.layout.label || entry.layout.title || 'Untitled layout' );
 
-			var item = button( '', 'ns-queue-item' + ( entry.key === state.selected ? ' is-selected' : '' ), function () { if ( entry.key === state.selected || ! canLeave() ) { return; } state.selected = entry.key; state.dirty = false; render(); } );
+			var item = button( '', 'ns-queue-item' + ( entry.key === state.selected ? ' is-selected' : '' ), function () { if ( entry.key === state.selected || ! canLeave() ) { return; } state.initialReferenceApplied = true; state.referenceMissing = false; state.selected = entry.key; state.dirty = false; render(); } );
 
 			item.dataset.search = ( label + ' ' + ( entry.unresolved ? entry.rows.map( function ( r ) { return r.path; } ).join( ' ' ) : '' ) + ' ' + ( entry.layout ? entry.layout.post_type + ' ' + entry.layout.builders.join( ' ' ) + ' ' + entry.layout.path : '' ) ).toLowerCase(); item.setAttribute( 'aria-pressed', String( entry.key === state.selected ) ); item.appendChild( el( 'span', 'ns-queue-path', label ) );
 
@@ -153,7 +167,7 @@
 
 		var selected = all.find( function ( e ) { return e.key === state.selected; } );
 
-		if ( ! selected ) { editor.appendChild( el( 'h2', '', state.scope === 'strategy' && ! summary.strategy_urls ? 'Import a strategy to narrow the queue' : 'No layouts in this view' ) ); return; }
+		if ( ! selected ) { editor.appendChild( el( 'h2', '', state.referenceMissing ? 'The saved reference is unavailable' : state.scope === 'strategy' && ! summary.strategy_urls ? 'Import a strategy to narrow the queue' : 'No layouts in this view' ) ); if ( state.referenceMissing ) { editor.appendChild( el( 'p', 'ns-help', 'Choose an available page from the list to start a separate setup. The saved setup has not been replaced.' ) ); } return; }
 
 		if ( selected.unresolved ) { editor.appendChild( el( 'h2', '', selected.rows.length > 1 ? selected.row.parent_path + '… · ' + selected.rows.length + ' URLs' : selected.row.path ) ); renderReference( selected, editor ); return; }
 
@@ -161,7 +175,7 @@
 
 	}
 
-	function renderImport() {
+	function renderImport( container ) {
 		var imports = arr( state.data.imports ), panel = el( 'details', 'ns-import' ); panel.open = state.importOpen || ( state.scope === 'strategy' && ! state.data.summary.strategy_urls ); panel.addEventListener( 'toggle', function () { state.importOpen = panel.open; } );
 		panel.appendChild( el( 'summary', '', imports.length ? 'Strategy files · ' + imports.length + ( imports.length === 1 ? ' file · ' : ' files · ' ) + state.data.summary.strategy_urls + ' unique URLs' : 'Optional: import strategies' ) );
 		var body = el( 'div', 'ns-import-body' ), file = input( 'file' ); file.accept = '.csv,text/csv'; file.multiple = true;
@@ -180,7 +194,7 @@
 			} ); remove.setAttribute( 'aria-label', 'Remove ' + imported.name ); row.appendChild( remove ); body.appendChild( row );
 		} );
 		if ( imports.length ) { body.appendChild( el( 'p', 'ns-help', 'Shared URLs stay in scope until their last file is removed. For duplicate URLs, the latest imported file supplies the page type and locale. Removing all files leaves the strategy scope empty; All site layouts remains available.' ) ); }
-		panel.appendChild( body ); root.appendChild( panel );
+		panel.appendChild( body ); ( container || root ).appendChild( panel );
 	}
 
 	async function loadLayout( entry, editor, reference ) {
@@ -200,9 +214,12 @@
 
 	function renderEditor( entry, layout, parent ) {
 
-		parent.replaceChildren(); var saved = layout.profile || {}, top = el( 'div', 'ns-editor-head' ); top.appendChild( el( 'h2', '', saved.label || layout.title || 'Untitled layout' ) );
+		parent.replaceChildren();
+		var chromeHost = null;
+		if ( state.workflow === 'nova' ) { chromeHost = el( 'div', 'ns-layout-chrome' ); parent.appendChild( chromeHost ); }
+		var saved = layout.profile || {}, top = el( 'div', 'ns-editor-head' ); top.appendChild( el( 'h3', '', saved.label || layout.title || 'Untitled layout' ) );
 
-		var examples = control( top, 'Rendered reference', select( entry.layout.members.map( function ( m ) { return [ m.reference_type + ':' + m.reference_id, ( m.title || '#' + m.reference_id ) + ' · ' + m.post_status ]; } ), layout.reference_type + ':' + layout.reference_id ) );
+		var examples = control( top, 'Reference page or layout', select( entry.layout.members.map( function ( m ) { return [ m.reference_type + ':' + m.reference_id, ( m.title || '#' + m.reference_id ) + ' · ' + m.post_status ]; } ), layout.reference_type + ':' + layout.reference_id ), 'Choose the existing page whose fields you want to describe. Its content is unchanged while you prepare this setup.' );
 
 		examples.addEventListener( 'change', function () { if ( ! canLeave() ) { examples.value = layout.reference_type + ':' + layout.reference_id; return; } state.dirty = false; var ref = entry.layout.members.find( function ( m ) { return m.reference_type + ':' + m.reference_id === examples.value; } ); loadLayout( entry, parent, ref ); } ); parent.appendChild( top );
 
@@ -239,7 +256,7 @@
 
 		var visual = el( 'div', 'ns-visual-workspace' ), page = el( 'section', 'ns-page-panel' ), inspector = el( 'section', 'ns-inspector' );
 
-		page.appendChild( el( 'h3', '', 'Page preview' ) );
+		page.appendChild( el( 'h3', '', 'Reference preview' ) ); page.appendChild( el( 'p', 'ns-help', 'This is the existing page. Select a highlighted region to find its field; generated content is not shown here.' ) );
 
 		var viewport = select( [ [ 'desktop', 'Fit panel' ], [ 'mobile', 'Mobile' ] ], 'desktop' ); viewport.setAttribute( 'aria-label', 'Preview viewport' ); viewport.addEventListener( 'change', function () { page.classList.toggle( 'ns-mobile-preview', viewport.value === 'mobile' ); } ); page.appendChild( viewport );
 
@@ -279,7 +296,7 @@
 				onDirty: function () { if ( state.epoch === draftEpoch && state.workflow === 'nova' ) { markDirty(); } },
 				onSaved: function () { if ( state.epoch === draftEpoch && state.workflow === 'nova' ) { state.dirty = false; } },
 				onSelectField: function ( path ) { if ( state.epoch === draftEpoch && state.workflow === 'nova' ) { selectField( path, true ); } }
-			} );
+			}, { chromeHost: chromeHost } );
 			return;
 		}
 
@@ -447,7 +464,7 @@
 
 
 
-	function init() { root = document.getElementById( 'nova-strategy-app' ); config = window.NovaStrategyAdmin; if ( ! root || ! config ) { return; } try { var savedScope = localStorage.getItem( 'nova-mapping-scope:' + config.mappingUrl ); if ( savedScope === 'all' || savedScope === 'strategy' ) { state.scope = savedScope; scopeChosen = true; } } catch ( e ) {} refresh().catch( function ( e ) { notice( e.message, true ); root.appendChild( button( 'Retry', 'button', init ) ); } ); }
+	function init() { root = document.getElementById( 'nova-strategy-app' ); config = window.NovaStrategyAdmin; if ( ! root || ! config ) { return; } try { var savedScope = localStorage.getItem( 'nova-mapping-scope:' + config.mappingUrl ); if ( savedScope === 'all' || savedScope === 'strategy' ) { state.scope = savedScope; scopeChosen = true; } } catch ( e ) {} if ( config.initialReference ) { setScope( 'all' ); } refresh().catch( function ( e ) { notice( e.message, true ); root.appendChild( button( 'Retry', 'button', init ) ); } ); }
 
 	window.addEventListener( 'message', previewMessage );
 

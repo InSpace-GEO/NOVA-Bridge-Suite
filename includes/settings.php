@@ -4,6 +4,15 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
+// The shared settings shell stays available when individual mapping modules are off.
+if ( defined( 'NOVA_BRIDGE_SUITE_PLUGIN_DIR' ) ) {
+    $nova_layout_shell = NOVA_BRIDGE_SUITE_PLUGIN_DIR . 'modules/api-mapping-context/includes/class-nova-bridge-suite-layout-setup-admin.php';
+    if ( is_file( $nova_layout_shell ) ) {
+        require_once $nova_layout_shell;
+        Nova_Bridge_Suite_Layout_Setup_Admin::bootstrap();
+    }
+}
+
 function nova_bridge_suite_module_definitions(): array {
     return [
         'api_mapping_context'    => [
@@ -903,6 +912,7 @@ function nova_bridge_suite_get_settings_tabs(): array {
             'label'           => $label,
             'render_callback' => $callback,
             'legacy_slugs'    => array_values( array_unique( $legacy_slugs ) ),
+            'nav_parent'      => is_scalar( $tab['nav_parent'] ?? '' ) ? sanitize_key( (string) ( $tab['nav_parent'] ?? '' ) ) : '',
         ];
     }
 
@@ -918,7 +928,7 @@ function nova_bridge_suite_render_settings_page(): void {
     $tabs        = nova_bridge_suite_get_settings_tabs();
     $current_tab = isset( $_GET['tab'] ) && is_scalar( $_GET['tab'] )
         ? sanitize_key( (string) wp_unslash( $_GET['tab'] ) )
-        : 'modules';
+        : ( isset( $tabs['layouts'] ) ? 'layouts' : 'modules' );
 
     if ( ! isset( $tabs[ $current_tab ] ) ) {
         foreach ( $tabs as $tab_slug => $tab ) {
@@ -930,8 +940,11 @@ function nova_bridge_suite_render_settings_page(): void {
     }
 
     if ( ! isset( $tabs[ $current_tab ] ) ) {
-        $current_tab = 'modules';
+        $current_tab = isset( $tabs['layouts'] ) ? 'layouts' : 'modules';
     }
+
+    $navigation_tab = ! empty( $tabs[ $current_tab ]['nav_parent'] ) && isset( $tabs[ $tabs[ $current_tab ]['nav_parent'] ] )
+        ? $tabs[ $current_tab ]['nav_parent'] : $current_tab;
 
     $tab_args = [ 'page' => 'nova-settings' ];
     if ( isset( $_GET['lang'] ) && is_scalar( $_GET['lang'] ) ) {
@@ -940,23 +953,30 @@ function nova_bridge_suite_render_settings_page(): void {
 
     ?>
     <div class="wrap">
+        <h1 class="screen-reader-text"><?php echo esc_html__( 'NOVA WordPress layouts', 'nova-bridge-suite' ); ?></h1>
+        <div class="nova-publishing-app">
+        <?php if ( class_exists( 'Nova_Bridge_Suite_Layout_Setup_Admin' ) ) : ?>
+            <?php Nova_Bridge_Suite_Layout_Setup_Admin::header(); ?>
+        <?php else : ?>
         <h1>
             <?php echo esc_html__( 'NOVA Settings', 'nova-bridge-suite' ); ?>
             <?php if ( '' !== $version ) : ?>
                 <span style="margin-left:8px;font-size:13px;font-weight:500;color:#646970;"><?php echo esc_html( 'v' . $version ); ?></span>
             <?php endif; ?>
         </h1>
-        <nav class="nav-tab-wrapper" aria-label="<?php echo esc_attr__( 'NOVA Settings sections', 'nova-bridge-suite' ); ?>">
+        <?php endif; ?>
+        <nav class="nav-tab-wrapper nova-publishing-nav" aria-label="<?php echo esc_attr__( 'NOVA Settings sections', 'nova-bridge-suite' ); ?>">
             <?php foreach ( $tabs as $tab_slug => $tab ) : ?>
+                <?php if ( ! empty( $tab['nav_parent'] ) && isset( $tabs[ $tab['nav_parent'] ] ) ) { continue; } ?>
                 <?php $tab_url = add_query_arg( array_merge( $tab_args, [ 'tab' => $tab_slug ] ), admin_url( 'options-general.php' ) ); ?>
-                <a href="<?php echo esc_url( $tab_url ); ?>" class="nav-tab <?php echo $tab_slug === $current_tab ? 'nav-tab-active' : ''; ?>">
+                <a href="<?php echo esc_url( $tab_url ); ?>" class="nav-tab <?php echo $tab_slug === $navigation_tab ? 'nav-tab-active' : ''; ?>" <?php echo $tab_slug === $navigation_tab ? 'aria-current="page"' : ''; ?>>
                     <?php echo esc_html( $tab['label'] ); ?>
                 </a>
             <?php endforeach; ?>
         </nav>
 		<?php if ( 'modules' !== $current_tab ) : ?>
             <?php call_user_func( $tabs[ $current_tab ]['render_callback'] ); ?>
-            </div>
+            </div></div>
             <?php
             return;
         endif;
@@ -1102,6 +1122,7 @@ function nova_bridge_suite_render_settings_page(): void {
             submit_button();
             ?>
         </form>
+        </div>
     </div>
     <?php
 }

@@ -9,7 +9,7 @@ final class Nova_Bridge_Suite_Strategy_Admin {
 	}
 	public static function tab( array $tabs ): array {
 		unset( $tabs['api-mapping-context'] );
-		return [ 'strategy-mapping' => [ 'label' => __( 'Mapping', 'nova-bridge-suite' ), 'legacy_slugs' => [ 'api-mapping-context', 'content-context', 'mapping' ], 'render_callback' => [ __CLASS__, 'render' ] ] ] + $tabs;
+		return [ 'strategy-mapping' => [ 'label' => __( 'Fill existing layout', 'nova-bridge-suite' ), 'nav_parent' => 'layouts', 'legacy_slugs' => [ 'api-mapping-context', 'content-context', 'mapping' ], 'render_callback' => [ __CLASS__, 'render' ] ] ] + $tabs;
 	}
 	public static function assets( string $hook ): void {
 		if ( false === strpos( $hook, 'nova-settings' ) || ! in_array( $_GET['tab'] ?? '', [ 'strategy-mapping', 'api-mapping-context', 'content-context', 'mapping' ], true ) || ! current_user_can( 'manage_options' ) ) { return; }
@@ -28,12 +28,16 @@ final class Nova_Bridge_Suite_Strategy_Admin {
 			'postingUrl' => esc_url_raw( rest_url( 'nova-bridge/v1/posting' ) ),
 			'modulesUrl' => admin_url( 'options-general.php?page=nova-settings&tab=modules' ),
 			'endpointSettingsUrl' => admin_url( 'options-general.php?page=nova-settings&tab=api-mapping-context' ),
+			'layoutsUrl' => admin_url( 'options-general.php?page=nova-settings&tab=layouts' ),
+			'buildUrl' => admin_url( 'options-general.php?page=nova-settings&tab=content-rules&view=setup&new=1' ),
+			'connectionUrl' => admin_url( 'options-general.php?page=nova-settings&tab=nova-connection' ),
+			'view' => ( $_GET['view'] ?? '' ) === 'workspace' ? 'workspace' : 'setup',
+			'initialReference' => in_array( $_GET['reference_type'] ?? '', [ 'post', 'term' ], true ) && isset( $_GET['reference_id'] ) && is_scalar( $_GET['reference_id'] ) && ctype_digit( (string) $_GET['reference_id'] ) && (int) $_GET['reference_id'] > 0 ? [ 'reference_type' => $_GET['reference_type'], 'reference_id' => (int) $_GET['reference_id'] ] : null,
 		] );
 	}
 	public static function render(): void {
 		if ( ! current_user_can( 'manage_options' ) ) { return; }
-		if ( class_exists( 'Nova_Bridge_Suite_Posting_Settings' ) ) { Nova_Bridge_Suite_Posting_Settings::render(); }
-		echo '<div id="nova-strategy-app" class="nova-strategy"><p role="status">Loading site layouts…</p></div>';
+		echo '<div id="nova-strategy-app" class="nova-strategy"><p role="status">Loading your existing layouts…</p></div>';
 		echo '<details class="nova-mapping-advanced"><summary>Existing endpoint defaults</summary>';
 		echo '<p>Saved defaults remain available for review. Mapping context is never added to page responses. NOVA-owned CPTs retain their own context.</p>';
 		Nova_Bridge_Suite_Content_Context::render_settings_tab();

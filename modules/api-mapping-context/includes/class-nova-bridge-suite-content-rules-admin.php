@@ -12,7 +12,7 @@ final class Nova_Bridge_Suite_Content_Rules_Admin {
     }
 
     public static function tab( array $tabs ): array {
-        $entry = [ 'label' => __( 'Build from content', 'nova-bridge-suite' ), 'render_callback' => [ __CLASS__, 'render' ] ];
+        $entry = [ 'label' => __( 'Build new Elementor content', 'nova-bridge-suite' ), 'nav_parent' => 'layouts', 'render_callback' => [ __CLASS__, 'render' ] ];
         $result = [];
         foreach ( $tabs as $key => $value ) {
             $result[ $key ] = $value;
@@ -31,12 +31,17 @@ final class Nova_Bridge_Suite_Content_Rules_Admin {
         wp_localize_script( 'nova-content-rules', 'NovaContentRules', [
             'url' => esc_url_raw( rest_url( 'nova-bridge/v1' . self::ROUTE ) ),
             'nonce' => wp_create_nonce( 'wp_rest' ),
+            'initialView' => 'workspace' === ( $_GET['view'] ?? '' ) ? 'workspace' : 'setup',
+            'newSetup' => '1' === ( $_GET['new'] ?? '' ),
+            'profileId' => is_string( $_GET['profile_id'] ?? null ) && Nova_Bridge_Suite_Content_Rules::uuid( $_GET['profile_id'] ) ? $_GET['profile_id'] : '',
+            'layoutsUrl' => admin_url( 'options-general.php?page=nova-settings&tab=layouts' ),
+            'connectionUrl' => admin_url( 'options-general.php?page=nova-settings&tab=nova-connection' ),
         ] );
     }
 
     public static function render(): void {
         if ( ! current_user_can( 'manage_options' ) ) { return; }
-        echo '<div id="nova-content-rules-app" class="ncr"><p role="status">Loading local content profiles…</p></div>';
+        echo '<div id="nova-content-rules-app" class="ncr"><p role="status">Loading saved layout rules…</p></div>';
     }
 
     public static function routes(): void {
@@ -124,7 +129,31 @@ final class Nova_Bridge_Suite_Content_Rules_Admin {
         $fragment = (string) ( $result['preview_html'] ?? '' );
         // HTML comes only from the server renderer. The iframe has no script or same-origin privilege.
         $document = '<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src https:; style-src \'unsafe-inline\'; base-uri \'none\'; form-action \'none\'"><style>body{font:16px/1.65 system-ui,sans-serif;color:#202b3c;background:#fff;margin:0;padding:28px}main{max-width:760px;margin:auto}h1,h2,h3,h4,h5,h6{line-height:1.3;margin:1.4em 0 .6em}p{margin:0 0 1em}img{max-width:100%;height:auto}ul,ol{padding-left:1.5em}details{border:1px solid #dbe2ea;border-radius:8px;padding:12px;margin:8px 0}summary{font-weight:600;cursor:pointer}section{margin-bottom:1.5em}a{color:#315ab0}</style></head><body><main>' . wp_kses_post( $fragment ) . '</main></body></html>';
-        return self::response( [ 'preview_document' => $document, 'blocks' => $result['blocks'] ?? [], 'warnings' => $result['warnings'] ?? [], 'renderer_version' => $result['renderer_version'] ?? '' ] );
+        return self::response( [ 'preview_document' => $document, 'blocks' => $result['blocks'] ?? [], 'element_summary' => self::element_summary( $result['elements'] ?? [] ), 'warnings' => $result['warnings'] ?? [], 'renderer_version' => $result['renderer_version'] ?? '' ] );
+    }
+
+    /** Count the actual renderer output, including a single Accordion containing many FAQ items. */
+    public static function element_summary( array $elements ): array {
+        $labels = [ 'heading' => 'Elementor Heading widget', 'text-editor' => 'Elementor Text Editor widget', 'image' => 'Elementor Image widget', 'accordion' => 'Elementor Accordion widget' ];
+        $summary = [ 'total_elements' => 0, 'containers' => 0, 'widget_count' => 0, 'widgets' => [] ];
+        $counts = [];
+        $pending = $elements;
+        while ( $pending && $summary['total_elements'] < 2000 ) {
+            $element = array_pop( $pending );
+            if ( ! is_array( $element ) ) { continue; }
+            ++$summary['total_elements'];
+            if ( 'container' === ( $element['elType'] ?? '' ) ) { ++$summary['containers']; }
+            if ( 'widget' === ( $element['elType'] ?? '' ) ) {
+                $type = (string) ( $element['widgetType'] ?? '' );
+                ++$summary['widget_count'];
+                $counts[ $type ] = ( $counts[ $type ] ?? 0 ) + 1;
+            }
+            foreach ( (array) ( $element['elements'] ?? [] ) as $child ) { $pending[] = $child; }
+        }
+        foreach ( $labels as $type => $label ) {
+            if ( isset( $counts[ $type ] ) ) { $summary['widgets'][] = [ 'type' => $type, 'label' => $label, 'count' => $counts[ $type ] ]; }
+        }
+        return $summary;
     }
 
     public static function create_draft( $request ) {

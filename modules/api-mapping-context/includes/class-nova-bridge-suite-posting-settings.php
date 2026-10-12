@@ -87,21 +87,21 @@ final class Nova_Bridge_Suite_Posting_Settings {
     public static function render(): void {
         if ( ! current_user_can( 'manage_options' ) ) { return; }
         $settings = self::connection();
-        echo '<details class="nova-mapping-advanced"><summary>NOVA posting service</summary><p>Connect this WordPress site using its NOVA plugin token. The token and webhook signing secret are issued through NOVA site administration.</p>';
+        echo '<details class="nova-mapping-advanced nova-connection-form" open><summary>Connection details</summary><p>Use the connection details issued for this website in NOVA site administration. This shared connection is separate from either layout approach.</p>';
         settings_errors( self::OPTION );
         echo '<form method="post" action="options.php">';
         settings_fields( self::GROUP );
-        foreach ( [ 'base_url' => 'Service base URL', 'site_id' => 'Publishing site UUID', 'token' => 'Plugin token', 'webhook_secret' => 'Webhook signing secret' ] as $key => $label ) {
+        foreach ( [ 'base_url' => 'NOVA service URL', 'site_id' => 'Website identifier (UUID)', 'token' => 'Website access token', 'webhook_secret' => 'Notification signing secret' ] as $key => $label ) {
             $secret = in_array( $key, [ 'token', 'webhook_secret' ], true );
             echo '<p><label for="nova-posting-' . esc_attr( $key ) . '">' . esc_html( $label ) . '</label><br><input class="regular-text" id="nova-posting-' . esc_attr( $key ) . '" name="' . esc_attr( self::OPTION . '[' . $key . ']' ) . '" type="' . ( $secret ? 'password' : 'text' ) . '" value="' . ( $secret ? '' : esc_attr( (string) $settings[ $key ] ) ) . '" autocomplete="' . ( $secret ? 'new-password' : 'off' ) . '">';
             if ( $secret ) { echo '<br><span class="description">' . ( ! empty( $settings[ $key ] ) ? 'A credential is configured. Leave blank to keep it.' : 'No credential configured.' ) . '</span>'; }
             echo '</p>';
         }
-        echo '<p><label><input type="checkbox" name="' . esc_attr( self::OPTION ) . '[enabled]" value="1" ' . checked( $settings['enabled'], true, false ) . '> Enable this service connection</label></p>';
-        echo '<p><label><input type="checkbox" name="' . esc_attr( self::OPTION ) . '[paused]" value="1" ' . checked( $settings['paused'], true, false ) . '> Pause new content mutations; continue recovery and result delivery</label></p>';
-        echo '<p>Confirm service compatibility with NOVA before unpausing, then verify a controlled test delivery.</p>';
+        echo '<p><label><input type="checkbox" name="' . esc_attr( self::OPTION ) . '[enabled]" value="1" ' . checked( $settings['enabled'], true, false ) . '> Enable compatible content delivery</label><br><span class="description">Enables retrieval and verified page changes using a compatible setup. Saving layout rules alone does not enable delivery.</span></p>';
+        echo '<p><label><input type="checkbox" name="' . esc_attr( self::OPTION ) . '[paused]" value="1" ' . checked( $settings['paused'], true, false ) . '> Pause new page changes</label><br><span class="description">Recovery and delivery receipts can continue while paused. Turn the connection off to stop requests.</span></p>';
+        echo '<p>Confirm service compatibility with NOVA before allowing page changes, then verify a controlled test delivery.</p>';
         echo '<p>Publishing uses the WordPress permissions of the administrator saving these settings. Changing the service or site pauses new mutations until you resume them.</p>';
         submit_button( 'Save NOVA connection' );
-        echo '</form><p>Ready notification URL: <code>' . esc_html( rest_url( 'nova-bridge/v1/posting/ready' ) ) . '</code></p><div id="nova-posting-status"></div></details>';
+        echo '</form></details><details class="nova-mapping-advanced"><summary>Delivery status and technical details</summary><p>Ready notification URL: <code>' . esc_html( rest_url( 'nova-bridge/v1/posting/ready' ) ) . '</code></p><div id="nova-posting-status"></div></details>';
     }
 }

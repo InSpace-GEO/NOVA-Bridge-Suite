@@ -77,42 +77,89 @@ class Element {
  click(){return this.events.click?.({preventDefault(){}});}
  all(){return [this,...this.children.flatMap(child=>child.all())];}
 }
-async function editorFixture(saved=null){
+async function editorFixture(saved=null,options={},externalChrome=false){
  const document={createElement:tag=>new Element(tag,document)},host=new Element('div',document),calls=[],responses=[];
+ const chrome=externalChrome?new Element('div',document):null;if(chrome){const sibling=new Element('p',document);sibling.textContent='Independent sibling';chrome.appendChild(sibling);}
  global.fetch=async(url,options)=>{calls.push({url,options});if(responses.length){const response=responses.shift();return {ok:true,status:200,json:async()=>response};}return {ok:true,status:200,json:async()=>({draft:saved,reference:{signature:layout.signature},warnings:[]})};};
- const controller=drafts.mount(host,{...layout,fields:[{path:'/title',label:'Hero title',type:'text',writable:true},{path:'/form',label:'Form',type:'object',writable:false}]},{mappingUrl:'/mapping',nonce:'test-nonce',postingIntegration:true});await controller.ready;
- return {host,calls,responses,controller,button:label=>host.all().find(item=>item.tag==='button'&&item.ownText===label),control:label=>host.all().find(item=>item.tag==='label'&&item.ownText===label)?.parentNode.children.find(item=>['input','select','textarea'].includes(item.tag))};
+ const controller=drafts.mount(host,{...layout,fields:[{path:'/title',label:'Hero title',type:'text',writable:true},{path:'/form',label:'Form',type:'object',writable:false}]},{mappingUrl:'/mapping',nonce:'test-nonce',postingIntegration:true,...options},{},{chromeHost:chrome});await controller.ready;
+ return {host,chrome,calls,responses,controller,button:label=>host.all().find(item=>item.tag==='button'&&item.ownText===label),control:label=>host.all().find(item=>item.tag==='label'&&item.ownText===label)?.parentNode.children.find(item=>['input','select','textarea'].includes(item.tag))};
 }
 test('new destination editor operates offline, creates rules and groups, saves and never attempts backend sync',async()=>{
  const originalFetch=global.fetch;let view;
  try{
-  view=await editorFixture();assert.equal(view.calls.length,1);assert(view.calls[0].url.startsWith('/mapping/draft?'));assert(!view.control('Delivery field catalog'));assert(!view.control('NOVA source'));assert(view.button('Backend synchronization unavailable').disabled);
+  view=await editorFixture();assert.equal(view.calls.length,1);assert(view.calls[0].url.startsWith('/mapping/draft?'));assert(!view.control('Delivery field catalog'));assert(!view.control('NOVA source'));assert(view.host.textContent.includes('Local preparation for handover')&&!view.button('Synchronize publishing template'));
   const mode=view.control('Field behavior');mode.value='adapt';mode.events.change();assert.equal(view.controller.getDraft().fields['/title'].description.label,'Hero title');assert(!view.control('NOVA source'));assert(!view.control('Minimum list items'));
   const maximum=view.control('Maximum characters');maximum.value='40';maximum.events.input();assert.equal(view.controller.getDraft().fields['/title'].description.constraints.max_length,40);
   view.button('Describe a fixed existing group').click();const chosen=view.control('Add a field to this existing slot');chosen.value='/title';chosen.events.change();const first=view.controller.getDraft().destination_groups[0].slots[0];assert.deepEqual(first.fields,['/title']);
   const type=view.control('What this field can hold');type.value='list';type.events.change();assert.equal(view.controller.getDraft().fields['/title'].description.value_type,'text');assert(view.host.textContent.includes('Unassign this field'));
   view.button('Unassign field').click();type.value='list';type.events.change();assert(!view.control('Maximum characters'));assert(view.control('Minimum list items'));assert.deepEqual(view.controller.getDraft().fields['/title'].description.constraints,{});
-  const current=view.controller.getDraft();current.revision='saved-destination';current.destination_groups=[];view.responses.push({draft:current,warnings:[]});await view.button('Save local draft').click();const request=view.calls[1];assert.equal(request.options.method,'POST');const sent=JSON.parse(request.options.body);assert.equal(sent.catalog_mode,'destination');assert.equal(sent.fields['/title'].mode,'adapt');assert.equal(sent.fields['/title'].source_path,'');assert.equal(view.calls.length,2);assert(view.host.textContent.includes('Destination preparation saved locally'));
+  const current=view.controller.getDraft();current.revision='saved-destination';current.destination_groups=[];view.responses.push({draft:current,warnings:[]});await view.button('Save setup').click();const request=view.calls[1];assert.equal(request.options.method,'POST');const sent=JSON.parse(request.options.body);assert.equal(sent.catalog_mode,'destination');assert.equal(sent.fields['/title'].mode,'adapt');assert.equal(sent.fields['/title'].source_path,'');assert.equal(view.calls.length,2);assert(view.host.textContent.includes('Setup saved on this site'));
  }finally{view?.controller.destroy();global.fetch=originalFetch;}
 });
 test('backend description export rejects a changed saved revision before downloading',async()=>{
  const originalFetch=global.fetch;let view;
  try{
   const saved=drafts.initialDraft(layout);saved.revision='reviewed-revision';saved.fields['/title']=drafts.adaptField({path:'/title',label:'Title'});view=await editorFixture(saved);
-  view.responses.push({draft:{...saved,revision:'someone-elses-revision'},backend_description:{status:'prepared_local',description:{fields:[]}}});await view.button('Export backend description').click();assert.equal(view.calls.length,2);assert.equal(view.calls[1].options.method,'GET');assert(view.host.textContent.includes('The saved draft changed'));
+  view.responses.push({draft:{...saved,revision:'someone-elses-revision'},backend_description:{status:'prepared_local',description:{fields:[]}}});await view.button('Export handover').click();assert.equal(view.calls.length,2);assert.equal(view.calls[1].options.method,'GET');assert(view.host.textContent.includes('The saved draft changed'));
  }finally{view?.controller.destroy();global.fetch=originalFetch;}
 });
 test('legacy editor switches to the destination sentinel without silently converting bindings',async()=>{
  const originalFetch=global.fetch;let view;
  try{
-  const saved=fixture();saved.revision='legacy-revision';saved.catalog_snapshot={...template,...saved.template,authoring_notes:'One relevant label'};view=await editorFixture(saved);view.button('Prepare destination descriptions instead').click();const migrated=view.controller.getDraft();assert.deepEqual(migrated.template,{id:'local-destination',revision:'1'});assert.equal(migrated.catalog_mode,'destination');assert.deepEqual(migrated.fields,saved.fields);assert.deepEqual(migrated.repeat_slots,saved.repeat_slots);assert.equal(migrated.guidance,'One relevant label');assert(!view.control('Delivery field catalog'));assert(!view.control('NOVA source'));assert(view.button('Remove retained legacy repeat bindings after review'));assert(view.button('Backend synchronization unavailable').disabled);
+  const saved=fixture();saved.revision='legacy-revision';saved.catalog_snapshot={...template,...saved.template,authoring_notes:'One relevant label'};view=await editorFixture(saved);view.button('Prepare destination descriptions instead').click();const migrated=view.controller.getDraft();assert.deepEqual(migrated.template,{id:'local-destination',revision:'1'});assert.equal(migrated.catalog_mode,'destination');assert.deepEqual(migrated.fields,saved.fields);assert.deepEqual(migrated.repeat_slots,saved.repeat_slots);assert.equal(migrated.guidance,'One relevant label');assert(!view.control('Delivery field catalog'));assert(!view.control('NOVA source'));assert(view.button('Remove retained legacy repeat bindings after review'));assert(view.host.textContent.includes('Local preparation for handover')&&!view.button('Synchronize publishing template'));
  }finally{view?.controller.destroy();global.fetch=originalFetch;}
 });
 test('backend description export downloads the saved proposal and refuses unsaved edits',async()=>{
  const originalFetch=global.fetch,originalObjectURL=URL.createObjectURL;let view,exported;
  try{
   URL.createObjectURL=blob=>{exported=blob;return 'blob:local-test';};const saved=drafts.initialDraft(layout);saved.revision='reviewed-revision';saved.fields['/title']=drafts.adaptField({path:'/title',label:'Title'});view=await editorFixture(saved);
-  const proposal={status:'prepared_local',local_revision:saved.revision,sha256:'a'.repeat(64),description:{format:'nova-template-description/v1',fields:[{id:'field_title',label:'Title',value_type:'text'}]}};view.responses.push({draft:saved,backend_description:proposal});await view.button('Export backend description').click();assert.deepEqual(JSON.parse(await exported.text()),proposal);assert(view.host.textContent.includes('local preparation'));
-  const label=view.control('Destination label');label.value='Changed title';label.events.input();await view.button('Export backend description').click();assert.equal(view.calls.length,2);assert(view.host.textContent.includes('Save and review this destination draft'));
+  const proposal={status:'prepared_local',local_revision:saved.revision,sha256:'a'.repeat(64),description:{format:'nova-template-description/v1',fields:[{id:'field_title',label:'Title',value_type:'text'}]}};view.responses.push({draft:saved,backend_description:proposal});await view.button('Export handover').click();assert.deepEqual(JSON.parse(await exported.text()),proposal);assert(view.host.textContent.includes('local preparation'));
+  const label=view.control('Destination label');label.value='Changed title';label.events.input();await view.button('Export handover').click();assert.equal(view.calls.length,2);assert(view.host.textContent.includes('Save and review this destination draft'));
  }finally{view?.controller.destroy();global.fetch=originalFetch;URL.createObjectURL=originalObjectURL;}
+});
+
+test('guided existing-layout setup preserves edits across review, saves before completion and opens a workspace',async()=>{
+ const originalFetch=global.fetch;let view;
+ try{
+  view=await editorFixture(null,{view:'setup'});const stage=name=>view.host.all().find(item=>item.className?.split(' ').includes(name));
+  assert.equal(stage('nmd-choose').hidden,false);assert.equal(stage('nmd-stage-fields').hidden,true);assert.equal(view.button('Save setup').hidden,true);assert.equal(view.button('4. Save & hand over').disabled,true);
+  view.button('4. Save & hand over').click();assert.equal(stage('nmd-complete').hidden,true,'Unsaved preparation cannot skip to completion');
+  view.button('Use this reference').click();assert.equal(stage('nmd-stage-fields').hidden,false);
+  const mode=view.control('Field behavior');mode.value='adapt';mode.events.change();const label=view.control('Destination label');label.value='Prepared hero heading';label.events.input();
+  const before=view.controller.getDraft();view.button('Review setup').click();assert.equal(stage('nmd-stage-review').hidden,false);assert.equal(stage('nmd-stage-fields').hidden,true);assert(view.host.textContent.includes('Saving records your field descriptions for handover'));
+  view.button('Back to fields').click();assert.deepEqual(view.controller.getDraft(),before);assert.equal(view.control('Destination label').value,'Prepared hero heading');assert.equal(view.calls.length,1,'Moving between steps performs no save or synchronization');
+  view.button('Review setup').click();const saved=view.controller.getDraft();saved.revision='saved-setup';view.responses.push({draft:saved,warnings:[]});await view.button('Save setup').click();
+  assert.equal(stage('nmd-complete').hidden,false);assert.equal(view.controller.getDraft().revision,'saved-setup');assert.equal(view.calls.length,2);assert.equal(view.calls[1].url,'/mapping/draft');
+  view.button('Open saved setup').click();assert.equal(stage('nmd-stage-fields').hidden,false);assert.equal(stage('nmd-stage-review').hidden,false);assert.equal(view.button('Save changes').hidden,false);assert.equal(view.button('Use this reference').hidden,true);assert.equal(view.calls.length,2,'Opening a saved workspace is a presentation transition only');
+ }finally{view?.controller.destroy();global.fetch=originalFetch;}
+});
+
+test('explicit saved workspace and setup links keep distinct journeys; reference clicks open fields without changing draft',async()=>{
+ const originalFetch=global.fetch;let view;
+ try{
+  const saved=drafts.initialDraft(layout);saved.revision='local-revision';saved.fields['/title']=drafts.adaptField({path:'/title',label:'Keep this description'});
+  view=await editorFixture(saved,{view:'workspace'});assert(view.button('Save changes'));assert(!view.button('1. Choose reference'));assert.equal(view.host.all().find(item=>item.className?.split(' ').includes('nmd-delivery-advanced')).hidden,false);
+  view.controller.destroy();view=await editorFixture(saved,{view:'setup'});assert(view.button('1. Choose reference'));assert.equal(view.host.all().find(item=>item.className?.split(' ').includes('nmd-choose')).hidden,false);
+  const before=view.controller.getDraft();view.controller.selectField('/title');assert.equal(view.host.all().find(item=>item.className?.split(' ').includes('nmd-stage-fields')).hidden,false);assert.deepEqual(view.controller.getDraft(),before);
+ }finally{view?.controller.destroy();global.fetch=originalFetch;}
+});
+
+test('setup status separates local preparation, remote synchronization and exact writer approval',()=>{
+ const prepared=drafts.initialDraft(layout);prepared.revision='one';assert.equal(drafts.setupState(prepared,{status:'active',local_revision:'one'},false).label,'Saved locally');
+ const connected={...prepared,catalog_mode:'nova'};assert.equal(drafts.setupState(connected,{status:'synced_draft',local_revision:'one'},false).label,'Template synchronized');assert.equal(drafts.setupState(connected,{status:'active',local_revision:'one'},false).label,'Writer approved');
+ assert.equal(drafts.setupState(connected,{status:'active',local_revision:'other'},false).label,'Saved locally');assert.equal(drafts.setupState(connected,{status:'active',local_revision:'one'},true).label,'Unsaved changes');
+ const before=structuredClone(prepared);prepared.fields={'/title':{mode:'adapt'},'/form':{mode:'protected'},'/empty':{mode:'leave_empty'}};prepared.routing.operation='clone';
+ assert.deepEqual(drafts.impactSummary(prepared,[{path:'/title'},{path:'/form'},{path:'/empty'},{path:'/other'}]),{described:1,delivered:0,preserved:1,omitted:1,unconfigured:1,operation:'clone',preparation:true});assert.equal(prepared.revision,before.revision,'Impact review does not change stored configuration');
+});
+
+test('full-width external guide chrome has one stepper and preserves the inspector draft across navigation and save',async()=>{
+ const originalFetch=global.fetch;let view;
+ try{
+  view=await editorFixture(null,{view:'setup'},true);const chromeButton=label=>view.chrome.all().find(item=>item.tag==='button'&&item.ownText===label),steppers=()=>view.chrome.all().filter(item=>item.className==='nmd-steps');
+  assert.equal(steppers().length,1);assert.equal(view.host.all().filter(item=>item.className==='nmd-steps').length,0,'The inspector does not duplicate the relocated navigation');assert(view.chrome.textContent.includes('Set up this existing layout'));
+  chromeButton('2. Describe fields').click();const mode=view.control('Field behavior');mode.value='adapt';mode.events.change();const label=view.control('Destination label');label.value='External chrome edit';label.events.input();const before=view.controller.getDraft();assert(view.chrome.textContent.includes('Unsaved changes'));
+  chromeButton('3. Review setup').click();chromeButton('2. Describe fields').click();assert.deepEqual(view.controller.getDraft(),before);assert.equal(view.control('Destination label').value,'External chrome edit');assert.equal(steppers().length,1);assert.equal(view.calls.length,1);
+  chromeButton('3. Review setup').click();const saved=view.controller.getDraft();saved.revision='external-chrome-saved';view.responses.push({draft:saved,warnings:[]});await view.button('Save setup').click();assert.equal(steppers().length,1);assert(view.chrome.textContent.includes('Saved locally'));assert.equal(view.controller.getDraft().fields['/title'].description.label,'External chrome edit');
+  view.button('Open saved setup').click();assert.equal(steppers().length,0,'Saved workspace keeps the header and omits onboarding navigation');assert(view.chrome.textContent.includes('Saved locally'));view.controller.destroy();assert.equal(view.chrome.textContent,'Independent sibling','Destroy removes only this mount’s chrome');
+ }finally{view?.controller.destroy();global.fetch=originalFetch;}
 });
