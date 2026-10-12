@@ -29,6 +29,7 @@ body.nova-service-v2-page .content-area:has(#nova-service-primary) {
 	--nova-service-gutter: clamp(1.25rem, 3vw, 2.5rem);
 	--nova-service-image-max-height: 420px;
 	--nova-service-hero-image-max-height: 440px;
+	--nova-service-video-max-height: 480px;
 	display: block;
 	width: 100%;
 	max-width: none;
@@ -335,6 +336,9 @@ body.nova-service-v2-page .content-area:has(#nova-service-primary) {
 #nova-service-v2 .nova-service__gallery--hero .nova-service__figure .nova-service__image:where(:not(.nova-service__embed *)) { aspect-ratio: 5 / 4; max-height: var(--nova-service-hero-image-max-height); max-height: min(var(--nova-service-hero-image-max-height), 55svh); }
 /* Single photos, including a hero, retain their complete natural proportions. */
 #nova-service-v2 .nova-service__gallery--single .nova-service__figure .nova-service__image:where(:not(.nova-service__embed *)) { width: auto; height: auto; aspect-ratio: auto; object-fit: contain; object-position: left center; }
+/* Team and location photographs keep the full scene, including portrait images. */
+#nova-service-v2 :is(.nova-service__section--people, .nova-service__section--location) .nova-service__gallery--multiple { max-width: 960px; }
+#nova-service-v2 :is(.nova-service__section--people, .nova-service__section--location) .nova-service__gallery .nova-service__figure .nova-service__image:where(:not(.nova-service__embed *)) { width: auto; height: auto; aspect-ratio: auto; object-fit: contain; object-position: left center; }
 #nova-service-v2 .nova-service__figure figcaption { padding-top: .65rem; font-size: .875rem; line-height: 1.6; }
 
 #nova-service-v2 .nova-service__cards {
@@ -639,8 +643,8 @@ body.nova-service-v2-page .content-area:has(#nova-service-primary) {
 #nova-service-v2 .nova-service__map { width: 100%; margin-top: 1.75rem; overflow: hidden; border: 1px solid var(--nova-service-line); border-radius: var(--nova-service-radius); }
 #nova-service-v2 .nova-service__map iframe { display: block; width: 100%; height: clamp(300px, 42vw, 480px); border: 0; }
 #nova-service-v2 .nova-service__review-widget iframe { height: clamp(300px, 32vw, 360px); }
-#nova-service-v2 .nova-service__video { width: 100%; margin-top: 1.75rem; overflow: hidden; border: 1px solid var(--nova-service-line); border-radius: var(--nova-service-radius); background: #111; }
-#nova-service-v2 .nova-service__video :where(iframe, video) { display: block; width: 100%; max-width: 100%; height: auto; aspect-ratio: 16 / 9; border: 0; }
+#nova-service-v2 .nova-service__video { width: 100%; max-width: min(960px, calc(var(--nova-service-video-max-height) * 16 / 9), calc(55svh * 16 / 9)); margin-top: 1.75rem; overflow: hidden; border: 1px solid var(--nova-service-line); border-radius: var(--nova-service-radius); background: #111; }
+#nova-service-v2 .nova-service__video > :is(iframe, video) { display: block; width: 100%; max-width: 100%; min-width: 0; height: auto; min-height: 0; max-height: none; aspect-ratio: 16 / 9; object-fit: contain; border: 0; }
 #nova-service-v2 .nova-service__section--video.nova-service__layout--compact .nova-service__container { max-width: min(var(--nova-service-content-width, 1200px), 900px); }
 #nova-service-v2 .nova-service__address { margin: 1.25rem 0 .8rem; font-size: 1rem; font-style: normal; line-height: 1.6; }
 
