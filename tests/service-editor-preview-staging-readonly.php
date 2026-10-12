@@ -14,7 +14,7 @@ $snapshot = static function () {
         $state['posts'][$post->ID] = hash( 'sha256', serialize( [ $post, $meta ] ) );
     }
     ksort( $state['posts'] );
-    foreach ( [ Shared::OPTION_PRESETS, Shared::OPTION_TEMPLATE, 'nova_bridge_settings' ] as $key ) { $state['options'][$key] = serialize( get_option( $key ) ); }
+    foreach ( [ Shared::OPTION_PRESETS, Shared::OPTION_TEMPLATE, 'nova_bridge_settings', 'elementor_active_kit', 'elementor_google_font', 'elementor_local_google_fonts', '_elementor_local_google_fonts' ] as $key ) { $state['options'][$key] = serialize( get_option( $key ) ); }
     return $state;
 };
 $request = static function ( $payload ) {
@@ -22,6 +22,37 @@ $request = static function ( $payload ) {
     $r->set_body_params( $payload ); return rest_do_request( $r );
 };
 $before = $snapshot();
+$elementor_frontend = class_exists( '\\Elementor\\Plugin' ) ? \Elementor\Plugin::$instance->frontend : null;
+$font_state = static function ( $frontend ) {
+    $state = [];
+    if ( ! $frontend ) { return $state; }
+    foreach ( [ 'fonts_to_enqueue', 'registered_fonts', 'icon_fonts_to_enqueue', 'enqueued_icon_fonts' ] as $name ) {
+        if ( ! property_exists( $frontend, $name ) ) { continue; }
+        $property = new ReflectionProperty( $frontend, $name );
+        $state[$name] = $property->getValue( $frontend );
+    }
+    return $state;
+};
+$font_state_before = $font_state( $elementor_frontend );
+$font_option_filters = static function () { return isset( $GLOBALS['wp_filter']['pre_option_elementor_local_google_fonts'] ) ? $GLOBALS['wp_filter']['pre_option_elementor_local_google_fonts']->callbacks : []; };
+$font_option_filters_before = $font_option_filters();
+$expected_fonts = [];
+if ( $elementor_frontend && class_exists( '\\Elementor\\Fonts' ) && \Elementor\Fonts::is_google_fonts_enabled() ) {
+    $kit_id = (int) get_option( 'elementor_active_kit', 0 );
+    // Independently use the active CSS metadata that the site's normal font
+    // pipeline saves, instead of asserting a hardcoded family or copied collector.
+    $kit_css = get_post_meta( $kit_id, '_elementor_css', true );
+    foreach ( (array) ( $kit_css['fonts'] ?? [] ) as $family ) {
+        if ( in_array( \Elementor\Fonts::get_font_type( $family ), [ \Elementor\Fonts::GOOGLE, \Elementor\Fonts::EARLYACCESS ], true ) ) { $expected_fonts[] = $family; }
+    }
+    $assert( ! empty( $expected_fonts ), 'The installed Elementor kit supplies real configured Google font families for preview checks' );
+}
+$assert_site_fonts = static function ( string $html, string $context ) use ( &$assert, $expected_fonts ) {
+    foreach ( array_unique( $expected_fonts ) as $family ) {
+        $handle = sanitize_key( $family );
+        $assert( false !== strpos( $html, 'id="elementor-gf-' . $handle . '-css"' ) || false !== strpos( $html, 'id="elementor-gf-local-' . $handle . '-css"' ), $context . ' includes the configured font stylesheet for ' . $family );
+    }
+};
 $page = Document::get_document( 5618 );
 wp_set_current_user( 0 );
 $response = $request( [ 'mode' => 'page', 'post_id' => 5618, 'document' => $page ] );
@@ -44,6 +75,7 @@ try {
     $assert( false !== strpos( $html, 'Unsaved service title' ), 'Unsaved WordPress title participates in the preview' );
     $assert( false !== strpos( $html, 'service-frontend-v2.css' ), 'Preview loads the actual Service frontend stylesheet' );
     $assert( false !== strpos( $html, 'hello-elementor' ) || false !== strpos( $html, 'elementor' ), 'Preview includes site theme or brand styles' );
+    $assert_site_fonts( $html, 'Unsaved page preview' );
     $assert( ! preg_match( '/<script\b/i', $html ), 'Preview never executes page or third-party scripts' );
     $assert( false === strpos( $html, 'action="https://example.org/submit"' ) && false === strpos( $html, 'href="https://example.org/side-effect"' ), 'Preview removes submission and navigation actions' );
     $assert( 0 === $GLOBALS['nova_editor_sideeffects'], 'Preview does not execute a custom shortcode' );
@@ -57,6 +89,12 @@ $assert( 200 === $response->get_status() && false !== strpos( $response->get_dat
 $assert( $before === $snapshot(), 'Shared preview leaves saved client defaults and page documents unchanged' );
 $sample = $request( [ 'mode' => 'library', 'post_id' => 0, 'document' => Shared::get_presets() ] );
 $assert( 200 === $sample->get_status() && false !== strpos( $sample->get_data()['html'] ?? '', 'id="nova-service-v2"' ), 'Client defaults can preview without creating a service post' );
+$assert_site_fonts( $sample->get_data()['html'] ?? '', 'Zero-post shared preview' );
+$sample_layout = $request( [ 'mode' => 'template', 'post_id' => 0, 'document' => Shared::get_template() ?: Document::default_document(), 'title' => 'Unsaved onboarding font preview' ] );
+$assert( 200 === $sample_layout->get_status(), 'Onboarding can preview its layout without a saved service target' );
+$assert_site_fonts( $sample_layout->get_data()['html'] ?? '', 'Zero-post onboarding preview' );
+$assert( $font_option_filters_before === $font_option_filters() && $before['options']['elementor_local_google_fonts'] === serialize( get_option( 'elementor_local_google_fonts' ) ), 'Font preview removes only its temporary local-download override without changing the saved font setting' );
+$assert( ! $elementor_frontend || ( \Elementor\Plugin::$instance->frontend === $elementor_frontend && $font_state_before === $font_state( $elementor_frontend ) ), 'Preview leaves the original Elementor frontend identity and font queues unchanged' );
 $assert( $before === $snapshot(), 'A sample preview creates no post and changes no settings' );
 $template = Shared::get_template();
 if ( count( $template['sections'] ) > 1 ) { $last = array_pop( $template['sections'] ); array_unshift( $template['sections'], $last ); }

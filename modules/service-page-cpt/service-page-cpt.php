@@ -10,6 +10,7 @@ defined( 'ABSPATH' ) || exit;
 require_once __DIR__ . '/includes/class-service-document.php';
 require_once __DIR__ . '/includes/class-service-review-importer.php';
 require_once __DIR__ . '/includes/class-service-shared.php';
+require_once __DIR__ . '/includes/class-service-onboarding.php';
 require_once __DIR__ . '/includes/class-service-editor.php';
 require_once __DIR__ . '/includes/class-service-shared-admin.php';
 require_once __DIR__ . '/includes/class-service-renderer.php';
@@ -275,6 +276,7 @@ final class Plugin {
 	}
 
 	private function __construct() {
+		ServiceOnboarding::bootstrap();
 		ServiceDocument::bootstrap();
 		ServiceReviewImporter::bootstrap();
 		ServiceShared::bootstrap();

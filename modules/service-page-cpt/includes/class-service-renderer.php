@@ -842,9 +842,19 @@ final class ServiceRenderer {
 	private static function brand_tokens(): string {
 		$tokens = [];
 		$colors = [];
+		$factory = [];
+		if ( \class_exists( ServiceOnboarding::class ) ) {
+			$active = ServiceOnboarding::active_settings();
+			$inherit = $active ? 'inherit_site' === ( $active['brand']['mode'] ?? '' ) : ServiceOnboarding::is_required();
+			if ( $inherit ) { $factory = ServiceOnboarding::factory_settings(); }
+		}
 		$keys   = [ 'primary', 'contrast', 'surface', 'text', 'accent', 'border', 'hero_bg', 'hero_text', 'cta_bg', 'cta_text', 'button_bg', 'button_text', 'button_outline', 'faq_bg', 'faq_question', 'faq_answer' ];
 		foreach ( $keys as $key ) {
-			$value = \sanitize_hex_color( (string) \get_option( 'service_cpt_color_' . $key, '' ) );
+			$option = 'service_cpt_color_' . $key;
+			$value = \sanitize_hex_color( (string) \get_option( $option, '' ) );
+			// Activation's old palette is not a deliberate client override. Fresh
+			// setup follows theme tokens while retaining later custom color values.
+			if ( $value && isset( $factory[ $option ] ) && 0 === \strcasecmp( $value, $factory[ $option ] ) ) { continue; }
 			if ( $value ) {
 				$colors[ $key ] = $value;
 			}

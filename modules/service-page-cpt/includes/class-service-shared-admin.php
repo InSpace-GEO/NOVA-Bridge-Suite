@@ -20,7 +20,8 @@ final class ServiceSharedAdmin {
 	}
 
 	private static function mode(): string {
-		return isset( $_GET['tab'] ) && \is_scalar( $_GET['tab'] ) && \in_array( (string) $_GET['tab'], [ 'template', 'legacy' ], true ) ? (string) $_GET['tab'] : 'library';
+		if ( \class_exists( __NAMESPACE__ . '\\ServiceOnboarding' ) && ServiceOnboarding::is_required() ) { return 'setup'; }
+		return isset( $_GET['tab'] ) && \is_scalar( $_GET['tab'] ) && \in_array( (string) $_GET['tab'], [ 'template', 'legacy', 'setup' ], true ) ? (string) $_GET['tab'] : 'library';
 	}
 
 	private static function preview_post_id( array $request ): int {
@@ -28,7 +29,7 @@ final class ServiceSharedAdmin {
 	}
 
 	public static function settings_url( string $mode = 'library', int $preview_post_id = 0 ): string {
-		$args = [ 'post_type' => 'service_page', 'page' => self::PAGE, 'tab' => \in_array( $mode, [ 'library', 'template', 'legacy' ], true ) ? $mode : 'library' ];
+		$args = [ 'post_type' => 'service_page', 'page' => self::PAGE, 'tab' => \in_array( $mode, [ 'library', 'template', 'legacy', 'setup' ], true ) ? $mode : 'library' ];
 		$preview_post_id = $preview_post_id ?: self::preview_post_id( $_GET );
 		if ( $preview_post_id ) { $args['preview_post_id'] = $preview_post_id; }
 		return \add_query_arg( $args, \admin_url( 'edit.php' ) );
@@ -111,6 +112,7 @@ final class ServiceSharedAdmin {
 	public static function enqueue(): void {
 		if ( ! isset( $_GET['page'] ) || self::PAGE !== $_GET['page'] || ! \current_user_can( 'manage_options' ) ) { return; }
 		$mode = self::mode();
+		if ( 'setup' === $mode && \class_exists( __NAMESPACE__ . '\\ServiceOnboarding' ) ) { self::enqueue_setup_assets(); return; }
 		if ( 'legacy' === $mode ) { return; }
 		$presets = ServiceShared::get_presets();
 		$template = ServiceShared::get_template();
@@ -127,13 +129,37 @@ final class ServiceSharedAdmin {
 		], self::preview_context( $presets, $layout ) ) );
 	}
 
+	private static function enqueue_setup_assets(): void {
+		\wp_enqueue_media();
+		$directory = \dirname( __DIR__ ) . '/assets/';
+		$url = \plugins_url( 'assets/', \dirname( __DIR__ ) . '/service-page-cpt.php' );
+		\wp_enqueue_style( 'nova-service-onboarding', $url . 'service-onboarding.css', [], (string) \filemtime( $directory . 'service-onboarding.css' ) );
+		\wp_enqueue_script( 'nova-service-onboarding', $url . 'service-onboarding.js', [ 'media-views' ], (string) \filemtime( $directory . 'service-onboarding.js' ), true );
+		$config = ServiceOnboarding::config();
+		$config['demo'] = 'upgrade' === ( $config['state']['classification'] ?? '' ) || ( isset( $_GET['demo'] ) && \is_scalar( $_GET['demo'] ) && '1' === (string) $_GET['demo'] );
+		$config['previewUrl'] = \rest_url( 'nova-service/v1/editor-preview' );
+		$config['settingsUrl'] = self::settings_url( 'library' );
+		$config['createUrl'] = \admin_url( 'post-new.php?post_type=service_page' );
+		if ( \is_file( $directory . 'branding/inspace-wordmark.svg' ) ) { $config['logoUrl'] = $url . 'branding/inspace-wordmark.svg'; }
+		\wp_localize_script( 'nova-service-onboarding', 'novaServiceOnboarding', $config );
+	}
+
 	public static function render(): void {
 		if ( ! \current_user_can( 'manage_options' ) ) { return; }
 		$mode = self::mode();
+		$setup = \class_exists( __NAMESPACE__ . '\\ServiceOnboarding' );
+		$required = $setup && ServiceOnboarding::is_required();
+		$tabs = $required ? [ 'setup' => __( 'Setup', 'nova-bridge-suite' ) ] : [ 'library' => __( 'Customer defaults', 'nova-bridge-suite' ), 'template' => __( 'Default page layout', 'nova-bridge-suite' ), 'legacy' => __( 'Legacy settings', 'nova-bridge-suite' ) ];
+		if ( $setup && ! $required ) { $tabs['setup'] = __( 'Setup preview', 'nova-bridge-suite' ); }
 		?>
 		<div class="wrap nova-service-settings">
 			<h1><?php \esc_html_e( 'Service page settings', 'nova-bridge-suite' ); ?></h1>
-			<nav class="nav-tab-wrapper"><?php foreach ( [ 'library' => __( 'Client defaults', 'nova-bridge-suite' ), 'template' => __( 'Default page layout', 'nova-bridge-suite' ), 'legacy' => __( 'Legacy settings', 'nova-bridge-suite' ) ] as $tab => $label ) : ?><a class="nav-tab <?php echo $tab === $mode ? 'nav-tab-active' : ''; ?>" href="<?php echo \esc_url( self::settings_url( $tab ) ); ?>"><?php echo \esc_html( $label ); ?></a><?php endforeach; ?></nav>
+			<nav class="nav-tab-wrapper"><?php foreach ( $tabs as $tab => $label ) : ?><a class="nav-tab <?php echo $tab === $mode ? 'nav-tab-active' : ''; ?>" href="<?php echo \esc_url( self::settings_url( $tab ) ); ?>"><?php echo \esc_html( $label ); ?></a><?php endforeach; ?></nav>
+			<?php if ( 'setup' === $mode && $setup ) : ?>
+				<div id="nova-service-onboarding"><p><?php \esc_html_e( 'Preparing your service page setup…', 'nova-bridge-suite' ); ?></p></div>
+				<noscript><p><?php \esc_html_e( 'Enable JavaScript to complete the service page setup.', 'nova-bridge-suite' ); ?></p></noscript>
+			</div>
+			<?php return; endif; ?>
 			<?php if ( 'legacy' === $mode ) : ?>
 				<?php $plugin = Plugin::instance(); if ( $plugin ) { $plugin->render_settings_page( true ); } ?>
 			</div>
@@ -141,18 +167,18 @@ final class ServiceSharedAdmin {
 			<?php if ( isset( $_GET['saved'] ) ) : ?><div class="notice notice-success"><p><?php \esc_html_e( 'Service settings saved.', 'nova-bridge-suite' ); ?></p></div><?php endif; ?>
 			<?php $error = \get_transient( 'nova_service_shared_error_' . \get_current_user_id() ); if ( $error ) { \delete_transient( 'nova_service_shared_error_' . \get_current_user_id() ); echo '<div class="notice notice-error"><p>' . \esc_html( $error ) . '</p></div>'; } ?>
 			<?php if ( 'library' === $mode ) : ?>
-				<p><?php \esc_html_e( 'Configure the client content once: the first CTA, repeat CTAs, forms or calendars, awards and certifications, reviews, people, locations, maps and videos. The built-in page layout already links these defaults, so new service pages inherit them without selecting them again. Empty defaults add no content to the page.', 'nova-bridge-suite' ); ?></p>
+				<p><?php \esc_html_e( 'Configure the customer content once: the first CTA, repeat CTAs, forms or calendars, awards and certifications, reviews, people, locations, maps and videos. The built-in page layout already links these defaults, so new service pages inherit them without selecting them again. Empty defaults add no content to the page.', 'nova-bridge-suite' ); ?></p>
 				<p><?php \esc_html_e( 'Use the Default page layout tab to choose where these sections appear. You can also add reusable variations with unique shared keys. Individual service pages can override a field, select a different shared version, or hide a section when needed.', 'nova-bridge-suite' ); ?></p>
 				<p><strong><?php \esc_html_e( 'Changes to a shared section affect every native service page that references it. Local overrides stay unchanged. Removing a shared section hides references without local content until you restore it or choose another section.', 'nova-bridge-suite' ); ?></strong></p>
 			<?php else : ?>
-				<p><?php \esc_html_e( 'Arrange the starting layout for new service pages. Keep Rich text 1, 2 and 3 as flexible page content, and link calls to action, proof and media to Client defaults. Related services appear automatically when no specific links are selected. Move, hide or remove anything you do not need. Existing pages retain their saved content and order; linked client defaults continue to update.', 'nova-bridge-suite' ); ?></p>
+				<p><?php \esc_html_e( 'Arrange the starting layout for new service pages. Keep Rich text 1, 2 and 3 as flexible page content, and link calls to action, proof and media to Customer defaults. Related services appear automatically when no specific links are selected. Move, hide or remove anything you do not need. Existing pages retain their saved content and order; linked customer defaults continue to update.', 'nova-bridge-suite' ); ?></p>
 			<?php endif; ?>
 			<form id="nova-service-settings-form" method="post" action="<?php echo \esc_url( \admin_url( 'admin-post.php' ) ); ?>">
 				<input type="hidden" name="action" value="nova_service_save_shared"><input type="hidden" name="mode" value="<?php echo \esc_attr( $mode ); ?>">
 				<input type="hidden" name="preview_post_id" id="nova-service-preview-post-id" value="<?php echo \esc_attr( self::preview_post_id( $_GET ) ); ?>">
 				<?php \wp_nonce_field( 'nova_service_save_shared', '_nova_service_shared_nonce' ); ?>
 				<div id="nova-service-editor" class="nova-service-editor" data-mode="v2"><div class="nova-service-message" role="status" aria-live="polite"></div><?php ServiceEditor::render_canvas(); ?></div>
-				<?php \submit_button( 'library' === $mode ? __( 'Save client defaults', 'nova-bridge-suite' ) : __( 'Save default page layout', 'nova-bridge-suite' ) ); ?>
+				<?php \submit_button( 'library' === $mode ? __( 'Save customer defaults', 'nova-bridge-suite' ) : __( 'Save default page layout', 'nova-bridge-suite' ) ); ?>
 				<?php if ( 'template' === $mode ) : ?><button type="submit" class="button" name="reset_template" value="1"><?php \esc_html_e( 'Restore the built-in starting layout', 'nova-bridge-suite' ); ?></button><?php endif; ?>
 			</form>
 		</div>

@@ -105,9 +105,14 @@ final class ServiceDocument {
 			$template = ServiceShared::get_template();
 			if ( isset( $template['sections'] ) ) { return $template; }
 		}
+		return self::default_layout( class_exists( __NAMESPACE__ . '\\ServiceShared' ) ? ServiceShared::get_presets() : [] );
+	}
+
+	/** Build the empty fallback layout without reading or replacing a client template. */
+	public static function default_layout( array $library = [] ): array {
 		// An empty override follows the WordPress title, including later title edits.
 		$sections = [ self::section( 'hero', 'hero', [ 'title' => '', 'body' => '', 'buttons' => [], 'images' => [] ] ) ];
-		$presets = class_exists( __NAMESPACE__ . '\\ServiceShared' ) ? array_column( ServiceShared::get_presets()['sections'], null, 'id' ) : [];
+		$presets = array_column( $library['sections'] ?? [], null, 'id' );
 		if ( isset( $presets['default_hero'] ) && 'hero' === $presets['default_hero']['type'] ) { $sections[0]['shared_key'] = 'default_hero'; $sections[0]['data'] = [ 'title' => '', 'body' => '' ]; }
 		foreach ( self::CONTENT_SLOTS as $slot ) {
 			$section = self::section( $slot, 'rich_text', [ 'title' => '', 'body' => '' ] );
@@ -469,6 +474,7 @@ final class ServiceDocument {
 
 	public static function save_document( int $post_id, $document ) {
 		if ( ! \current_user_can( 'edit_post', $post_id ) ) { return new \WP_Error( 'rest_forbidden', 'You cannot edit this service page.', [ 'status' => 403 ] ); }
+		if ( class_exists( __NAMESPACE__ . '\\ServiceOnboarding' ) && ServiceOnboarding::is_required() && in_array( \get_post( $post_id )->post_status ?? '', [ 'publish', 'future', 'private' ], true ) ) { return ServiceOnboarding::pending_error(); }
 		$valid = self::validate_document( $document );
 		if ( \is_wp_error( $valid ) ) { return $valid; }
 		\update_post_meta( $post_id, self::META_DOCUMENT, \wp_slash( self::sanitize_document( $document ) ) );
@@ -496,6 +502,7 @@ final class ServiceDocument {
 	}
 
 	public static function validate_rest_insert( $prepared_post, $request ) {
+		if ( class_exists( __NAMESPACE__ . '\\ServiceOnboarding' ) ) { $allowed = ServiceOnboarding::guard_rest_request( $request, (int) $request->get_param( 'id' ) ); if ( \is_wp_error( $allowed ) ) { return $allowed; } }
 		self::$new_request_legacy = ! $request->get_param( 'id' ) && self::request_uses_legacy_payload( $request );
 		self::$native_request_creating = ! $request->get_param( 'id' ) && $request->has_param( 'nova_service_content' );
 		if ( $request->has_param( 'nova_service_document' ) ) {
@@ -589,6 +596,7 @@ final class ServiceDocument {
 		$base = $type && ! empty( $type->rest_base ) ? $type->rest_base : \get_option( 'service_cpt_slug', 'services' );
 		if ( ! preg_match( '#^/wp/v2/' . preg_quote( $base, '#' ) . '(?:/([0-9]+))?/?$#', $request->get_route(), $route_match ) ) { return $result; }
 		$id = (int) ( $route_match[1] ?? 0 );
+		if ( class_exists( __NAMESPACE__ . '\\ServiceOnboarding' ) ) { $allowed = ServiceOnboarding::guard_rest_request( $request, $id ); if ( \is_wp_error( $allowed ) ) { return $allowed; } }
 		if ( $request->has_param( 'nova_service_document' ) ) {
 			$valid = self::validate_document( $request->get_param( 'nova_service_document' ) );
 			if ( \is_wp_error( $valid ) ) { return $valid; }
@@ -699,6 +707,7 @@ final class ServiceDocument {
 	}
 
 	public static function save_content( int $post_id, $value ) {
+		if ( class_exists( __NAMESPACE__ . '\\ServiceOnboarding' ) && ServiceOnboarding::is_required() ) { return ServiceOnboarding::pending_error(); }
 		$valid = self::validate_content( $value );
 		if ( \is_wp_error( $valid ) ) { return $valid; }
 		$document = self::get_document( $post_id );
@@ -832,6 +841,7 @@ final class ServiceDocument {
 	public static function apply_migration( $request ) {
 		$id = (int) $request['id'];
 		$action = (string) ( $request->get_param( 'action' ) ?: 'migrate' );
+		if ( 'legacy' !== $action && class_exists( __NAMESPACE__ . '\\ServiceOnboarding' ) && ServiceOnboarding::is_required() ) { return ServiceOnboarding::pending_error(); }
 		if ( 'legacy' === $action ) {
 			\update_post_meta( $id, self::META_MODE, 'legacy' );
 		} else {

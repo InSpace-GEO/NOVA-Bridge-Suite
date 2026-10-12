@@ -14,7 +14,8 @@ final class ServiceShared {
 	}
 
 	public static function get_presets(): array {
-		$value = \get_option( self::OPTION_PRESETS, [] );
+		$active = class_exists( __NAMESPACE__ . '\\ServiceOnboarding' ) ? ServiceOnboarding::active_settings() : null;
+		$value = $active ? $active['presets'] : \get_option( self::OPTION_PRESETS, [] );
 		$document = is_array( $value ) && isset( $value['sections'] ) ? ServiceDocument::sanitize_document( $value ) : [ 'version' => 2, 'sections' => [] ];
 		$ids = array_column( $document['sections'], 'id' );
 		// Lazy empty client defaults are visible in settings without writing options
@@ -30,15 +31,15 @@ final class ServiceShared {
 	public static function presets(): array { return self::get_presets(); }
 
 	public static function get_template(): array {
-		$value = \get_option( self::OPTION_TEMPLATE, [] );
+		$active = class_exists( __NAMESPACE__ . '\\ServiceOnboarding' ) ? ServiceOnboarding::active_settings() : null;
+		$value = $active ? $active['template'] : \get_option( self::OPTION_TEMPLATE, [] );
 		return is_array( $value ) && isset( $value['sections'] ) ? ServiceDocument::sanitize_document( $value ) : [];
 	}
 
 	public static function template(): array { return self::get_template(); }
 
 	/** Validate both settings first so a bad template cannot partially save a library. */
-	public static function save_settings( $presets, $template ) {
-		if ( ! \current_user_can( 'manage_options' ) ) { return new \WP_Error( 'nova_service_settings_forbidden', 'You cannot manage the shared service library.', [ 'status' => 403 ] ); }
+	public static function validate_settings( $presets, $template ) {
 		$valid = ServiceDocument::validate_document( $presets );
 		if ( \is_wp_error( $valid ) ) { return $valid; }
 		$by_id = [];
@@ -55,8 +56,19 @@ final class ServiceShared {
 				if ( ! $preset || $preset['type'] !== $section['type'] ) { return new \WP_Error( 'nova_service_missing_preset', 'The site layout references a missing shared section or a different section type: ' . $section['shared_key'], [ 'status' => 400 ] ); }
 			}
 		}
-		\update_option( self::OPTION_PRESETS, ServiceDocument::sanitize_document( $presets ), false );
-		\update_option( self::OPTION_TEMPLATE, [] === $template ? [] : ServiceDocument::sanitize_document( $template ), false );
+		return true;
+	}
+
+	public static function save_settings( $presets, $template ) {
+		if ( ! \current_user_can( 'manage_options' ) ) { return new \WP_Error( 'nova_service_settings_forbidden', 'You cannot manage the shared service library.', [ 'status' => 403 ] ); }
+		if ( class_exists( __NAMESPACE__ . '\\ServiceOnboarding' ) && ServiceOnboarding::is_required() ) { return ServiceOnboarding::pending_error(); }
+		$valid = self::validate_settings( $presets, $template );
+		if ( \is_wp_error( $valid ) ) { return $valid; }
+		$presets = ServiceDocument::sanitize_document( $presets );
+		$template = [] === $template ? [] : ServiceDocument::sanitize_document( $template );
+		if ( class_exists( __NAMESPACE__ . '\\ServiceOnboarding' ) && ServiceOnboarding::active_settings() ) { return ServiceOnboarding::save_active_settings( $presets, $template ); }
+		\update_option( self::OPTION_PRESETS, $presets, false );
+		\update_option( self::OPTION_TEMPLATE, $template, false );
 		return true;
 	}
 

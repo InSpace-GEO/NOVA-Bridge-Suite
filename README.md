@@ -28,7 +28,7 @@ Enabled NOVA Blog and Service Page CPT modules load on every request, including 
 
 Blog CPT settings are available under `Settings -> NOVA Blog Settings`. The CPT menu links to that same screen; older CPT settings URLs redirect there.
 
-The unreleased Service CPT v2 candidate adds one flexible native editor, reusable shared sections and a default site layout. Existing pages retain legacy rendering until explicitly migrated. See [the Service CPT guide](docs/SERVICE-CPT-V2.md) for setup, preview, migration and the content posting API.
+The unreleased Service CPT v2 candidate adds one flexible native editor, reusable shared sections and a default site layout. Fresh installations complete a resumable five-step setup with a business name and first CTA before publishing or posting services; proof and media are optional shared defaults. Existing installations keep their settings and pages, with a read-only setup walkthrough available. Existing legacy pages retain their rendering until explicitly migrated. Public pages inherit the site's branding. See [the Service CPT guide](docs/SERVICE-CPT-V2.md) for setup, preview, migration and the content posting API.
 
 ## Installation
 

@@ -91,15 +91,77 @@ final class ServiceLivePreview {
 		return $response;
 	}
 
+	/** Queue the active Elementor kit's font assets without CSS regeneration or downloads. */
+	private static function enqueue_site_fonts( int $kit_id ): void {
+		if ( ! $kit_id || ! \class_exists( '\\Elementor\\Plugin' ) ) { return; }
+		$elementor = \Elementor\Plugin::$instance;
+		if ( ! $elementor || ! isset( $elementor->kits_manager, $elementor->frontend )
+			|| ! \is_callable( [ $elementor->kits_manager, 'get_active_kit_for_frontend' ] )
+			|| ! \is_callable( [ $elementor->frontend, 'enqueue_font' ] )
+			|| ! \is_callable( [ $elementor->frontend, 'print_fonts_links' ] ) ) { return; }
+		$kit = $elementor->kits_manager->get_active_kit_for_frontend();
+		if ( ! $kit || ! \is_callable( [ $kit, 'get_settings' ] ) ) { return; }
+		// Raw settings include global typography, custom fonts and theme heading/body
+		// families. get_settings_for_display would execute dynamic tags unnecessarily.
+		$settings = $kit->get_settings();
+		if ( ! \is_array( $settings ) ) { return; }
+		$families = [];
+		$collect = static function ( array $values ) use ( &$collect, &$families ): void {
+			foreach ( $values as $key => $value ) {
+				if ( \is_array( $value ) ) { $collect( $value ); }
+				elseif ( \is_string( $key ) && \preg_match( '/(?:^|_)font_family$/', $key ) && \is_string( $value ) && '' !== \trim( $value ) ) { $families[ \trim( $value ) ] = true; }
+			}
+		};
+		$collect( $settings );
+		if ( ! $families ) { return; }
+		// Elementor's public font API handles Google and registered custom providers.
+		// Its queues are per-frontend-instance, so do not consume or change the caller's.
+		$frontend = clone $elementor->frontend;
+		foreach ( \array_keys( $families ) as $family ) { $frontend->enqueue_font( $family ); }
+		// Elementor checks an existing local font cache before this option. Disabling
+		// cache creation for this call preserves cached assets and uses its CDN fallback
+		// for missing Google fonts, avoiding option updates and filesystem downloads.
+		$read_only_fonts = static function () { return '0'; };
+		\add_filter( 'pre_option_elementor_local_google_fonts', $read_only_fonts );
+		try { $frontend->print_fonts_links(); }
+		finally { \remove_filter( 'pre_option_elementor_local_google_fonts', $read_only_fonts ); }
+	}
+
+	/** wp_head callbacks can also consume the original Elementor frontend's queues. */
+	private static function snapshot_elementor_fonts(): array {
+		if ( ! \class_exists( '\\Elementor\\Plugin' ) || ! \Elementor\Plugin::$instance || ! isset( \Elementor\Plugin::$instance->frontend ) ) { return []; }
+		$frontend = \Elementor\Plugin::$instance->frontend;
+		if ( ! \is_object( $frontend ) ) { return []; }
+		$reflection = new \ReflectionObject( $frontend );
+		$properties = [];
+		// Elementor 4.1.4 has no public queue snapshot/restore API. Limit reflection
+		// to its four font queues, keeping the instance and registered callbacks intact.
+		foreach ( [ 'fonts_to_enqueue', 'registered_fonts', 'icon_fonts_to_enqueue', 'enqueued_icon_fonts' ] as $name ) {
+			if ( ! $reflection->hasProperty( $name ) ) { continue; }
+			$property = $reflection->getProperty( $name );
+			if ( PHP_VERSION_ID < 80100 ) { $property->setAccessible( true ); }
+			$properties[] = [ $property, $property->getValue( $frontend ) ];
+		}
+		return [ 'frontend' => $frontend, 'properties' => $properties ];
+	}
+
+	private static function restore_elementor_fonts( array $snapshot ): void {
+		if ( ! $snapshot ) { return; }
+		foreach ( $snapshot['properties'] as $saved ) { $saved[0]->setValue( $snapshot['frontend'], $saved[1] ); }
+	}
+
 	/** Use a real target's frontend query/classes, restoring every substituted global in finally. */
 	private static function frame( int $post_id, array $document, string $title ) {
 		$names = [ 'post', 'wp_query', 'wp_the_query', 'wp_styles', 'wp_scripts' ];
 		$before = [];
 		foreach ( $names as $name ) { $before[ $name ] = [ \array_key_exists( $name, $GLOBALS ), $GLOBALS[ $name ] ?? null ]; }
 		$old_rendering = self::$rendering;
+		$elementor_fonts = self::snapshot_elementor_fonts();
 		$no_admin_bar = static function () { return false; };
+		$read_only_font_cache = static function () { return '0'; };
 		self::$rendering = true;
 		\add_filter( 'show_admin_bar', $no_admin_bar );
+		if ( $elementor_fonts ) { \add_filter( 'pre_option_elementor_local_google_fonts', $read_only_font_cache, PHP_INT_MAX ); }
 		try {
 			$post = $post_id ? clone \get_post( $post_id ) : new \WP_Post( (object) [ 'ID' => 0, 'post_type' => 'service_page', 'post_status' => 'draft', 'post_title' => $title, 'post_content' => '', 'post_excerpt' => '', 'post_author' => 0, 'post_password' => '' ] );
 			$post->post_title = $title;
@@ -123,7 +185,7 @@ final class ServiceLivePreview {
 				if ( \is_file( $uploads['basedir'] . $file ) ) { \wp_enqueue_style( 'nova-service-preview-site-kit', $uploads['baseurl'] . $file, [], (string) \filemtime( $uploads['basedir'] . $file ) ); }
 			}
 			\ob_start();
-			try { \wp_head(); $head = \ob_get_contents(); }
+			try { self::enqueue_site_fonts( $kit ); \wp_head(); $head = \ob_get_contents(); }
 			finally { \ob_end_clean(); }
 			$classes = \get_body_class( [ 'nova-service-v2-page', 'nova-service-editor-live-preview' ] );
 			if ( $kit ) { $classes[] = 'elementor-kit-' . $kit; }
@@ -134,6 +196,8 @@ final class ServiceLivePreview {
 			return self::error( 'The preview could not be rendered. Your saved page and settings were not changed.', 500 );
 		} finally {
 			\remove_filter( 'show_admin_bar', $no_admin_bar );
+			if ( $elementor_fonts ) { \remove_filter( 'pre_option_elementor_local_google_fonts', $read_only_font_cache, PHP_INT_MAX ); }
+			self::restore_elementor_fonts( $elementor_fonts );
 			self::$rendering = $old_rendering;
 			foreach ( $before as $name => $state ) { if ( $state[0] ) { $GLOBALS[ $name ] = $state[1]; } else { unset( $GLOBALS[ $name ] ); } }
 		}
