@@ -316,33 +316,17 @@ class Rest_Controller extends WP_REST_Controller {
 				return new WP_Error( 'seor_eb_not_found', __( 'Page not found for provided slug.', 'nova-bridge-suite' ), array( 'status' => 404 ) );
 			}
 
-			$page = get_page_by_path( $slug, OBJECT, $lookup_types );
-			if ( ! $page ) {
-				$slug_name = basename( $slug );
-				$fallback  = new \WP_Query(
-					array(
-						'post_type'      => $lookup_types,
-						'name'           => $slug_name,
-						'post_status'    => $status,
-						'posts_per_page' => 1,
-						'fields'         => 'ids',
-					)
-				);
-
-				if ( $fallback->have_posts() ) {
-					$page_id = (int) $fallback->posts[0];
-					$payload = $this->service->get_page_payload( $page_id, $args );
-					if ( is_wp_error( $payload ) ) {
-						return $payload;
-					}
-
-					return rest_ensure_response( array( $payload ) );
-				}
-
+			$page_id = $this->find_post_id_by_path(
+				(string) $slug,
+				$lookup_types,
+				$status,
+				$this->caller_supplied_param( $request, 'status' )
+			);
+			if ( ! $page_id ) {
 				return new WP_Error( 'seor_eb_not_found', __( 'Page not found for provided slug.', 'nova-bridge-suite' ), array( 'status' => 404 ) );
 			}
 
-			$payload = $this->service->get_page_payload( $page->ID, $args );
+			$payload = $this->service->get_page_payload( $page_id, $args );
 			if ( is_wp_error( $payload ) ) {
 				return $payload;
 			}
@@ -651,6 +635,183 @@ class Rest_Controller extends WP_REST_Controller {
 		$allowed_statuses = get_post_stati( array(), 'names' );
 
 		return in_array( $status, $allowed_statuses, true ) ? $status : 'publish';
+	}
+
+	/**
+	 * Resolve a slug or path to a post ID in the request's language.
+	 *
+	 * get_page_by_path() is language-blind: it reads wp_posts without the
+	 * WPML/Polylang join, with an ARRAY of types (which resolve_slug_lookup_types()
+	 * always returns) core never breaks early so the LAST full-path match wins,
+	 * and its post-queries cache key is path + types only. Two pages sharing a
+	 * slug across languages (de /services/, en /en/services/) therefore resolved
+	 * to the German one even on /en/wp-json/ or ?lang=en, and the flow used it as
+	 * the parent of an English page. The two pages need not be linked
+	 * translations, so translating the result with wpml_object_id is not enough.
+	 *
+	 * With a request language, WP_Query does the lookup (suppress_filters false
+	 * lets WPML/Polylang restrict it to that language) and get_page_uri() checks
+	 * the full path. A slug missing in a NON-default language (/en/wp-json/,
+	 * ?lang=en on a German site) is not-found, never the default-language page.
+	 * A request in the default language -- every unprefixed /wp-json/ call on a
+	 * WPML directory site -- falls back to the old lookup when nothing matches
+	 * in that language, so a flow that today finds an English page through an
+	 * unprefixed call keeps finding it instead of creating a duplicate. Without
+	 * a multilingual plugin, or with lang=all, the lookup is unchanged.
+	 *
+	 * get_page_by_path() matches every status, so a flow could find its own
+	 * draft by slug. Without an explicit ?status= the language lookup keeps that
+	 * ('any') and prefers a published match, so it does not start answering
+	 * 404 for drafts and invite a duplicate create.
+	 *
+	 * @param string $slug             Requested slug or path.
+	 * @param array  $lookup_types     Non-empty list from resolve_slug_lookup_types().
+	 * @param string $status           Sanitized post status.
+	 * @param bool   $status_requested Whether the request passed ?status= itself.
+	 * @return int Post ID, or 0 when nothing matches.
+	 */
+	private function find_post_id_by_path( $slug, array $lookup_types, $status, $status_requested = false ) {
+		$path     = trim( $slug, '/' );
+		$language = $this->get_request_language_code();
+
+		if ( '' === $language || 'all' === $language ) {
+			return $this->find_post_id_by_path_any_language( $slug, $lookup_types, $status );
+		}
+
+		// Every candidate sharing the basename is checked for the exact path
+		// before a basename match is accepted: a capped first page could hold
+		// only same-named children and hide the top-level page the caller
+		// meant (get_page_by_path() had no such cap).
+		$batch_size     = 100;
+		$paged          = 1;
+		$path_match     = 0;
+		$basename_match = 0;
+		do {
+			$query = new \WP_Query(
+				array(
+					'post_type'        => $lookup_types,
+					// post_name__in, not name: the same query core's
+					// /wp/v2/pages?slug= runs, which WPML scopes by the /en/
+					// directory. WPML rewrites name/pagename queries separately.
+					'post_name__in'    => array( basename( $path ) ),
+					'post_status'      => $status_requested ? $status : 'any',
+					'posts_per_page'   => $batch_size,
+					'paged'            => $paged,
+					'orderby'          => 'ID',
+					'order'            => 'ASC',
+					'fields'           => 'ids',
+					'no_found_rows'    => true,
+					'suppress_filters' => false,
+				)
+			);
+			$batch = is_array( $query->posts ) ? $query->posts : array();
+
+			foreach ( $batch as $post_id ) {
+				$post_id   = (int) $post_id;
+				$published = 'publish' === get_post_status( $post_id );
+
+				if ( trim( (string) get_page_uri( $post_id ), '/' ) === $path ) {
+					if ( $published ) {
+						return $post_id;
+					}
+					if ( ! $path_match ) {
+						$path_match = $post_id;
+					}
+				} elseif ( ! $basename_match || ( $published && 'publish' !== get_post_status( $basename_match ) ) ) {
+					$basename_match = $post_id;
+				}
+			}
+
+			++$paged;
+		} while ( count( $batch ) === $batch_size );
+
+		// A full-path match first; otherwise the same leniency as the basename
+		// fallback, within the language.
+		$found = $path_match ? $path_match : $basename_match;
+
+		if ( ! $found && $language === $this->get_default_language_code() ) {
+			return $this->find_post_id_by_path_any_language( $slug, $lookup_types, $status );
+		}
+
+		return $found;
+	}
+
+	/**
+	 * The pre-2.8.13 lookup: get_page_by_path(), then a basename WP_Query.
+	 * Language-blind -- see find_post_id_by_path() for when it still runs.
+	 *
+	 * @param string $slug         Requested slug or path.
+	 * @param array  $lookup_types Non-empty list from resolve_slug_lookup_types().
+	 * @param string $status       Sanitized post status.
+	 * @return int Post ID, or 0 when nothing matches.
+	 */
+	private function find_post_id_by_path_any_language( $slug, array $lookup_types, $status ) {
+		$page = get_page_by_path( $slug, OBJECT, $lookup_types );
+		if ( $page ) {
+			return (int) $page->ID;
+		}
+
+		$fallback = new \WP_Query(
+			array(
+				'post_type'      => $lookup_types,
+				'name'           => basename( $slug ),
+				'post_status'    => $status,
+				'posts_per_page' => 1,
+				'fields'         => 'ids',
+			)
+		);
+
+		return $fallback->have_posts() ? (int) $fallback->posts[0] : 0;
+	}
+
+	/**
+	 * Whether the caller sent $key itself. get_param() also returns the
+	 * route's registered default (status defaults to 'publish'), so it cannot
+	 * tell an omitted ?status= from an explicit one.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @param string          $key     Parameter name.
+	 * @return bool
+	 */
+	private function caller_supplied_param( $request, $key ) {
+		foreach ( array( $request->get_query_params(), $request->get_body_params(), $request->get_json_params() ) as $params ) {
+			if ( is_array( $params ) && isset( $params[ $key ] ) && '' !== $params[ $key ] ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * The language this request asks for: ?lang= first, then the plugin's
+	 * current language (WPML sets it from the /en/wp-json/ directory). Empty
+	 * when no multilingual plugin is active.
+	 *
+	 * @return string
+	 */
+	private function get_request_language_code() {
+		if (
+			! class_exists( '\Nova_Bridge_Suite_WPML_Support' )
+			|| ! \Nova_Bridge_Suite_WPML_Support::is_multilingual_active()
+		) {
+			return '';
+		}
+
+		return \Nova_Bridge_Suite_WPML_Support::get_current_language_code();
+	}
+
+	/**
+	 * The multilingual plugin's default language, or '' when unknown.
+	 *
+	 * @return string
+	 */
+	private function get_default_language_code() {
+		if ( ! class_exists( '\Nova_Bridge_Suite_WPML_Support' ) ) {
+			return '';
+		}
+
+		return \Nova_Bridge_Suite_WPML_Support::get_default_language_code();
 	}
 
 	/**
