@@ -41,3 +41,22 @@ This replaces the stored page-settings object, so merge with existing settings
 when updating one property. Read it with `meta_keys=_elementor_page_settings`.
 Pass `template` separately. Source cloning copies widget data, not these settings;
 callers must propagate the intended settings and template to translations.
+
+# Slug lookups on multilingual sites (2.8.13)
+
+`GET /wp-json/seor-bridge/v1/pages?slug=…` resolves the slug in the language the
+request asks for: the WPML language directory (`/en/wp-json/seor-bridge/v1/pages?slug=services`)
+or `?lang=en`. Two pages that share a slug in different languages (German
+`/services/`, English `/en/services/`) no longer resolve to the default-language
+one. A slug with no page in a non-default language answers `404
+seor_eb_not_found`; it never falls back to the default-language page. A request
+in the default language (an unprefixed `/wp-json/` call) that finds nothing in
+that language falls back to the previous lookup, so existing update flows keep
+finding their pages. `lang=all`, and sites without WPML or Polylang, keep the
+previous lookup.
+
+Nested paths (`services/consulting`) match the page whose parent chain spells
+that path. Without `?status=`, a draft is still found by its slug, and a
+published page with the same path wins over it. Resolving the parent in English
+does not make the new page English: create it through the same `/en/` address,
+or with `?lang=en`.

@@ -64,6 +64,9 @@ class WP_Post
     public $post_status = 'publish';
     public $post_title  = '';
     public $post_name   = '';
+    public $post_parent = 0;
+    // Test-only: the language a WPML/Polylang-filtered WP_Query sees.
+    public $nbs_lang = '';
 
     public function __construct(array $fields = [])
     {
@@ -154,6 +157,11 @@ function get_post_status($post_id = null)
     $post = get_post($post_id);
 
     return $post ? $post->post_status : false;
+}
+
+function get_post_stati($args = [], $output = 'names')
+{
+    return ['publish', 'future', 'draft', 'pending', 'private', 'trash', 'auto-draft', 'inherit'];
 }
 
 function post_type_exists($post_type)
@@ -750,6 +758,10 @@ $GLOBALS['nbs_el_doc_save'] = true;
 
 $GLOBALS['nbs_el_lookup_arg'] = null;
 $GLOBALS['nbs_el_query_arg']  = null;
+$GLOBALS['nbs_el_query_args'] = null;
+$GLOBALS['nbs_el_language']   = '';
+// The live site: WPML with German as the default language.
+$GLOBALS['nbs_el_default_language'] = 'de';
 
 class WP_REST_Request
 {
@@ -767,10 +779,12 @@ class WP_REST_Request
 }
 
 /**
- * Faithful port of wp-includes/post.php::get_page_by_path() for the two
- * behaviours that caused the incident:
+ * Faithful port of wp-includes/post.php::get_page_by_path() (WP 7.1) for the
+ * behaviours that caused incidents:
  *   1. a STRING $post_type becomes array( $post_type, 'attachment' );
- *   2. post_status is never filtered, so 'inherit' attachments match.
+ *   2. post_status is never filtered, so 'inherit' attachments match;
+ *   3. no language filter, and with an ARRAY $post_type the loop never breaks
+ *      early, so the LAST matching row (highest ID here) wins.
  */
 function get_page_by_path($page_path, $output = OBJECT, $post_type = 'page')
 {
@@ -778,38 +792,122 @@ function get_page_by_path($page_path, $output = OBJECT, $post_type = 'page')
 
     $post_types = is_array($post_type) ? $post_type : [$post_type, 'attachment'];
     $slug       = basename(trim((string) $page_path, '/'));
+    $ids        = array_keys($GLOBALS['nbs_el_posts']);
+    sort($ids);
+    $found = null;
 
-    foreach ($GLOBALS['nbs_el_posts'] as $candidate) {
+    foreach ($ids as $id) {
+        $candidate = $GLOBALS['nbs_el_posts'][$id];
         if ($candidate->post_name === $slug && in_array($candidate->post_type, $post_types, true)) {
-            return $candidate;
+            $found = $candidate;
+            if (!is_array($post_type) && $candidate->post_type === $post_type) {
+                break;
+            }
         }
     }
 
-    return null;
+    return $found;
 }
 
+/**
+ * Name lookup with the two behaviours the language fix relies on:
+ *   1. like WPML/Polylang, unless suppress_filters is true the result is
+ *      restricted to the current language (a seeded post's nbs_lang);
+ *   2. post_status is honoured ('any' = everything but trash/auto-draft/inherit),
+ *      as are orderby=ID and posts_per_page.
+ * With no current language (the default) it behaves as before: name + type.
+ */
 class WP_Query
 {
     public $posts = [];
 
     public function __construct(array $args = [])
     {
-        $GLOBALS['nbs_el_query_arg'] = isset($args['post_type']) ? $args['post_type'] : null;
+        $GLOBALS['nbs_el_query_arg']  = isset($args['post_type']) ? $args['post_type'] : null;
+        $GLOBALS['nbs_el_query_args'] = $args;
 
-        $types = is_array($GLOBALS['nbs_el_query_arg']) ? $GLOBALS['nbs_el_query_arg'] : [$GLOBALS['nbs_el_query_arg']];
-        $name  = isset($args['name']) ? $args['name'] : '';
+        $types    = is_array($GLOBALS['nbs_el_query_arg']) ? $GLOBALS['nbs_el_query_arg'] : [$GLOBALS['nbs_el_query_arg']];
+        $name     = isset($args['name']) ? $args['name'] : '';
+        if (isset($args['post_name__in'])) {
+            $name = (string) reset($args['post_name__in']);
+        }
+        $status   = isset($args['post_status']) ? $args['post_status'] : 'publish';
+        $language = isset($GLOBALS['nbs_el_language']) ? $GLOBALS['nbs_el_language'] : '';
+        $filtered = empty($args['suppress_filters']) && '' !== $language && 'all' !== $language;
+        $matches  = [];
 
         foreach ($GLOBALS['nbs_el_posts'] as $candidate) {
-            if ($candidate->post_name === $name && in_array($candidate->post_type, $types, true)) {
-                $this->posts[] = (int) $candidate->ID;
-                break;
+            if ($candidate->post_name !== $name || !in_array($candidate->post_type, $types, true)) {
+                continue;
             }
+            if ('any' === $status
+                ? in_array($candidate->post_status, ['trash', 'auto-draft', 'inherit'], true)
+                : $candidate->post_status !== $status
+            ) {
+                continue;
+            }
+            if ($filtered && (isset($candidate->nbs_lang) ? $candidate->nbs_lang : '') !== $language) {
+                continue;
+            }
+            $matches[] = (int) $candidate->ID;
         }
+
+        if (isset($args['orderby']) && 'ID' === $args['orderby']) {
+            sort($matches);
+        }
+
+        $limit       = isset($args['posts_per_page']) ? (int) $args['posts_per_page'] : 10;
+        $this->posts = $limit > 0 ? array_slice($matches, 0, $limit) : $matches;
     }
 
     public function have_posts()
     {
         return !empty($this->posts);
+    }
+}
+
+/** post_name chain up the post_parent ancestry, as core builds it. */
+function get_page_uri($page = 0)
+{
+    $post = get_post($page);
+    if (!$post) {
+        return false;
+    }
+
+    $uri  = $post->post_name;
+    $seen = [];
+    while (!empty($post->post_parent) && !isset($seen[$post->post_parent])) {
+        $seen[$post->post_parent] = true;
+        $post = get_post($post->post_parent);
+        if (!$post) {
+            break;
+        }
+        $uri = $post->post_name . '/' . $uri;
+    }
+
+    return $uri;
+}
+
+/**
+ * The two calls the controller makes into the suite's multilingual helper.
+ * Inactive while nbs_el_language is '' so every check above runs as on a
+ * single-language site.
+ */
+final class Nova_Bridge_Suite_WPML_Support
+{
+    public static function is_multilingual_active(): bool
+    {
+        return '' !== self::get_current_language_code();
+    }
+
+    public static function get_current_language_code(): string
+    {
+        return isset($GLOBALS['nbs_el_language']) ? (string) $GLOBALS['nbs_el_language'] : '';
+    }
+
+    public static function get_default_language_code(): string
+    {
+        return isset($GLOBALS['nbs_el_default_language']) ? (string) $GLOBALS['nbs_el_default_language'] : '';
     }
 }
 
@@ -933,6 +1031,115 @@ nbs_check(
 );
 nbs_check('an empty type list never reaches get_page_by_path()', $GLOBALS['nbs_el_lookup_arg'], null);
 nbs_check('an empty type list never reaches the WP_Query fallback', $GLOBALS['nbs_el_query_arg'], null);
+
+// ---------------------------------------------------------------------------
+// Slug lookups resolve in the request's language.
+//
+// Live incident (hf-concepts.de, WPML, default de): the flow resolved the
+// parent of an English service page with
+// /en/wp-json/seor-bridge/v1/pages?slug=services. WPML had set the current
+// language to en from the /en/ directory, but get_page_by_path() reads
+// wp_posts without the language join and, given an array of types, keeps the
+// LAST full-path match -- so it answered the German /services/ (17052, newer)
+// instead of the English /en/services/ (7697). The two are not linked
+// translations, so mapping the result through wpml_object_id cannot recover.
+// ---------------------------------------------------------------------------
+
+nbs_el_seed_post(7697, 'page', 'publish', ['post_name' => 'services', 'post_parent' => 0, 'nbs_lang' => 'en']);
+nbs_el_seed_post(17052, 'page', 'publish', ['post_name' => 'services', 'post_parent' => 0, 'nbs_lang' => 'de']);
+nbs_el_seed_post(7801, 'page', 'publish', ['post_name' => 'consulting', 'post_parent' => 0, 'nbs_lang' => 'en']);
+nbs_el_seed_post(7802, 'page', 'publish', ['post_name' => 'consulting', 'post_parent' => 7697, 'nbs_lang' => 'en']);
+nbs_el_seed_post(17053, 'page', 'publish', ['post_name' => 'consulting', 'post_parent' => 17052, 'nbs_lang' => 'de']);
+
+$lookup_in = function ($language, array $params) use ($lookup_controller) {
+    $GLOBALS['nbs_el_language']   = $language;
+    $GLOBALS['nbs_el_lookup_arg'] = null;
+    $GLOBALS['nbs_el_query_args'] = null;
+    $result                       = $lookup_controller->get_collection(new WP_REST_Request($params));
+    $GLOBALS['nbs_el_language']   = '';
+
+    return $result;
+};
+$found_id = function ($result) {
+    return is_array($result) && isset($result[0]) ? nbs_el_at($result[0], 'post_id') : $result;
+};
+
+$en_services = $lookup_in('en', ['slug' => 'services']);
+nbs_check('an /en/ request resolves the English parent, not the German default', $found_id($en_services), 7697);
+nbs_check('a language-scoped lookup never calls the language-blind get_page_by_path()', $GLOBALS['nbs_el_lookup_arg'], null);
+nbs_check(
+    'the language-scoped lookup leaves WPML/Polylang filters on',
+    nbs_el_at((array) $GLOBALS['nbs_el_query_args'], 'suppress_filters'),
+    false
+);
+nbs_check('the German request still resolves the German parent', $found_id($lookup_in('de', ['slug' => 'services'])), 17052);
+
+nbs_check(
+    'a nested path resolves the child under the English parent',
+    $found_id($lookup_in('en', ['slug' => 'services/consulting'])),
+    7802
+);
+nbs_check(
+    'a top-level slug resolves the top-level page, not a same-named child',
+    $found_id($lookup_in('en', ['slug' => 'consulting'])),
+    7801
+);
+
+$fr_services = $lookup_in('fr', ['slug' => 'services']);
+nbs_check(
+    'a slug with no page in the requested language is not-found, never the default-language page',
+    is_wp_error($fr_services) ? $fr_services->get_error_code() : $found_id($fr_services),
+    'seor_eb_not_found'
+);
+
+// Default-language (unprefixed /wp-json/) requests: an English-only page is
+// still found, as before, so an update flow does not turn into a duplicate
+// create. The strict 404 above applies to non-default languages only.
+nbs_el_seed_post(7769, 'page', 'publish', ['post_name' => 'mobility-equipment', 'nbs_lang' => 'en']);
+nbs_check(
+    'an unprefixed (default-language) lookup still finds an English-only page',
+    $found_id($lookup_in('de', ['slug' => 'mobility-equipment'])),
+    7769
+);
+nbs_check_true(
+    'that default-language fallback goes through the original lookup',
+    null !== $GLOBALS['nbs_el_lookup_arg']
+);
+nbs_el_seed_post(17100, 'page', 'publish', ['post_name' => 'leistungen', 'nbs_lang' => 'de']);
+$en_german_only = $lookup_in('en', ['slug' => 'leistungen']);
+nbs_check(
+    'an /en/ lookup of a German-only page is not-found (no fallback outside the default language)',
+    is_wp_error($en_german_only) ? $en_german_only->get_error_code() : $found_id($en_german_only),
+    'seor_eb_not_found'
+);
+
+$lookup_in('all', ['slug' => 'services']);
+nbs_check_true('lang=all keeps the original lookup', null !== $GLOBALS['nbs_el_lookup_arg']);
+$lookup_in('', ['slug' => 'services']);
+nbs_check_true('a single-language site keeps the original lookup', null !== $GLOBALS['nbs_el_lookup_arg']);
+
+// get_page_by_path() matched every status, so the flow could find its own
+// draft. Without ?status= the language lookup must keep that, preferring the
+// published page; an explicit ?status= is honoured.
+nbs_el_seed_post(7901, 'page', 'draft', ['post_name' => 'draft-only', 'nbs_lang' => 'en']);
+nbs_el_seed_post(7902, 'page', 'draft', ['post_name' => 'mixed-status', 'nbs_lang' => 'en']);
+nbs_el_seed_post(7903, 'page', 'publish', ['post_name' => 'mixed-status', 'nbs_lang' => 'en']);
+
+nbs_check('a draft is still found by slug without ?status=', $found_id($lookup_in('en', ['slug' => 'draft-only'])), 7901);
+nbs_check(
+    'an explicit ?status=publish does not return the draft',
+    is_wp_error($r = $lookup_in('en', ['slug' => 'draft-only', 'status' => 'publish'])) ? $r->get_error_code() : $found_id($r),
+    'seor_eb_not_found'
+);
+nbs_check(
+    'the published page wins over an older draft sharing its path',
+    $found_id($lookup_in('en', ['slug' => 'mixed-status'])),
+    7903
+);
+
+foreach ([7697, 17052, 7801, 7802, 17053, 7901, 7902, 7903, 7769, 17100] as $seeded_id) {
+    unset($GLOBALS['nbs_el_posts'][$seeded_id]);
+}
 
 // ---------------------------------------------------------------------------
 // seor_eb_forbidden used to carry no data at all, so the REST layer answered
