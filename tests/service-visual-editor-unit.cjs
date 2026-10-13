@@ -56,24 +56,38 @@ class Element {
 		};
 	}
 	appendChild(child) { if (child.parentNode) child.parentNode.children = child.parentNode.children.filter(node => node !== child); child.parentNode = this; this.children.push(child); return child; }
+	replaceWith(replacement) { const parent = this.parentNode; if (!parent) return; const index = parent.children.indexOf(this); parent.children.splice(index, 1, replacement); replacement.parentNode = parent; this.parentNode = null; }
 	addEventListener(name, handler) { (this.listeners[name] ||= []).push(handler); }
 	removeEventListener(name, handler) { this.listeners[name] = (this.listeners[name] || []).filter(entry => entry !== handler); }
 	emit(name, values = {}) { const event = Object.assign({target: this, prevented: false, preventDefault() { this.prevented = true; }, stopPropagation() {}}, values); for (const handler of [...(this.listeners[name] || [])]) handler(event); return event; }
 	matches(selector) { if (selector.startsWith('.')) return this.classList.contains(selector.slice(1)); if (selector.startsWith('[')) return this.hasAttribute(selector.slice(1, -1)); return this.tagName === selector; }
 	querySelectorAll(selector) { const result = []; for (const child of this.children) { if (child.matches(selector)) result.push(child); result.push(...child.querySelectorAll(selector)); } return result; }
 	closest(selector) { if (selector.split(',').some(part => this.matches(part))) return this; return this.parentNode && this.parentNode.closest(selector); }
+	contains(node) { return node === this || this.children.some(child => child.contains(node)); }
+	get parentElement() { return this.parentNode; }
 	focus() { this.ownerDocument.activeElement = this; }
 }
+class Range {
+	selectNodeContents(node) { this.startContainer = node; this.endContainer = node; this.startOffset = 0; this.endOffset = node.children.length; }
+	collapse() { this.startContainer = this.endContainer; this.startOffset = this.endOffset; }
+	cloneRange() { const copy = new Range(); Object.assign(copy, this); return copy; }
+	setEnd(node, offset) { this.endContainer = node; this.endOffset = offset; }
+	setStart(node, offset) { this.startContainer = node; this.startOffset = offset; }
+	toString() { return this.startContainer.textContent || ''; }
+}
 class Document extends Element {
-	constructor() { super('document', null); this.ownerDocument = this; this.documentElement = this; this.head = new Element('head', this); this.body = new Element('body', this); this.appendChild(this.head); this.appendChild(this.body); }
-	createElement(tag) { return new Element(tag, this); }
+	constructor() { super('document', null); this.ownerDocument = this; this.documentElement = this; this.head = new Element('head', this); this.body = new Element('body', this); this.appendChild(this.head); this.appendChild(this.body); this.selection = {rangeCount: 0, range: null, getRangeAt() { return this.range; }, removeAllRanges() { this.rangeCount = 0; this.range = null; }, addRange(range) { this.rangeCount = 1; this.range = range; }}; }
+	createElement(tag) { const node = new Element(tag, this); if (tag === 'template') { node.content = new Element('fragment', this); } return node; }
+	getSelection() { return this.selection; }
+	createRange() { return new Range(); }
 }
 function fixture() {
 	const document = new Document(), frameDocument = new Document();
 	const root = document.createElement('div'); document.body.appendChild(root);
 	const pane = document.createElement('div'), viewport = document.createElement('div'), frame = document.createElement('iframe'), workspace = document.createElement('div'), inspector = document.createElement('div');
 	workspace.className = 'nova-service-workspace'; inspector.className = 'nova-service-edit-pane'; workspace.appendChild(pane); workspace.appendChild(inspector); root.appendChild(workspace); pane.appendChild(viewport); viewport.appendChild(frame); frame.contentDocument = frameDocument;
-	frame.contentWindow = {scrollX: 0, scrollY: 0, innerWidth: 1200, scrollTo(options) { this.scrollX = options.left || 0; this.scrollY = options.top || 0; }, addEventListener() {}};
+	const frameWindowHandlers = {};
+	frame.contentWindow = {scrollX: 0, scrollY: 0, innerWidth: 1200, scrollTo(options) { this.scrollX = options.left || 0; this.scrollY = options.top || 0; this.lastScrollBehavior = options.behavior; }, addEventListener(name, callback) { (frameWindowHandlers[name] ||= []).push(callback); }, emit(name) { for (const callback of frameWindowHandlers[name] || []) callback(); }};
 	let doc = {version: 2, sections: [
 		{id: 'hero', type: 'hero', data: {title: 'Approved title', body: '<p>Hero copy.</p>'}},
 		{id: 'copy', type: 'rich_text', content_slot: 'rich_text_1', shared_key: 'default_copy', data: {}},
@@ -93,7 +107,7 @@ function fixture() {
 	function fieldNode(id, path, kind, tag = 'div') { let sectionNode = frameDocument.body.children.find(entry => entry.getAttribute('data-nova-service-section-id') === id); if (!sectionNode) { sectionNode = frameDocument.createElement('section'); sectionNode.setAttribute('data-nova-service-section-id', id); frameDocument.body.appendChild(sectionNode); } const element = frameDocument.createElement(tag); element.setAttribute('data-nova-service-field', path); element.setAttribute('data-nova-service-kind', kind); element.textContent = 'Rendered value'; element.innerHTML = '<span>Rendered value</span>'; sectionNode.appendChild(element); return element; }
 	const mediaEvents = {}, wp = {media() { return {on(name, callback) { mediaEvents[name] = callback; }, open() {}, state() { return {get() { return {first() { return {toJSON() { return {id: 99, url: '/selected.jpg', alt: 'Selected office'}; }}; }}; }}; }}; }};
 	const windowHandlers = {};
-	const window = {wp, scrollX: 0, scrollY: 0, scrollTo(options) { this.scrollX = options.left || 0; this.scrollY = options.top || 0; }, addEventListener(name, handler) { (windowHandlers[name] ||= []).push(handler); }};
+	const window = {wp, scrollX: 0, scrollY: 0, scrollTo(options) { this.scrollX = options.left || 0; this.scrollY = options.top || 0; this.lastScrollBehavior = options.behavior; }, addEventListener(name, handler) { (windowHandlers[name] ||= []).push(handler); }};
 	function beforeUnload() { const event = {prevented: false, returnValue: undefined, preventDefault() { this.prevented = true; }}; for (const handler of windowHandlers.beforeunload || []) handler(event); return event; }
 	function button(text) { const selectedRow = root.querySelectorAll('.nova-visual-structure-item').find(entry => entry.classList.contains('is-selected')); const selectedButtons = selectedRow ? selectedRow.querySelectorAll('button') : []; const result = selectedButtons.find(entry => entry.textContent === text) || root.querySelectorAll('button').find(entry => entry.textContent === text); assert.ok(result, 'Button exists: ' + text); return result; }
 	return {core, window, document, frameDocument, root, inspector, mutations, fieldNode, button, mediaEvents, beforeUnload, notify: emit, get editing() { return editing; }, get saves() { return saves; }};
@@ -126,22 +140,21 @@ app.button('Undo').emit('click'); equal(app.core.getField('hero', 'title'), 'App
 app.button('Redo').emit('click'); equal(app.core.getField('hero', 'title'), 'A new heading', 'Redo restores the applied heading');
 
 app.frameDocument.emit('click', {target: rich});
-const firstTextarea = app.root.querySelectorAll('textarea')[0];
-equal(firstTextarea.value, '<p>Shared <a href="/approved/">approved link</a>.</p>', 'rich editor loads canonical shared HTML rather than rendered decoration');
-firstTextarea.value = '<p>Cancelled replacement.</p>'; app.button('Cancel').emit('click');
+equal(rich.innerHTML, '<p>Shared <a href="/approved/">approved link</a>.</p>', 'direct rich editing loads canonical shared HTML rather than rendered decoration');
+rich.innerHTML = '<p>Cancelled replacement.</p>'; app.button('Cancel').emit('click');
 equal(app.core.getSection('copy').data, {}, 'Cancel preserves inherited rich text without materializing an override');
-app.frameDocument.emit('click', {target: rich}); app.root.querySelectorAll('textarea')[0].value = '<p>Normalized HTML without typing.</p>'; app.button('Apply').emit('click');
+app.frameDocument.emit('click', {target: rich}); rich.innerHTML = '<p>Normalized HTML without typing.</p>'; app.button('Done').emit('click');
 equal(app.core.getSection('copy').data, {}, 'editor formatting changes without user input do not detach shared rich text');
-app.frameDocument.emit('click', {target: rich}); const changedRich = app.root.querySelectorAll('textarea')[0]; changedRich.value = '<p>Page <strong>specific</strong> content.</p>'; changedRich.emit('input'); app.button('Apply').emit('click');
+app.frameDocument.emit('click', {target: rich}); rich.innerHTML = '<p>Page <strong>specific</strong> content.</p>'; rich.emit('input'); app.button('Done').emit('click');
 equal(app.core.getSection('copy').data, {body: '<p>Page <strong>specific</strong> content.</p>'}, 'Apply overrides only the edited field on the current page');
 app.button('Use client default').emit('click'); equal(app.core.getSection('copy').data, {}, 'reset restores inheritance by deleting the local key');
-app.frameDocument.emit('click', {target: rich}); const quicktagsRich = app.root.querySelectorAll('textarea')[0];
-quicktagsRich.value = '<p>Shared <strong>approved link</strong>.</p>'; quicktagsRich.emit('change'); app.button('Apply').emit('click');
-equal(app.core.getSection('copy').data, {body: '<p>Shared <strong>approved link</strong>.</p>'}, 'HTML Quicktags toolbar changes apply without requiring a typing input event');
+app.frameDocument.execCommand = command => { if (command === 'bold') rich.innerHTML = '<p>Shared <strong>approved link</strong>.</p>'; };
+app.frameDocument.emit('click', {target: rich}); app.button('Bold').emit('click'); app.button('Done').emit('click');
+equal(app.core.getSection('copy').data, {body: '<p>Shared <strong>approved link</strong>.</p>'}, 'toolbar formatting applies even when the browser emits no input event');
 app.button('Use client default').emit('click');
-app.frameDocument.emit('click', {target: rich}); const unchangedHtml = app.root.querySelectorAll('textarea')[0]; unchangedHtml.emit('change'); app.button('Apply').emit('click');
-equal(app.core.getSection('copy').data, {}, 'a change event with unchanged canonical HTML does not create an inherited override');
-app.frameDocument.emit('click', {target: rich}); const submittedRich = app.root.querySelectorAll('textarea')[0]; submittedRich.value = '<p>Applied before the normal WordPress submit.</p>'; submittedRich.emit('input'); app.notify({type: 'beforeSave'});
+app.frameDocument.emit('click', {target: rich}); rich.emit('input'); app.button('Done').emit('click');
+equal(app.core.getSection('copy').data, {}, 'an input event with unchanged canonical HTML does not create an inherited override');
+app.frameDocument.emit('click', {target: rich}); rich.innerHTML = '<p>Applied before the normal WordPress submit.</p>'; rich.emit('input'); app.notify({type: 'beforeSave'});
 equal(app.core.getField('copy', 'body'), '<p>Applied before the normal WordPress submit.</p>', 'native WordPress submission flushes an active rich text edit');
 equal(mounted.isEditing(), false, 'normal WordPress submission closes the edit transaction');
 
@@ -165,34 +178,20 @@ equal(visual.mount(unsupported.core, unsupported.window, unsupported.document), 
 unsupported.core.config.mode = 'page'; unsupported.core.config.isV2 = false;
 equal(visual.mount(unsupported.core, unsupported.window, unsupported.document), null, 'legacy pages retain their existing editor and migration controls');
 
-const formatted = fixture(), editors = new Map();
+const formatted = fixture();
 formatted.core.config.saveLabel = 'Update page';
-formatted.window.tinymce = {get: id => editors.get(id)};
-formatted.window.wp.editor = {
-	initialize(id, options) {
-		const handlers = new Map(); const editor = {
-			content: '<p>Shared <a href="/approved/">approved link</a>.</p>\n',
-			on(names, handler) { for (const name of names.split(' ')) { const list = handlers.get(name) || []; list.push(handler); handlers.set(name, list); } },
-			emit(name) { for (const handler of handlers.get(name) || []) handler({preventDefault() {}}); },
-			getContent() { return this.content; }, isHidden: () => false, focus() {}
-		};
-		editors.set(id, editor); options.tinymce.setup(editor); editor.emit('init');
-	},
-	remove(id) { editors.delete(id); }
-};
 const formattedField = formatted.fieldNode('copy', 'body', 'html');
 visual.mount(formatted.core, formatted.window, formatted.document);
 ok(formatted.button('Update page'), 'the primary save button distinguishes an existing published page');
-formatted.frameDocument.emit('click', {target: formattedField}); formatted.button('Apply').emit('click');
-equal(formatted.core.getSection('copy').data, {}, 'untouched TinyMCE normalization preserves the inherited canonical field');
+formatted.frameDocument.emit('click', {target: formattedField}); formatted.button('Done').emit('click');
+equal(formatted.core.getSection('copy').data, {}, 'opening direct rich text preserves the inherited canonical field');
 formatted.frameDocument.emit('click', {target: formattedField});
-let richEditor = [...editors.values()][0], normalized = richEditor.content;
-richEditor.content = '<p>A temporary formatting edit.</p>'; richEditor.emit('change'); richEditor.content = normalized; richEditor.emit('Undo'); formatted.button('Apply').emit('click');
-equal(formatted.core.getSection('copy').data, {}, 'undoing all rich editor changes avoids a normalized local override');
-formatted.frameDocument.emit('click', {target: formattedField}); richEditor = [...editors.values()][0]; richEditor.content = '<p>A deliberate <strong>format change</strong>.</p>'; richEditor.emit('change'); formatted.button('Apply').emit('click');
-equal(formatted.core.getSection('copy').data, {body: '<p>A deliberate <strong>format change</strong>.</p>'}, 'TinyMCE toolbar edits preserve formatting and apply only the canonical body field');
-equal(formatted.mutations.length, 1, 'normalization, open and Undo add no history; one real rich edit adds one transaction');
-
+formattedField.innerHTML = '<p>A temporary formatting edit.</p>'; formattedField.emit('input'); formattedField.emit('keydown', {key: 'z', ctrlKey: true}); formatted.button('Done').emit('click');
+equal(formatted.core.getSection('copy').data, {}, 'undoing all rich changes preserves sparse inheritance');
+formatted.frameDocument.execCommand = command => { if (command === 'bold') formattedField.innerHTML = '<p>A deliberate <strong>format change</strong>.</p>'; };
+formatted.frameDocument.emit('click', {target: formattedField}); formatted.button('Bold').emit('click'); formatted.button('Done').emit('click');
+equal(formatted.core.getSection('copy').data, {body: '<p>A deliberate <strong>format change</strong>.</p>'}, 'native toolbar formatting applies only the canonical body field');
+equal(formatted.mutations.length, 1, 'opening and local Undo add no model history; one real rich edit adds one transaction');
 const globallyHidden = fixture();
 globallyHidden.core.config.sharedUrl = 'https://site.example/wp-admin/edit.php?page=nova-service-shared&tab=library';
 const ordinaryGetSection = globallyHidden.core.getSection;
@@ -235,22 +234,22 @@ const bufferedController = visual.mount(buffered.core, buffered.window, buffered
 buffered.frameDocument.emit('click', {target: bufferedRich});
 equal(buffered.beforeUnload().prevented, false, 'opening inherited rich text alone does not warn about unsaved work');
 equal(bufferedController.hasPendingChanges(), false, 'an untouched rich editor has no dirty buffer');
-let bufferedTextarea = buffered.root.querySelectorAll('textarea')[0]; bufferedTextarea.value = '<p>Unsaved draft in the rich editor.</p>'; bufferedTextarea.emit('input');
+bufferedRich.innerHTML = '<p>Unsaved draft in the rich editor.</p>'; bufferedRich.emit('input');
 equal(bufferedController.hasPendingChanges(), true, 'a rich edit is protected before Apply changes the model');
 equal(buffered.beforeUnload().prevented, true, 'navigation warns about buffered rich text changes');
 equal(buffered.beforeUnload().returnValue, '', 'buffered edits request the browser standard unload warning');
 equal(buffered.core.getSection('copy').data, {}, 'the unload warning does not detach inherited rich text');
 equal(buffered.mutations, [], 'the unload warning does not apply an edit or create undo history');
-bufferedTextarea.value = buffered.core.getField('copy', 'body'); bufferedTextarea.emit('input');
+bufferedRich.innerHTML = buffered.core.getField('copy', 'body'); bufferedRich.emit('input');
 equal(buffered.beforeUnload().prevented, false, 'undoing every rich change removes the unload warning');
-bufferedTextarea.value = '<p>A cancelled buffer.</p>'; bufferedTextarea.emit('input'); buffered.button('Cancel').emit('click');
+bufferedRich.innerHTML = '<p>A cancelled buffer.</p>'; bufferedRich.emit('input'); buffered.button('Cancel').emit('click');
 equal(buffered.beforeUnload().prevented, false, 'Cancel removes dirty buffer protection');
 equal(buffered.mutations, [], 'opening, changing and cancelling an inherited field leaves the document and history untouched');
 buffered.frameDocument.emit('click', {target: bufferedHeading}); bufferedHeading.textContent = 'An unsaved inline title'; bufferedHeading.emit('input');
 equal(buffered.beforeUnload().prevented, true, 'an uncommitted inline heading is also protected');
 equal(buffered.core.getField('hero', 'title'), 'Approved title', 'inline unload protection leaves the canonical heading unchanged');
 bufferedHeading.emit('keydown', {key: 'Escape'}); equal(buffered.beforeUnload().prevented, false, 'cancelling inline text removes its unload warning');
-buffered.frameDocument.emit('click', {target: bufferedRich}); bufferedTextarea = buffered.root.querySelectorAll('textarea')[0]; bufferedTextarea.value = '<p>Committed on normal submission.</p>'; bufferedTextarea.emit('input'); buffered.notify({type: 'beforeSave'});
+buffered.frameDocument.emit('click', {target: bufferedRich}); bufferedRich.innerHTML = '<p>Committed on normal submission.</p>'; bufferedRich.emit('input'); buffered.notify({type: 'beforeSave'});
 equal(bufferedController.hasPendingChanges(), false, 'normal WordPress submit flushes the buffer before navigation');
 equal(buffered.beforeUnload().prevented, false, 'the visual buffer guard does not interrupt an authorized normal save');
 
@@ -309,17 +308,22 @@ cancelledDrag.core.preview.framePending = true; cancelledDrag.notify({type: 'sta
 
 const scrollClose = fixture(), scrollField = scrollClose.fieldNode('copy', 'body', 'html');
 const canvasView = scrollClose.core.preview.frame.contentWindow; canvasView.scrollX = 4; canvasView.scrollY = 720; scrollClose.window.scrollX = 3; scrollClose.window.scrollY = 160;
-let obsoleteFieldFocuses = 0; scrollField.focus = () => { obsoleteFieldFocuses++; canvasView.scrollY = 0; };
+let obsoleteFieldFocuses = 0; scrollField.focus = options => { obsoleteFieldFocuses++; if (!options || !options.preventScroll) canvasView.scrollY = 0; };
 scrollClose.window.wp.editor = {initialize() {}, remove() { canvasView.scrollY = 0; scrollClose.window.scrollY = 0; }};
 const scrollController = visual.mount(scrollClose.core, scrollClose.window, scrollClose.document);
-scrollClose.frameDocument.emit('click', {target: scrollField}); scrollController.finishEdit(false);
-equal([canvasView.scrollX, canvasView.scrollY, scrollClose.window.scrollX, scrollClose.window.scrollY], [4, 720, 3, 160], 'closing TinyMCE restores exact canvas and WordPress reading positions after editor cleanup');
+scrollClose.frameDocument.emit('click', {target: scrollField}); obsoleteFieldFocuses = 0; scrollController.finishEdit(false);
+equal([canvasView.scrollX, canvasView.scrollY, scrollClose.window.scrollX, scrollClose.window.scrollY], [4, 720, 3, 160], 'closing direct rich text preserves exact canvas and WordPress reading positions');
+equal([canvasView.lastScrollBehavior, scrollClose.window.lastScrollBehavior], ['instant', 'instant'], 'scroll restoration cannot inherit a theme smooth-scrolling animation');
 equal(obsoleteFieldFocuses, 0, 'closing rich text never refocuses the old rendered field');
 equal(scrollClose.mutations, [], 'scroll restoration does not commit a cancelled inherited field');
 const replacementDocument = new Document(), replacementSection = replacementDocument.createElement('section'), replacementField = replacementDocument.createElement('div');
 replacementSection.setAttribute('data-nova-service-section-id', 'copy'); replacementField.setAttribute('data-nova-service-field', 'body'); replacementField.setAttribute('data-nova-service-kind', 'html'); replacementField.textContent = 'Re-rendered copy'; replacementSection.appendChild(replacementField); replacementDocument.body.appendChild(replacementSection);
-scrollClose.core.preview.frame.contentDocument = replacementDocument; canvasView.scrollY = 0; scrollClose.core.preview.frame.emit('load');
-equal(canvasView.scrollY, 720, 'a later safe iframe refresh preserves the captured reading position');
+scrollClose.core.preview.framePending = true; scrollClose.core.preview.frame.contentDocument = replacementDocument; canvasView.scrollY = 0; canvasView.emit('scroll'); scrollClose.core.preview.frame.emit('load');
+equal(canvasView.scrollY, 720, 'a native scroll reset during pending iframe replacement cannot overwrite the captured reading position');
+scrollClose.frameDocument = replacementDocument;
+replacementDocument.emit('click', {target: replacementField}); scrollController.finishEdit(false); canvasView.scrollY = 760; canvasView.emit('scroll');
+const manualScrollDocument = new Document(); scrollClose.core.preview.framePending = true; scrollClose.core.preview.frame.contentDocument = manualScrollDocument; canvasView.scrollY = 0; canvasView.emit('scroll'); scrollClose.core.preview.frame.emit('load');
+equal(canvasView.scrollY, 760, 'an explicit user scroll before iframe replacement remains the desired reading position');
 
 const multiplePointers = dragFixture(); multiplePointers.start('hero', 1); multiplePointers.move(500, 860); multiplePointers.start('copy', 2);
 multiplePointers.document.emit('pointerup', {pointerId: 2, clientX: 500, clientY: 860});
@@ -335,5 +339,92 @@ framePointers.frameDocument.emit('pointerup', {pointerId: 8, clientX: 400, clien
 framePointers.frameDocument.emit('pointercancel', {pointerId: 8}); equal(framePointers.editing, true, 'iframe-forwarded pointercancel ignores other pointers');
 framePointers.frameDocument.emit('pointercancel', {pointerId: 7}); equal(framePointers.editing, false, 'the matching iframe cancellation ends the original gesture');
 equal(framePointers.mutations, [], 'matching cancellation ends the drag without creating history');
+
+for (const url of ['https://site.example/page/', '/offer/', '#consult', 'mailto:hello@example.com', 'tel:+31850202759', '../related/']) { equal(visual.safeRichURL(url), url, 'rich links retain a supported website or contact URL'); }
+for (const url of ['javascript:alert(1)', 'data:text/html,unsafe', '//unverified.example/', 'java\nscript:alert(1)', 'vbscript:unsafe', '\\host/path']) { equal(visual.safeRichURL(url), '', 'rich link input rejects executable or ambiguous URL schemes'); }
+const local = visual.richHistory('<p>One</p>'); local.record('<p>Two</p>', {start: 1, end: 2}); local.record('<p>Three</p>', {start: 3, end: 3});
+equal(local.undo(), {html: '<p>Two</p>', selection: {start: 1, end: 2}}, 'local rich Undo restores HTML and the local text selection');
+equal(local.undo().html, '<p>One</p>', 'local rich Undo stops at its own original field'); equal(local.undo(), null, 'local history never enters edits from other fields');
+equal(local.redo().html, '<p>Two</p>', 'local rich Redo restores formatting independently of model history'); local.record('<p>A new branch</p>', null); equal(local.redo(), null, 'new typing discards only the local redo branch');
+
+const direct = fixture(), directField = direct.fieldNode('copy', 'body', 'html'); const directController = visual.mount(direct.core, direct.window, direct.document);
+direct.frameDocument.emit('click', {target: directField});
+equal(direct.root.querySelectorAll('.nova-visual-rich-panel').length, 0, 'rich text editing has no popup or separate form editor');
+equal(directField.getAttribute('contenteditable'), 'true', 'paragraphs become editable in the rendered page');
+equal(direct.root.querySelectorAll('.nova-visual-rich-toolbar')[0].hidden, false, 'a compact formatting toolbar accompanies the active paragraph');
+equal(direct.root.querySelectorAll('.nova-visual-section-overlays')[0].hidden, true, 'section icons are paused while direct rich text is active');
+const beforeTextDrop = directField.innerHTML;
+const textDrop = directField.emit('drop', {dataTransfer: {getData: () => '<p>Dropped at a different visual position.</p>'}});
+equal(textDrop.prevented, true, 'text drops are explicitly disabled rather than inserted at a stale caret');
+equal(directField.innerHTML, beforeTextDrop, 'a text drop leaves the visible rich field unchanged');
+equal(direct.core.getSection('copy').data, {}, 'a text drop preserves shared canonical inheritance');
+equal(direct.mutations, [], 'a text drop creates no canonical mutation or model history');
+equal(directController.hasPendingChanges(), false, 'a blocked text drop does not mark the buffer dirty');
+directField.innerHTML = '<p>A direct first change.</p>'; directField.emit('input'); directField.innerHTML = '<p>A direct second change.</p>'; directField.emit('input'); directField.emit('keydown', {key: 'z', ctrlKey: true});
+equal(directField.innerHTML, '<p>A direct first change.</p>', 'Ctrl+Z reverses only the current rich field buffer');
+equal(direct.core.getSection('copy').data, {}, 'local rich Undo does not alter the underlying document');
+equal(direct.core.getField('hero', 'title'), 'Approved title', 'local rich Undo leaves other page fields unchanged');
+directField.emit('beforeinput', {inputType: 'historyUndo'}); equal(directController.hasPendingChanges(), false, 'native historyUndo is scoped to the active field and can return to a clean buffer');
+directField.innerHTML = '<p>Saved by clicking outside.</p>'; directField.emit('input'); direct.document.emit('click', {target: direct.document.body});
+equal(direct.core.getField('copy', 'body'), '<p>Saved by clicking outside.</p>', 'clicking outside applies the current canonical rich buffer');
+equal(direct.mutations.length, 1, 'multiple rich changes still commit as one model transaction');
+
+const linkControls = fixture(), linkField = linkControls.fieldNode('copy', 'body', 'html'); const linkController = visual.mount(linkControls.core, linkControls.window, linkControls.document);
+linkControls.frameDocument.emit('click', {target: linkField}); linkControls.button('Link').emit('click');
+const linkInput = linkControls.root.querySelectorAll('.nova-visual-rich-link-url')[0];
+equal([linkInput.getAttribute('type'), linkInput.getAttribute('inputmode')], ['text', 'url'], 'link controls allow validated relative URLs without native URL constraint validation');
+let appliedURL = ''; linkControls.frameDocument.execCommand = (command, ui, value) => { if (command === 'createLink') appliedURL = value; };
+linkInput.value = '/relevant-service/'; const enterLink = linkInput.emit('keydown', {key: 'Enter'});
+equal(enterLink.prevented, true, 'Enter in the link control prevents implicit WordPress form submission');
+equal(appliedURL, '/relevant-service/', 'Enter applies a supported relative link through explicit validation');
+equal(linkControls.saves, 0, 'applying a link never invokes the page publishing action');
+linkControls.button('Link').emit('click'); linkInput.emit('keydown', {key: 'Escape'});
+equal(linkControls.root.querySelectorAll('.nova-visual-rich-link-panel')[0].hidden, true, 'Escape closes only the compact link controls');
+equal(linkController.isEditing(), true, 'Escape in the link controls keeps the paragraph editor active');
+for (const selector of ['.nova-visual-rich-format', '.nova-visual-rich-alignment', '.nova-visual-rich-color', '.nova-visual-rich-link-url']) { equal(linkControls.root.querySelectorAll(selector)[0].getAttribute('data-preview-control'), '1', 'ephemeral formatting controls do not mark the canonical WordPress document dirty'); }
+const topParagraph = fixture(), topField = topParagraph.fieldNode('copy', 'body', 'html');
+const topViewport = rect(100, 100, 1200, 800); topParagraph.core.preview.frame.getBoundingClientRect = () => topViewport; topParagraph.core.preview.viewport.getBoundingClientRect = () => topViewport;
+const topController = visual.mount(topParagraph.core, topParagraph.window, topParagraph.document); topParagraph.root.querySelectorAll('.nova-visual-body')[0].getBoundingClientRect = () => topViewport; topField.getBoundingClientRect = () => rect(0, 0, 1200, 60);
+topParagraph.frameDocument.emit('click', {target: topField}); const topBar = topParagraph.root.querySelectorAll('.nova-visual-rich-toolbar')[0];
+ok(parseFloat(topBar.style.top) >= 68, 'at the top of the canvas the formatting bar sits below the paragraph without covering its first line');
+topController.finishEdit(false);
+
+const linkGeometry = fixture(), geometryField = linkGeometry.fieldNode('copy', 'body', 'html'), phoneViewport = rect(100, 100, 300, 400);
+linkGeometry.core.preview.frame.getBoundingClientRect = () => phoneViewport; linkGeometry.core.preview.frame.contentWindow.innerWidth = 300; linkGeometry.core.preview.viewport.getBoundingClientRect = () => phoneViewport;
+const geometryController = visual.mount(linkGeometry.core, linkGeometry.window, linkGeometry.document); linkGeometry.root.querySelectorAll('.nova-visual-body')[0].getBoundingClientRect = () => phoneViewport;
+let paragraphTop = 0; geometryField.getBoundingClientRect = () => rect(0, paragraphTop, 300, 40);
+const geometryBar = linkGeometry.root.querySelectorAll('.nova-visual-rich-toolbar')[0], geometryPanel = linkGeometry.root.querySelectorAll('.nova-visual-rich-link-panel')[0];
+geometryBar.offsetWidth = 280; geometryBar.offsetHeight = 84; geometryBar.getBoundingClientRect = () => rect(100 + parseFloat(geometryBar.style.left), 100 + parseFloat(geometryBar.style.top), 280, 84); geometryPanel.offsetWidth = 360; geometryPanel.offsetHeight = 112;
+linkGeometry.frameDocument.emit('click', {target: geometryField}); linkGeometry.button('Link').emit('click');
+ok(parseFloat(geometryPanel.style.top) >= geometryBar.offsetHeight + 8, 'at the canvas top link controls open below the formatting bar instead of under WordPress controls');
+equal(geometryPanel.style.bottom, 'auto', 'explicit link positioning overrides toolbar above/below CSS rules');
+ok(parseFloat(geometryPanel.style.maxWidth) <= phoneViewport.width - 16, 'link controls are clamped horizontally within the phone viewport');
+equal(linkGeometry.document.activeElement, linkGeometry.root.querySelectorAll('.nova-visual-rich-link-url')[0], 'opening the clamped link controls retains URL input focus');
+geometryController.finishEdit(false); paragraphTop = 340; linkGeometry.frameDocument.emit('click', {target: geometryField}); linkGeometry.button('Link').emit('click');
+ok(parseFloat(geometryPanel.style.top) < 0, 'near the viewport bottom link controls open above the formatting bar');
+ok(geometryBar.getBoundingClientRect().top + parseFloat(geometryPanel.style.top) >= phoneViewport.top + 8, 'the above link panel remains inside the canvas viewport');
+
+const toolbarState = fixture(), stateField = toolbarState.fieldNode('copy', 'body', 'html');
+const firstParagraph = toolbarState.frameDocument.createElement('p'), coloredSpan = toolbarState.frameDocument.createElement('span'), coloredText = toolbarState.frameDocument.createElement('#text');
+coloredText.nodeType = 3; coloredText.textContent = 'Purple text'; firstParagraph.style.getPropertyValue = property => property === 'text-align' ? 'right' : ''; coloredSpan.appendChild(coloredText); firstParagraph.appendChild(coloredSpan);
+const leadingWhitespace = toolbarState.frameDocument.createElement('#text'); leadingWhitespace.nodeType = 3; leadingWhitespace.textContent = '\n  '; stateField.appendChild(leadingWhitespace); stateField.appendChild(firstParagraph);
+toolbarState.frameDocument.defaultView = {getComputedStyle: element => ({color: element === coloredSpan ? 'rgb(128, 0, 128)' : 'rgb(0, 0, 0)'})};
+visual.mount(toolbarState.core, toolbarState.window, toolbarState.document); toolbarState.frameDocument.emit('click', {target: stateField});
+const wholeField = toolbarState.frameDocument.createRange(); wholeField.selectNodeContents(stateField); toolbarState.frameDocument.getSelection().removeAllRanges(); toolbarState.frameDocument.getSelection().addRange(wholeField); toolbarState.frameDocument.emit('selectionchange');
+equal(toolbarState.root.querySelectorAll('.nova-visual-rich-alignment')[0].value, 'right', 'whole-field selection displays the first actual paragraph alignment');
+equal(toolbarState.root.querySelectorAll('.nova-visual-rich-color')[0].value, '#800080', 'whole-field selection displays effective text color from the first leaf span');
+equal(toolbarState.frameDocument.getSelection().getRangeAt(0), wholeField, 'reading formatting state never alters the whole-field selection');
+equal(toolbarState.mutations, [], 'format state inspection creates no canonical mutation or history');
+
+equal(visual.wpRichColor('rgb(133, 17, 217)'), '#8511d9', 'native editor RGB colors serialize to WordPress-compatible hex');
+equal(visual.wpRichColor('rgb(0,0,0)'), '#000000', 'black RGB retains channel boundaries');
+equal(visual.wpRichColor('rgb(255, 255, 255)'), '#ffffff', 'white RGB retains channel boundaries');
+equal(visual.wpRichColor('rgb(0 17 255)'), '#0011ff', 'space-separated RGB colors preserve each channel');
+equal(visual.wpRichColor('rgba(133,17,217,1)'), '#8511d9', 'opaque RGBA serializes without losing its color');
+equal(visual.wpRichColor('rgb(133 17 217 / 100%)'), '#8511d9', 'opaque percentage alpha serializes to six-character hex');
+equal(visual.wpRichColor('rgba(133,17,217,0.5)'), 'rgba(133,17,217,0.5)', 'existing transparent colors are not silently made opaque');
+equal(visual.wpRichColor('rgb(256,0,0)'), 'rgb(256,0,0)', 'invalid RGB channel values are not normalized to misleading colors');
+equal(visual.wpRichColor('#8511d9'), '#8511d9', 'existing hex colors remain unchanged');
+equal(visual.wpRichColor('var(--brand-color)'), 'var(--brand-color)', 'existing inherited brand color references remain unchanged');
 
 console.log('Passed ' + checks + ' visual editor checks.');

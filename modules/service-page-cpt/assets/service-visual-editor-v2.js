@@ -54,13 +54,75 @@
 		if (from < insertion) { insertion--; }
 		return insertion - from;
 	}
+	function safeRichURL(value) {
+		var url = String(value || '').trim();
+		if (!url || /[\u0000-\u001f\u007f\\]/.test(url) || /^\/\//.test(url)) { return ''; }
+		if (/^(?:https?:\/\/|mailto:|tel:|#|\/(?!\/))/i.test(url)) { return url; }
+		return !/[:\s]/.test(url) && /^[a-z0-9_.?~-]/i.test(url) ? url : '';
+	}
+	function richHistory(initial) {
+		var entries = [{html: initial, selection: null}], index = 0;
+		return {
+			record: function (html, selection) { if (entries[index].html === html) { return false; } entries = entries.slice(0, index + 1); entries.push({html: html, selection: copy(selection)}); if (entries.length > 80) { entries.shift(); } index = entries.length - 1; return true; },
+			undo: function () { if (index > 0) { index--; return copy(entries[index]); } return null; },
+			redo: function () { if (index < entries.length - 1) { index++; return copy(entries[index]); } return null; }
+		};
+	}
+	function wpRichColor(value) {
+		var match = String(value || '').match(/^rgba?\(\s*(\d+)\s*[, ]\s*(\d+)\s*[, ]\s*(\d+)(?:\s*[,/]\s*([0-9.]+%?))?\s*\)$/i);
+		if (!match || match.slice(1, 4).some(function (part) { return Number(part) > 255; }) || match[4] && match[4] !== '1' && match[4] !== '1.0' && match[4] !== '100%') { return value; }
+		return '#' + match.slice(1, 4).map(function (part) { return Number(part).toString(16).padStart(2, '0'); }).join('');
+	}
+	function safeRichHTML(html, document, canonical, atoms) {
+		var template = document.createElement('template'); template.innerHTML = String(html || '');
+		if (!template.content) { return ''; }
+		var allowed = 'p h1 h2 h3 h4 h5 h6 strong b em i u s del ins sub sup ul ol li blockquote q pre code kbd samp var br hr a span div figure figcaption img table caption col colgroup thead tbody tfoot tr td th dl dt dd abbr acronym cite time address small mark font details summary video audio source'.split(' ');
+		var discard = 'script style iframe object embed form input button textarea select option svg math link meta base'.split(' ');
+		Array.prototype.slice.call(template.content.querySelectorAll('*')).forEach(function (entry) {
+			var tag = entry.tagName.toLowerCase();
+			if (discard.indexOf(tag) >= 0 || !canonical && ['video', 'audio', 'source'].indexOf(tag) >= 0) { entry.remove(); return; }
+			if (allowed.indexOf(tag) < 0) { entry.replaceWith.apply(entry, Array.prototype.slice.call(entry.childNodes)); return; }
+			Array.prototype.slice.call(entry.attributes).forEach(function (attribute) {
+				var name = attribute.name.toLowerCase(), value = attribute.value;
+				if (name === 'style') {
+					var styles = [];
+					var properties = canonical ? Array.prototype.slice.call(entry.style) : ['color', 'background-color', 'text-align', 'font-weight', 'font-style', 'text-decoration'];
+					properties.forEach(function (property) {
+						var item = entry.style.getPropertyValue(property).trim();
+						if (canonical && (property === 'color' || property === 'background-color')) { item = wpRichColor(item); }
+						if (!item || !/^(?:--[a-z0-9_-]+|[a-z][a-z0-9-]*)$/i.test(property) || /^(?:behavior|-moz-binding|position|z-index)$/i.test(property) || /[\\;{}]|expression|javascript|vbscript|@import/i.test(item)) { return; }
+						var urls = item.match(/url\s*\([^)]*\)/gi) || [];
+						if (urls.some(function (url) { return !safeRichURL(url.replace(/^url\s*\(\s*['"]?|['"]?\s*\)$/gi, '')); })) { return; }
+						if (canonical || /^(?:[a-z#0-9\s.,()%\/-]+|var\(--[a-z0-9_-]+\))$/i.test(item)) { styles.push(property + ':' + item); }
+					});
+					if (styles.length) { entry.setAttribute('style', styles.join(';')); } else { entry.removeAttribute('style'); }
+					return;
+				}
+				if (name === 'href' && tag === 'a' || name === 'src' && ['img', 'video', 'audio', 'source'].indexOf(tag) >= 0) { var safe = safeRichURL(value); if (safe) { entry.setAttribute(name, safe); } else { entry.removeAttribute(name); } return; }
+				if (name === 'class' && canonical) { entry.setAttribute('class', value.split(/\s+/).filter(function (token) { return !/^nova-(?:visual|service-preview)/.test(token); }).join(' ')); return; }
+				if (canonical && name === 'srcset' && tag === 'img') { if (!value.split(',').every(function (candidate) { var parts = candidate.trim().split(/\s+/); return parts.length <= 2 && Boolean(safeRichURL(parts[0])) && (!parts[1] || /^(?:[0-9]+w|[0-9.]+x)$/.test(parts[1])); })) { entry.removeAttribute(name); } return; }
+				if (canonical && (/^(?:aria-|data-)/.test(name) && !/^data-nova-/.test(name) || ['sizes', 'loading', 'decoding', 'fetchpriority', 'align', 'valign', 'bgcolor', 'border', 'cellpadding', 'cellspacing', 'headers', 'abbr', 'nowrap', 'summary', 'span', 'start', 'reversed', 'value', 'datetime', 'cite', 'hreflang', 'download', 'dir', 'lang', 'open'].indexOf(name) >= 0)) { return; }
+				if (['title', 'alt', 'width', 'height', 'colspan', 'rowspan', 'scope', 'type', 'id'].indexOf(name) >= 0 || name === 'color' && tag === 'font') { return; }
+				if (tag === 'a' && ['target', 'rel'].indexOf(name) >= 0) { if (name === 'target' && value !== '_blank' && value !== '_self') { entry.removeAttribute(name); } return; }
+				if (['video', 'audio'].indexOf(tag) >= 0 && ['controls', 'loop', 'muted', 'preload', 'poster', 'autoplay', 'playsinline'].indexOf(name) >= 0) { if (name === 'poster' && !safeRichURL(value)) { entry.removeAttribute(name); } return; }
+				entry.removeAttribute(name);
+			});
+			if (tag === 'a' && entry.getAttribute('target') === '_blank') { entry.setAttribute('rel', 'noopener noreferrer'); }
+			if (tag === 'h1') { var heading = document.createElement('h2'); Array.prototype.slice.call(entry.attributes).forEach(function (attribute) { heading.setAttribute(attribute.name, attribute.value); }); while (entry.firstChild) { heading.appendChild(entry.firstChild); } entry.replaceWith(heading); }
+		});
+		if (canonical && atoms) { Array.prototype.slice.call(template.content.querySelectorAll('video,audio')).forEach(function (entry) {
+			var id = String(Object.keys(atoms).length), placeholder = document.createElement('span'); atoms[id] = entry.outerHTML;
+			placeholder.setAttribute('data-nova-rich-atom', id); placeholder.setAttribute('contenteditable', 'false'); placeholder.textContent = entry.tagName.toLowerCase() === 'video' ? 'Video' : 'Audio'; entry.replaceWith(placeholder);
+		}); }
+		return template.innerHTML;
+	}
 
 	function mount(core, window, document) {
 		if (!core || !core.root || !core.preview || !core.preview.frame || core.root.getAttribute('data-visual-mounted')) { return null; }
 		var config = core.config || {};
 		if (config.mode && config.mode !== 'page' || !config.isV2) { return null; }
 		var root = core.root, preview = core.preview, inspector = core.getInspector(), registry = config.sections || {};
-		var selected = '', selectedPath = '', selectedKind = '', activeEdit = null, richCounter = 0, inMetadata = false;
+		var selected = '', selectedPath = '', selectedKind = '', activeEdit = null, inMetadata = false;
 		var frameDocument = null, deviceButtons = {}, lastFocus = null, pendingScroll = null, restoringScroll = false;
 		var overlays = {}, hovered = '', drag = null, paintQueued = false;
 		root.setAttribute('data-visual-mounted', '1');
@@ -84,11 +146,37 @@
 		var status = node('span', {className: 'nova-visual-status', role: 'status', 'aria-live': 'polite'});
 		var structure = node('aside', {className: 'nova-visual-structure', 'aria-label': 'Page sections', hidden: ''});
 		var inspectorDrawer = node('aside', {className: 'nova-visual-inspector', 'aria-label': 'Selected section settings', hidden: ''});
-		var richPanel = node('section', {className: 'nova-visual-rich-panel', role: 'dialog', 'aria-label': 'Edit rich text', hidden: ''});
+		var richToolbar = node('div', {className: 'nova-visual-rich-toolbar', role: 'toolbar', 'aria-label': 'Rich text formatting', hidden: ''});
 		var overlayLayer = node('div', {className: 'nova-visual-section-overlays'});
 		var dropLine = node('div', {className: 'nova-visual-drop-target', hidden: '', 'aria-hidden': 'true'});
 		var fieldTools = node('span', {className: 'nova-visual-field-tools'});
 		var structureList = node('ol', {className: 'nova-visual-structure-list'});
+		var format = node('select', {className: 'nova-visual-rich-format', 'aria-label': 'Text format', 'data-preview-control': '1'});
+		['p', 'h2', 'h3'].forEach(function (tag) { format.appendChild(node('option', {value: tag}, tag === 'p' ? 'Paragraph' : 'Heading ' + tag.slice(1))); }); richToolbar.appendChild(format);
+		format.addEventListener('change', function () { richCommand('formatBlock', format.value); });
+		function richIcon(label, title, symbol, action, type) { var control = icon(label, title, symbol, action, type); control.classList.add('nova-visual-rich-action'); control.setAttribute('data-rich-action', type); richToolbar.appendChild(control); return control; }
+		richIcon('Bold', 'Bold', 'editor-bold', function () { richCommand('bold'); }, 'bold');
+		richIcon('Italic', 'Italic', 'editor-italic', function () { richCommand('italic'); }, 'italic');
+		richIcon('Bullets', 'Bulleted list', 'editor-ul', function () { richCommand('insertUnorderedList'); }, 'unordered');
+		richIcon('Numbered', 'Numbered list', 'editor-ol', function () { richCommand('insertOrderedList'); }, 'ordered');
+		var linkPanel = node('div', {className: 'nova-visual-rich-link-panel', hidden: ''});
+		var linkURL = node('input', {type: 'text', inputmode: 'url', 'data-preview-control': '1', className: 'nova-visual-rich-link-url', 'aria-label': 'Link URL', placeholder: 'https://…'});
+		richIcon('Link', 'Add or edit link', 'admin-links', function () { if (!activeEdit || !activeEdit.rich) { return; } activeEdit.remember(); linkPanel.hidden = !linkPanel.hidden; if (!linkPanel.hidden) { var anchor = activeEdit.anchorLink(); linkURL.value = anchor ? anchor.getAttribute('href') || '' : ''; positionRichToolbar(); linkURL.focus({preventScroll: true}); } }, 'link');
+		linkPanel.appendChild(linkURL);
+		function closeLink() { linkPanel.hidden = true; if (activeEdit && activeEdit.rich) { activeEdit.focusEditor(); } }
+		function applyLink() { var url = safeRichURL(linkURL.value); if (!url) { announce('Enter a website, page, email or telephone link.', true); return; } if (richCommand('createLink', url) !== false) { closeLink(); } }
+		linkURL.addEventListener('keydown', function (event) { if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); applyLink(); } if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeLink(); } });
+		linkPanel.appendChild(button('Apply link', applyLink));
+		linkPanel.appendChild(button('Remove link', function () { richCommand('unlink'); linkPanel.hidden = true; }));
+		linkPanel.appendChild(button('Close link', closeLink));
+		var alignment = node('select', {className: 'nova-visual-rich-alignment', 'aria-label': 'Text alignment', 'data-preview-control': '1'});
+		[['', 'Site alignment'], ['left', 'Left'], ['center', 'Center'], ['right', 'Right']].forEach(function (entry) { alignment.appendChild(node('option', {value: entry[0]}, entry[1])); }); richToolbar.appendChild(alignment);
+		alignment.addEventListener('change', function () { richCommand(alignment.value ? 'justify' + alignment.value.slice(0, 1).toUpperCase() + alignment.value.slice(1) : 'siteAlignment'); });
+		var color = node('input', {type: 'color', className: 'nova-visual-rich-color', 'aria-label': 'Text color', value: '#111827', 'data-preview-control': '1'}); richToolbar.appendChild(color);
+		color.addEventListener('input', function () { richCommand('foreColor', color.value); });
+		var done = richIcon('Done', 'Apply text changes', 'yes-alt', function () { finishEdit(true); }, 'done'); done.classList.add('is-primary');
+		richIcon('Cancel', 'Cancel text changes', 'no-alt', function () { finishEdit(false); }, 'cancel'); richToolbar.appendChild(linkPanel);
+		richToolbar.addEventListener('mousedown', function (event) { if (activeEdit && activeEdit.rich) { activeEdit.remember(); } if (event.target.closest && event.target.closest('button')) { event.preventDefault(); } });
 		function panel(target, title, close) {
 			var heading = node('div', {className: 'nova-visual-panel-heading'});
 			heading.appendChild(node('h3', {}, title)); heading.appendChild(button('Close', close, 'button button-small'));
@@ -144,7 +232,7 @@
 			else { setupNotice.appendChild(node('span', {}, 'Ask an administrator to finish setup.')); }
 			root.appendChild(setupNotice);
 		}
-		root.appendChild(body); body.appendChild(preview.pane); body.appendChild(overlayLayer); overlayLayer.appendChild(dropLine); body.appendChild(structure); body.appendChild(inspectorDrawer); body.appendChild(richPanel);
+		root.appendChild(body); body.appendChild(preview.pane); body.appendChild(overlayLayer); overlayLayer.appendChild(dropLine); body.appendChild(structure); body.appendChild(inspectorDrawer); body.appendChild(richToolbar);
 		root.classList.add('nova-service-visual-mode'); document.body.classList.add('nova-service-visual-open'); root.classList.toggle('is-phone', preview.device === 'phone');
 		preview.pane.hidden = false; preview.workspace.classList.remove('is-preview-hidden', 'is-preview-expanded');
 		preview.frame.setAttribute('title', 'Visual editor of your service page');
@@ -191,8 +279,8 @@
 			if (!position) { return; } restoringScroll = true; preview.scrollY = position.y;
 			try {
 				preview.viewport.scrollLeft = position.viewportX; preview.viewport.scrollTop = position.viewportY;
-				if (preview.frame.contentWindow && preview.frame.contentWindow.scrollTo) { preview.frame.contentWindow.scrollTo({left: position.x, top: position.y, behavior: 'auto'}); }
-				if (window.scrollTo) { window.scrollTo({left: position.parentX, top: position.parentY, behavior: 'auto'}); }
+				if (preview.frame.contentWindow && preview.frame.contentWindow.scrollTo) { preview.frame.contentWindow.scrollTo({left: position.x, top: position.y, behavior: 'instant'}); }
+				if (window.scrollTo) { window.scrollTo({left: position.parentX, top: position.parentY, behavior: 'instant'}); }
 			} finally { restoringScroll = false; }
 			paintOverlays();
 		}
@@ -205,13 +293,14 @@
 			return {rect: rect, viewport: viewportRect, body: bodyRect, left: Math.max(rect.left, viewportRect.left), top: Math.max(rect.top, viewportRect.top), right: Math.min(rect.right, viewportRect.right), bottom: Math.min(rect.bottom, viewportRect.bottom)};
 		}
 		function paintOverlays() {
-			overlayLayer.hidden = Boolean(preview.framePending || inMetadata);
+			overlayLayer.hidden = Boolean(preview.framePending || inMetadata || activeEdit && activeEdit.rich);
 			Object.keys(overlays).forEach(function (id) {
 				var entry = overlays[id], section = core.getSection(id), bounds = sectionRect(entry.source);
 				entry.node.classList.toggle('is-selected', id === selected); entry.node.classList.toggle('is-hovered', id === hovered); entry.node.classList.toggle('is-dragging', Boolean(drag && drag.started && drag.id === id));
 				entry.node.hidden = !section || section.enabled === false || section.sharedEnabled === false || inMetadata || Boolean(bounds && (bounds.right <= bounds.left || bounds.bottom <= bounds.top));
 				if (bounds) { entry.node.style.left = (bounds.left - bounds.body.left) + 'px'; entry.node.style.top = (bounds.top - bounds.body.top) + 'px'; entry.node.style.width = Math.max(0, bounds.right - bounds.left) + 'px'; entry.node.style.height = Math.max(0, bounds.bottom - bounds.top) + 'px'; }
 			});
+			if (activeEdit && activeEdit.rich) { positionRichToolbar(); }
 		}
 		function queuePaint() {
 			if (paintQueued) { return; } paintQueued = true;
@@ -375,42 +464,137 @@
 			target.addEventListener('blur', blur); target.addEventListener('keydown', key); target.addEventListener('paste', paste); target.addEventListener('input', input);
 			target.focus({preventScroll: true}); updateSelection(); announce('Edit text here. Enter applies; Escape cancels.');
 		}
-		function beginRich(target, id, path) {
+		function positionRichToolbar() {
+			if (!activeEdit || !activeEdit.rich) { return; }
+			var bounds = sectionRect(activeEdit.block()); if (!bounds) { return; }
+			richToolbar.style.maxWidth = Math.max(120, bounds.viewport.width - 16) + 'px';
+			var width = richToolbar.offsetWidth || 560, height = richToolbar.offsetHeight || 42;
+			var left = Math.max(bounds.viewport.left + 8, Math.min(bounds.rect.left, bounds.viewport.right - width - 8));
+			var above = bounds.rect.top - height - 8, below = above < bounds.viewport.top + 8, top = above;
+			if (below) {
+				top = bounds.rect.bottom + 8;
+				if (top + height > bounds.viewport.bottom - 8) {
+					var caret = activeEdit.caretRect(), caretBounds = caret && sectionRect({getBoundingClientRect: function () { return caret; }});
+					if (caretBounds) { var caretAbove = caretBounds.rect.top - height - 8; below = caretAbove < bounds.viewport.top + 8; top = below ? caretBounds.rect.bottom + 8 : caretAbove; }
+					else { top = bounds.viewport.bottom - height - 8; }
+				}
+			}
+			richToolbar.classList.toggle('is-below', below); richToolbar.classList.toggle('is-above', !below);
+			richToolbar.style.left = (left - bounds.body.left) + 'px'; richToolbar.style.top = (Math.max(bounds.viewport.top + 8, top) - bounds.body.top) + 'px';
+			positionLinkPanel();
+		}
+		function positionLinkPanel() {
+			if (linkPanel.hidden || !richToolbar.getBoundingClientRect || !preview.viewport.getBoundingClientRect) { return; }
+			var viewport = preview.viewport.getBoundingClientRect(), bar = richToolbar.getBoundingClientRect();
+			var maxWidth = Math.max(80, viewport.width - 16), maxHeight = Math.max(60, viewport.height - 16);
+			linkPanel.style.maxWidth = maxWidth + 'px'; linkPanel.style.maxHeight = maxHeight + 'px'; linkPanel.style.overflowY = 'auto';
+			var width = Math.min(linkPanel.offsetWidth || 360, maxWidth), height = Math.min(linkPanel.offsetHeight || 112, maxHeight);
+			var below = bar.bottom + 8, above = bar.top - height - 8;
+			var top = below + height <= viewport.bottom - 8 ? below : above >= viewport.top + 8 ? above : Math.max(viewport.top + 8, Math.min(below, viewport.bottom - height - 8));
+			var left = Math.max(viewport.left + 8, Math.min(bar.left, viewport.right - width - 8));
+			linkPanel.style.top = (top - bar.top) + 'px'; linkPanel.style.bottom = 'auto'; linkPanel.style.left = (left - bar.left) + 'px';
+		}
+		function richCommand(command, value) {
+			if (activeEdit && activeEdit.rich) { return run(function () { return activeEdit.command(command, value); }); }
+			return false;
+		}
+		function beginRich(target, id, path, event) {
 			if (!finishEdit(true)) { return; } select(id, path, 'html');
-			var edit = transaction(core, id, path), editorId = 'nova-visual-rich-' + (++richCounter), dirty = false, initialEditorHTML = String(edit.original || '');
-			core.setEditing(true); root.classList.add('is-inline-editing'); richPanel.textContent = ''; richPanel.hidden = false;
-			var content = panel(richPanel, 'Edit rich text', function () { finishEdit(false); });
-			var state = fieldState(core.getSection(id), path);
-			content.appendChild(node('p', {className: 'nova-visual-source-note'}, state.inherited ? 'From client defaults. Apply changes only this page.' : 'Changes apply to this page.'));
-			var textarea = node('textarea', {id: editorId, rows: 12, 'aria-label': 'Rich text content'}); textarea.value = String(edit.original || ''); content.appendChild(textarea);
-			function markDirty() { dirty = true; }
-			textarea.addEventListener('input', markDirty);
-			// WordPress Quicktags changes HTML through the toolbar and dispatches
-			// change rather than input. Those edits must participate in Apply too.
-			textarea.addEventListener('change', markDirty);
-			var actions = node('div', {className: 'nova-visual-rich-actions'});
-			actions.appendChild(button('Cancel', function () { finishEdit(false); })); actions.appendChild(button('Apply', function () { finishEdit(true); }, 'button button-primary')); richPanel.appendChild(actions);
-			function richKey(event) { if (event.key === 'Escape') { event.preventDefault(); finishEdit(false); } }
-			richPanel.addEventListener('keydown', richKey);
-			activeEdit = {transaction: edit, read: function () {
-				if (!dirty) { return edit.original; }
-				var editor = window.tinymce && window.tinymce.get(editorId);
-				var value = editor && !editor.isHidden() ? editor.getContent() : textarea.value;
-				return value === initialEditorHTML || value === edit.original ? edit.original : value;
-			}, cleanup: function () {
-				if (window.wp && window.wp.editor) { window.wp.editor.remove(editorId); }
-				richPanel.removeEventListener('keydown', richKey); richPanel.hidden = true; richPanel.textContent = ''; lastFocus = null;
-				if (preview.frame.focus) { preview.frame.focus({preventScroll: true}); }
+			var edit = transaction(core, id, path), renderedHTML = target.innerHTML, owner = target.ownerDocument, atoms = {}, dirty = false, bookmark = null;
+			var safe = safeRichHTML(String(edit.original || ''), owner, true, atoms); target.innerHTML = safe;
+			var baseline = target.innerHTML, history = richHistory(baseline);
+			core.setEditing(true); root.classList.add('is-inline-editing'); richToolbar.hidden = false; linkPanel.hidden = true;
+			target.setAttribute('contenteditable', 'true'); target.setAttribute('role', 'textbox'); target.setAttribute('aria-multiline', 'true'); target.setAttribute('aria-label', 'Edit rich text'); target.classList.add('nova-visual-rich-editing');
+			function contained(range) { return Boolean(range && (range.startContainer === target || target.contains(range.startContainer)) && (range.endContainer === target || target.contains(range.endContainer))); }
+			function selection() { return owner.getSelection ? owner.getSelection() : null; }
+			function remember() {
+				var selected = selection(); if (selected && selected.rangeCount) { bookmark = contained(selected.getRangeAt(0)) ? selected.getRangeAt(0).cloneRange() : null; }
+				var current = block(), tag = current.tagName && current.tagName.toLowerCase(); format.value = ['h2', 'h3'].indexOf(tag) >= 0 ? tag : 'p';
+				var aligned = current, explicitAlignment = '';
+				while (aligned && (aligned === target || target.contains(aligned))) { explicitAlignment = aligned.style && aligned.style.getPropertyValue ? aligned.style.getPropertyValue('text-align') : ''; if (explicitAlignment || aligned === target) { break; } aligned = aligned.parentElement; }
+				alignment.value = explicitAlignment;
+				var leaf = startLeaf(), colored = leaf && leaf.nodeType === 3 ? leaf.parentElement : leaf || current;
+				if (owner.defaultView && owner.defaultView.getComputedStyle) { var rgb = owner.defaultView.getComputedStyle(colored).color.match(/^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)(?:\s*[,/]\s*[\d.%]+)?\s*\)$/); if (rgb) { color.value = '#' + rgb.slice(1).map(function (part) { return Number(part).toString(16).padStart(2, '0'); }).join(''); } }
+				positionRichToolbar();
+			}
+			function caret(range) { var selected = selection(); if (selected && range && contained(range)) { selected.removeAllRanges(); selected.addRange(range); bookmark = range.cloneRange(); } }
+			function initialCaret() {
+				if (!owner.createRange) { return; } var range = null;
+				if (event && owner.caretRangeFromPoint) { range = owner.caretRangeFromPoint(event.clientX, event.clientY); }
+				if (!contained(range)) { range = owner.createRange(); range.selectNodeContents(target); range.collapse(false); } caret(range);
+			}
+			function offsets() {
+				if (!bookmark || !contained(bookmark) || !owner.createRange) { return null; }
+				var before = owner.createRange(); before.selectNodeContents(target); before.setEnd(bookmark.startContainer, bookmark.startOffset); var start = before.toString().length;
+				before.setEnd(bookmark.endContainer, bookmark.endOffset); return {start: start, end: before.toString().length};
+			}
+			function restoreOffsets(saved) {
+				if (!owner.createRange || !owner.createTreeWalker) { initialCaret(); return; }
+				var range = owner.createRange(), walker = owner.createTreeWalker(target, 4), text, total = 0, start = null, end = null;
+				while ((text = walker.nextNode())) { var next = total + text.textContent.length; if (saved && !start && saved.start <= next) { start = {node: text, offset: Math.max(0, saved.start - total)}; } if (saved && saved.end <= next) { end = {node: text, offset: Math.max(0, saved.end - total)}; break; } total = next; }
+				if (start && end) { range.setStart(start.node, start.offset); range.setEnd(end.node, end.offset); } else { range.selectNodeContents(target); range.collapse(false); } caret(range);
+			}
+			function changedRich() { remember(); if (history.record(target.innerHTML, offsets())) { dirty = true; } positionRichToolbar(); }
+			function localUndo(redo) { var state = redo ? history.redo() : history.undo(); if (state) { target.innerHTML = state.html; dirty = true; restoreOffsets(state.selection); positionRichToolbar(); } }
+			function startLeaf() {
+				var current = bookmark && bookmark.startContainer; if (!current || !contained(bookmark)) { return target; }
+				var children = current.childNodes || current.children || [], offset = bookmark.startOffset || 0;
+				if (current.nodeType !== 3 && children.length) {
+					var backward = offset >= children.length, index = Math.min(offset, children.length - 1);
+					while (children[index] && children[index].nodeType === 3 && !children[index].textContent.trim() && index + (backward ? -1 : 1) >= 0 && index + (backward ? -1 : 1) < children.length) { index += backward ? -1 : 1; }
+					current = children[index];
+					while (current && current.nodeType !== 3) { var nested = current.childNodes || current.children || []; if (!nested.length) { break; } var child = backward ? nested.length - 1 : 0; while (nested[child] && nested[child].nodeType === 3 && !nested[child].textContent.trim() && child + (backward ? -1 : 1) >= 0 && child + (backward ? -1 : 1) < nested.length) { child += backward ? -1 : 1; } current = nested[child]; }
+				}
+				return current && (current === target || target.contains(current)) ? current : target;
+			}
+			function block() { var current = startLeaf(); if (current && current.nodeType === 3) { current = current.parentElement; } var closest = current && current.closest ? current.closest('p,li,h2,h3,h4,blockquote') : null; return closest && (closest === target || target.contains(closest)) ? closest : target; }
+			function anchorLink() { var current = bookmark && bookmark.startContainer; if (current && current.nodeType === 3) { current = current.parentElement; } var anchor = current && current.closest ? current.closest('a') : null; return anchor && target.contains(anchor) ? anchor : null; }
+			function command(name, value) {
+				if (!bookmark || !contained(bookmark)) { announce('Select text in this paragraph before formatting it.', true); return false; }
+				target.focus({preventScroll: true}); caret(bookmark);
+				if (name === 'createLink') {
+					var url = safeRichURL(value), anchor = anchorLink(); if (!url) { return false; }
+					if (anchor) { anchor.setAttribute('href', url); changedRich(); return true; }
+					if (bookmark.collapsed) { announce('Select the text you want to link first.', true); return false; }
+					value = url;
+				}
+				if (name === 'siteAlignment') { var current = block(); if (current.style) { current.style.removeProperty('text-align'); } }
+				else if (owner.execCommand) { if (name === 'foreColor') { owner.execCommand('styleWithCSS', false, true); } owner.execCommand(name, false, value === undefined ? null : value); }
+				changedRich(); return true;
+			}
+			function paste(event) {
+				event.preventDefault(); var source = event.clipboardData; if (!source || !owner.createRange) { return; }
+				remember(); if (!bookmark || !contained(bookmark)) { return; }
+				var html = source.getData('text/html'), plain = source.getData('text/plain');
+				if (!html) { html = plain.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\r?\n/g, '<br>'); }
+				var template = owner.createElement('template'); template.innerHTML = safeRichHTML(html, owner, false, null);
+				var fragment = template.content, last = fragment && fragment.lastChild; if (!fragment || !last) { return; }
+				bookmark.deleteContents(); bookmark.insertNode(fragment); bookmark.setStartAfter(last); bookmark.collapse(true); caret(bookmark); changedRich();
+			}
+			function preventTextDrop(event) { event.preventDefault(); event.stopPropagation(); announce('Paste text into the paragraph to add it.'); }
+			function key(event) {
+				var modifier = event.ctrlKey || event.metaKey, name = String(event.key || '').toLowerCase();
+				if (name === 'escape') { event.preventDefault(); event.stopPropagation(); finishEdit(false); return; }
+				if (modifier && (name === 'z' || name === 'y')) { event.preventDefault(); event.stopPropagation(); localUndo(name === 'y' || Boolean(event.shiftKey)); return; }
+				if (modifier && (name === 'b' || name === 'i')) { event.preventDefault(); event.stopPropagation(); remember(); command(name === 'b' ? 'bold' : 'italic'); }
+				if (modifier && name === 'a' && owner.createRange) { event.preventDefault(); var range = owner.createRange(); range.selectNodeContents(target); caret(range); }
+			}
+			function beforeInput(event) { if (event.inputType === 'historyUndo' || event.inputType === 'historyRedo') { event.preventDefault(); localUndo(event.inputType === 'historyRedo'); } }
+			function read() {
+				if (!dirty || target.innerHTML === baseline) { return edit.original; }
+				var template = owner.createElement('template'); template.innerHTML = target.innerHTML;
+				if (template.content) { Array.prototype.slice.call(template.content.querySelectorAll('[data-nova-rich-atom]')).forEach(function (entry) { var original = atoms[entry.getAttribute('data-nova-rich-atom')]; if (original) { var media = owner.createElement('template'); media.innerHTML = original; entry.replaceWith(media.content); } else { entry.remove(); } }); }
+				return safeRichHTML(template.innerHTML, owner, true, null);
+			}
+			activeEdit = {rich: true, target: target, transaction: edit, read: read, remember: remember, block: block, anchorLink: anchorLink, command: command, caretRect: function () { if (!bookmark || !contained(bookmark) || !bookmark.getBoundingClientRect) { return null; } var range = bookmark.cloneRange(); range.collapse(false); var bounds = range.getBoundingClientRect(); return bounds.height ? bounds : null; }, focusEditor: function () { target.focus({preventScroll: true}); if (bookmark && contained(bookmark)) { caret(bookmark); } }, cleanup: function (applied) {
+				target.removeEventListener('input', changedRich); target.removeEventListener('keyup', remember); target.removeEventListener('mouseup', remember); target.removeEventListener('keydown', key); target.removeEventListener('beforeinput', beforeInput); target.removeEventListener('paste', paste); target.removeEventListener('drop', preventTextDrop); owner.removeEventListener('selectionchange', remember);
+				if (!applied || !dirty || target.innerHTML === baseline) { target.innerHTML = renderedHTML; }
+				target.removeAttribute('contenteditable'); target.removeAttribute('role'); target.removeAttribute('aria-label'); target.removeAttribute('aria-multiline'); target.classList.remove('nova-visual-rich-editing'); richToolbar.hidden = true; linkPanel.hidden = true; lastFocus = null;
+				var selected = selection(); if (selected) { selected.removeAllRanges(); } if (preview.frame.focus) { preview.frame.focus({preventScroll: true}); }
 			}};
-			if (window.wp && window.wp.editor) {
-				window.wp.editor.initialize(editorId, {tinymce: {wpautop: true, height: 280, menubar: false, block_formats: 'Paragraph=p;Heading 2=h2;Heading 3=h3;Heading 4=h4', toolbar1: 'formatselect bold italic bullist numlist blockquote link unlink undo redo', toolbar2: '', setup: function (editor) {
-					var initialized = false;
-					editor.on('init', function () { initialEditorHTML = editor.getContent(); initialized = true; editor.focus(); });
-					editor.on('input change keyup Undo Redo', function () { if (initialized && editor.getContent() !== initialEditorHTML) { dirty = true; } });
-					editor.on('keydown', function (event) { if (event.key === 'Escape') { event.preventDefault(); finishEdit(false); } });
-				}}, quicktags: true, mediaButtons: false});
-			} else { textarea.focus(); }
-			updateSelection(); announce('Edit rich text, then choose Apply or Cancel.');
+			target.addEventListener('input', changedRich); target.addEventListener('keyup', remember); target.addEventListener('mouseup', remember); target.addEventListener('keydown', key); target.addEventListener('beforeinput', beforeInput); target.addEventListener('paste', paste); target.addEventListener('drop', preventTextDrop); owner.addEventListener('selectionchange', remember);
+			target.focus({preventScroll: true}); initialCaret(); remember(); updateSelection(); positionRichToolbar();
+			announce('Edit text on the page. Use the toolbar for formatting; Done applies and Escape cancels.');
 		}
 		function chooseImage(id, path) {
 			if (!finishEdit(true)) { return; } select(id, path, 'image');
@@ -425,7 +609,7 @@
 		}
 		function attachFrame() {
 			var current = preview.frame.contentDocument; if (!current || current === frameDocument) { return; } frameDocument = current;
-			var style = current.createElement('style'); style.textContent = '[data-nova-service-field]{cursor:pointer}[data-nova-service-field]:focus{outline:2px solid #7158e2;outline-offset:4px}.nova-visual-text-editing{cursor:text;min-height:1em;outline:2px solid #7158e2!important;outline-offset:4px}.nova-visual-text-placeholder{opacity:.58;min-height:1em}[data-nova-service-section-id].nova-service-preview-selected{outline:2px solid #7158e2!important;outline-offset:2px}'; current.head.appendChild(style);
+			var style = current.createElement('style'); style.textContent = 'html{scroll-behavior:auto!important}[data-nova-service-field]{cursor:pointer}[data-nova-service-field]:focus{outline:2px solid #7158e2;outline-offset:4px}.nova-visual-text-editing,.nova-visual-rich-editing{cursor:text!important;min-height:1em;outline:2px solid #7158e2!important;outline-offset:4px}.nova-visual-rich-editing [data-nova-rich-atom]{display:inline-block;padding:6px 10px;border:1px solid #ccd0d4;border-radius:4px;background:#f7f8fa;color:#50575e;cursor:default}.nova-visual-text-placeholder{opacity:.58;min-height:1em}[data-nova-service-section-id].nova-service-preview-selected{outline:2px solid #7158e2!important;outline-offset:2px}'; current.head.appendChild(style);
 			current.querySelectorAll('.nova-service__preview-placeholder').forEach(function (entry) {
 				var field = entry.closest('[data-nova-service-field]'), path = field && field.getAttribute('data-nova-service-field');
 				var sectionNode = entry.closest('[data-nova-service-section-id]'), section = sectionNode && core.getSection(sectionNode.getAttribute('data-nova-service-section-id'));
@@ -442,12 +626,13 @@
 				var target = event.target.closest && event.target.closest('[data-nova-service-field]');
 				if (event.target.closest && event.target.closest('a,button[type="submit"],input[type="submit"]')) { event.preventDefault(); }
 				if (activeEdit && activeEdit.read && event.target.closest && event.target.closest('.nova-visual-text-editing')) { return; }
+				if (activeEdit && activeEdit.rich) { if (activeEdit.target.contains(event.target)) { activeEdit.remember(); return; } if (!finishEdit(true)) { return; } }
 				var section = event.target.closest && event.target.closest('[data-nova-service-section-id]'); if (!section) { return; }
 				var id = section.getAttribute('data-nova-service-section-id'), path = target && target.getAttribute('data-nova-service-field'), kind = target && target.getAttribute('data-nova-service-kind');
 				if (!target || !path) { if (finishEdit(true)) { select(id); } return; }
 				event.preventDefault();
 				if (kind === 'text') { beginText(target, id, path); }
-				else if (kind === 'html') { beginRich(target, id, path); }
+				else if (kind === 'html') { beginRich(target, id, path, event); }
 				else if (kind === 'image') { chooseImage(id, path); }
 				else { if (finishEdit(true)) { select(id, path, kind); showInspector(true); } }
 			}
@@ -459,7 +644,7 @@
 			current.addEventListener('pointermove', function (event) { if (drag && preview.frame.getBoundingClientRect) { var rect = preview.frame.getBoundingClientRect(), scale = rect.width / (preview.frame.contentWindow.innerWidth || rect.width); moveDrag({pointerId: event.pointerId, clientX: rect.left + event.clientX * scale, clientY: rect.top + event.clientY * scale, preventDefault: function () { event.preventDefault(); }}); } });
 			current.addEventListener('pointerup', function (event) { if (drag && preview.frame.getBoundingClientRect) { var rect = preview.frame.getBoundingClientRect(), scale = rect.width / (preview.frame.contentWindow.innerWidth || rect.width); endDrag(false, {pointerId: event.pointerId, clientX: rect.left + event.clientX * scale, clientY: rect.top + event.clientY * scale}); } }); current.addEventListener('pointercancel', function (event) { endDrag(true, event); });
 			current.addEventListener('keydown', function (event) { if (event.key === 'Escape' && drag) { event.preventDefault(); endDrag(true); } });
-			if (preview.frame.contentWindow && preview.frame.contentWindow.addEventListener) { preview.frame.contentWindow.addEventListener('scroll', function () { if (pendingScroll && !restoringScroll && !activeEdit) { pendingScroll = captureScroll(); } queuePaint(); }); }
+			if (preview.frame.contentWindow && preview.frame.contentWindow.addEventListener) { preview.frame.contentWindow.addEventListener('scroll', function () { if (pendingScroll && !restoringScroll && !activeEdit && !preview.framePending) { pendingScroll = captureScroll(); } queuePaint(); }); }
 			current.addEventListener('submit', function (event) { event.preventDefault(); }); installOverlays(); updateSelection(); restoreFocus();
 			if (pendingScroll) { var position = pendingScroll; pendingScroll = null; restoreScroll(position); }
 			if (current.documentElement) { current.documentElement.setAttribute('data-nova-visual-ready', 'true'); }
@@ -468,6 +653,7 @@
 		preview.frame.addEventListener('load', attachFrame);
 		document.addEventListener('pointermove', moveDrag); document.addEventListener('pointerup', function (event) { endDrag(false, event); }); document.addEventListener('pointercancel', function (event) { endDrag(true, event); });
 		document.addEventListener('keydown', function (event) { if (event.key === 'Escape' && drag) { event.preventDefault(); endDrag(true); } });
+		document.addEventListener('click', function (event) { if (activeEdit && activeEdit.rich && !(event.target.closest && event.target.closest('.nova-visual-rich-toolbar'))) { finishEdit(true); } });
 		if (window.addEventListener) { window.addEventListener('resize', queuePaint); window.addEventListener('blur', function () { if (drag) { endDrag(true); } }); }
 		if (window.ResizeObserver) { var overlayResize = new window.ResizeObserver(queuePaint); overlayResize.observe(preview.viewport); }
 		if (window.addEventListener) { window.addEventListener('beforeunload', function (event) {
@@ -487,7 +673,7 @@
 		return {select: select, finishEdit: finishEdit, openInspector: function (id) { select(id); showInspector(true); }, isEditing: function () { return Boolean(activeEdit); }, hasPendingChanges: hasPendingChanges};
 	}
 
-	var api = {mount: mount, transaction: transaction, fieldState: fieldState, mediaImage: mediaImage, isEmpty: isEmpty, dropOffset: dropOffset};
+	var api = {mount: mount, transaction: transaction, fieldState: fieldState, mediaImage: mediaImage, isEmpty: isEmpty, dropOffset: dropOffset, safeRichURL: safeRichURL, richHistory: richHistory, safeRichHTML: safeRichHTML, wpRichColor: wpRichColor};
 	if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
 	if (host && host.document) {
 		host.novaServiceVisualEditor = api;
