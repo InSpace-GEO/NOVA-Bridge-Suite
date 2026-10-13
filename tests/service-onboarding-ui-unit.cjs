@@ -44,6 +44,7 @@ class Element {
 		this.hidden = false;
 		this.classList = {
 			add: (...names) => { this.className = [...new Set([...this.className.split(/\s+/).filter(Boolean), ...names])].join(' '); },
+			remove: (...names) => { this.className = this.className.split(/\s+/).filter(name => !names.includes(name)).join(' '); },
 			toggle: (name, force) => {
 				const names = new Set(this.className.split(/\s+/).filter(Boolean));
 				if (force === undefined ? !names.has(name) : force) { names.add(name); } else { names.delete(name); }
@@ -56,6 +57,7 @@ class Element {
 	set textContent(value) { this._text = String(value); this.children = []; }
 	get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
 	setAttribute(name, value) { this.attributes[name] = String(value); }
+	getAttribute(name) { return this.attributes[name] || null; }
 	addEventListener(name, callback) { (this.events[name] ||= []).push(callback); }
 	querySelectorAll(selector) {
 		const tags = selector.split(',').map(tag => tag.trim());
@@ -68,14 +70,15 @@ class Element {
 	}
 	querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
 	focus() { this.focused = true; }
-	fire(name) {
+	fire(name, properties = {}) {
 		if (this.disabled && ['click', 'input', 'change'].includes(name)) { return; }
-		for (const callback of this.events[name] || []) { callback({target: this}); }
+		for (const callback of this.events[name] || []) { callback({target: this, ...properties}); }
 	}
 }
 
 function fixture(options = {}) {
 	const root = new Element('div');
+	const settingsFingerprint = new Element('input'); settingsFingerprint.value = 'saved-configuration-fingerprint';
 	const timers = new Map();
 	const requests = [];
 	const beforeUnload = [];
@@ -92,7 +95,9 @@ function fixture(options = {}) {
 		classification: options.classification || 'fresh', revision: 0,
 		step: options.step || 'business', draft,
 	};
+	if (options.settings) { state.complete = true; state.required = false; state.fingerprint = 'saved-configuration-fingerprint'; state.language = options.language || 'nl'; }
 	const config = {state, demo: options.demo === true, endpoint: 'https://example.test/onboarding', nonce: 'fixture-rest-nonce'};
+	if (options.settings) { config.mode = 'settings'; if (!options.stateLanguageOnly) { config.language = options.language || 'nl'; } }
 	if (options.preview) { config.previewUrl = 'https://example.test/editor-preview'; }
 	const window = {
 		novaServiceOnboarding: config,
@@ -108,11 +113,11 @@ function fixture(options = {}) {
 		},
 	};
 	vm.runInNewContext(script, {
-		window, document: {createElement: tag => new Element(tag), getElementById: id => id === 'nova-service-onboarding' ? root : null},
+		window, document: {createElement: tag => new Element(tag), getElementById: id => id === (options.settings ? 'nova-service-setup-business' : 'nova-service-onboarding') ? root : options.settings && id === 'nova-service-settings-fingerprint' ? settingsFingerprint : null},
 		URL, Promise, module: {exports: {}},
 	}, {filename: scriptPath});
 	return {
-		root, config, timers, requests,
+		root, config, timers, requests, settingsFingerprint,
 		button(text) {
 			return root.querySelectorAll('button').find(button => text instanceof RegExp ? text.test(button.textContent) : button.textContent === text);
 		},
@@ -231,8 +236,8 @@ async function main() {
 		equal(Object.keys(onboarding.credentialStyles).sort(), ['logo_rail', 'featured_membership', 'editorial', 'credential_tiles', 'trust_band', 'evidence_accordion'].sort(), 'All supported credential appearances remain available');
 	});
 
-	await scenario('Existing-install walkthrough cannot save or finish', async () => {
-		const view = fixture({classification: 'upgrade', preview: true});
+	await scenario('An explicitly requested sample walkthrough cannot save or finish', async () => {
+		const view = fixture({classification: 'upgrade', demo: true, preview: true});
 		const original = copy(view.config.state.draft);
 		check(!view.button('Save draft'), 'An upgrade walkthrough offers no draft-save action');
 		view.input('Business name', 'Read-only walkthrough edit');
@@ -247,6 +252,70 @@ async function main() {
 		check(view.button('Preview only').disabled, 'Finish remains disabled for the existing installation');
 		check(!view.navigationIsBlocked(), 'Read-only changes never trigger an unsaved-navigation warning');
 		equal(view.config.state.draft, original, 'Walkthrough interaction preserves the original localized configuration');
+	});
+
+	await scenario('Existing Setup settings save business identity explicitly without modifying shared documents', async () => {
+		const view = fixture({classification: 'upgrade', settings: true, language: 'de'}), original = copy(view.config.state.draft);
+		check(view.root.textContent.includes('Your business'), 'The existing installation has editable business settings');
+		check(!view.root.textContent.includes('Preview mode'), 'Real setup settings have no read-only preview banner');
+		check(!view.button('Finish setup'), 'An existing installation is not sent through fresh-install activation');
+		view.input('Business name', 'Updated real business'); view.input('Phone number', '+31 40 123 4567');
+		equal(view.requests.length, 0, 'Existing settings are not activated while typing');
+		equal(view.timers.size, 0, 'Existing settings do not schedule draft autosave or a second preview');
+		check(view.navigationIsBlocked(), 'Business edits are protected until explicitly saved');
+		view.button('Save business settings').fire('click');
+		equal(view.requests[0].body.action, 'save_business', 'Business settings use the scoped business-only endpoint action');
+		equal(view.requests[0].body.expected_revision, 0, 'The business save checks the current setup revision');
+		equal(view.requests[0].body.expected_fingerprint, 'saved-configuration-fingerprint', 'A concurrent shared setting change is guarded by the canonical fingerprint');
+		equal(view.requests[0].body.language, 'de', 'The save carries the selected multilingual context');
+		equal(Object.keys(view.requests[0].body.draft), ['business'], 'The identity request contains neither presets nor a page template');
+		equal(view.requests[0].body.draft.business.phone, '+31 40 123 4567', 'Phone details are editable alongside name and website');
+		equal(view.config.state.draft, original, 'Opening and editing settings never mutates the localized shared document');
+		check(view.button('Save business settings').disabled, 'Business saves prevent a duplicate write');
+		view.respond(view.requests[0], {data: {...view.config.state, revision: 1, fingerprint: 'after-business-save', draft: {business: {...view.requests[0].body.draft.business, name: 'Sanitized business name'}}}}); await flush();
+		check(!view.navigationIsBlocked(), 'The acknowledged business settings can be left safely');
+		check(view.root.textContent.includes('Business settings saved'), 'Successful saving is explained within Setup settings');
+		equal(view.field('Business name').value, 'Sanitized business name', 'Canonical saved business fields replace unsanitized local text');
+		equal(view.settingsFingerprint.value, 'after-business-save', 'The shared-content form accepts the business save from this same settings screen');
+		view.input('Website', 'https://changed.example.test'); view.button('Save business settings').fire('click');
+		equal(view.requests[1].body.expected_revision, 1, 'Later edits use the new acknowledged setup revision');
+		equal(view.requests[1].body.expected_fingerprint, 'after-business-save', 'Later identity edits use the newly acknowledged settings fingerprint');
+		view.respond(view.requests[1]); await flush();
+	});
+
+	await scenario('Existing business settings retain local work on validation and concurrent changes', async () => {
+		const view = fixture({classification: 'upgrade', settings: true});
+		view.input('Website', 'https://'); view.button('Save business settings').fire('click');
+		view.respond(view.requests[0], {status: 400, data: {message: 'Use a valid business website URL.'}}); await flush();
+		check(view.root.textContent.includes('Use a valid business website URL.'), 'Explicit saving explains invalid business fields');
+		check(!view.button('Save business settings').disabled, 'A validation error allows a corrected retry');
+		view.input('Website', 'https://corrected.example.test'); view.button('Save business settings').fire('click');
+		view.respond(view.requests[1], {status: 409, data: {message: 'Settings changed in another tab. Reload to continue.'}}); await flush();
+		check(view.button('Save business settings').disabled, 'A stale baseline cannot overwrite another settings session');
+		check(view.navigationIsBlocked(), 'Uncommitted business edits are retained and protected after a conflict');
+		equal(view.field('Website').value, 'https://corrected.example.test', 'The local correction remains visible after a concurrent edit');
+		view.button('Save business settings').fire('click');
+		equal(view.requests.length, 2, 'A conflict stops repeated writes with the old revision');
+	});
+
+	await scenario('Enter within business fields saves only the identity and cannot submit the shared library', async () => {
+		const view = fixture({settings: true});
+		view.input('Business name', 'A new name');
+		let prevented = false;
+		view.field('Business name').fire('keydown', {key: 'Enter', preventDefault: () => { prevented = true; }});
+		check(prevented, 'Enter prevents an implicit parent WordPress form submit');
+		equal(view.requests[0].body.action, 'save_business', 'Enter uses the same explicit scoped business save');
+		view.respond(view.requests[0]); await flush();
+		view.button('Save business settings').fire('click');
+		equal(view.requests.length, 1, 'Saving unchanged business settings produces no redundant write');
+	});
+
+	await scenario('Business settings use the language in the real localized setup state', async () => {
+		const view = fixture({settings: true, stateLanguageOnly: true, language: 'fr'});
+		view.input('Business name', 'French context business'); view.button('Save business settings').fire('click');
+		equal(view.requests[0].body.language, 'fr', 'Selected settings language survives when it is localized only inside state');
+		view.respond(view.requests[0]); await flush();
+		check(!view.navigationIsBlocked(), 'Saving through the state language receives the same navigation protection');
 	});
 
 	await scenario('Fresh edits autosave only a draft and resume with the current revision', async () => {

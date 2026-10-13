@@ -9,6 +9,7 @@ defined( 'ABSPATH' ) || exit;
 
 require_once __DIR__ . '/includes/class-service-document.php';
 require_once __DIR__ . '/includes/class-service-review-importer.php';
+require_once __DIR__ . '/includes/class-service-languages.php';
 require_once __DIR__ . '/includes/class-service-shared.php';
 require_once __DIR__ . '/includes/class-service-onboarding.php';
 require_once __DIR__ . '/includes/class-service-editor.php';

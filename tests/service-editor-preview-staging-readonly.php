@@ -6,6 +6,7 @@ use SEORAI\ServicePageCPT\ServiceSharedAdmin as Admin;
 $checks = [];
 $assert = static function ( $ok, $label ) use ( &$checks ) { if ( ! $ok ) { throw new RuntimeException( $label ); } $checks[] = $label; };
 $admin = get_user_by( 'login', 'codex-cta-test' );
+if ( ! $admin ) { $admins = get_users( [ 'role' => 'administrator', 'number' => 1 ] ); $admin = $admins[0] ?? null; }
 if ( ! $admin ) { throw new RuntimeException( 'Existing authorized test account is missing.' ); }
 $snapshot = static function () {
     $state = [ 'posts' => [], 'options' => [] ];

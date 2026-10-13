@@ -14,6 +14,7 @@ final class ServiceLivePreview {
 			'post_id' => [ 'type' => 'integer', 'minimum' => 0, 'required' => true ],
 			'document' => [ 'type' => 'object', 'required' => true ],
 			'title' => [ 'type' => 'string', 'maxLength' => 1000 ],
+			'language' => [ 'type' => 'string', 'maxLength' => 20 ],
 		] ] );
 	}
 	private static function error( string $message, int $status = 400 ) { return new \WP_Error( 'nova_service_preview_error', $message, [ 'status' => $status ] ); }
@@ -30,11 +31,11 @@ final class ServiceLivePreview {
 	}
 
 	/** Resolve draft settings directly in arrays; never install temporary option/meta values. */
-	public static function candidate( string $mode, int $post_id, $document ) {
+	public static function candidate( string $mode, int $post_id, $document, ?string $language = null ) {
 		$valid = ServiceDocument::validate_document( $document );
 		if ( \is_wp_error( $valid ) ) { return $valid; }
 		$document = ServiceDocument::sanitize_document( $document );
-		$presets = ServiceShared::get_presets();
+		$presets = ServiceShared::get_presets( $post_id, 'page' === $mode ? null : $language );
 		if ( 'library' === $mode ) {
 			foreach ( $document['sections'] as $preset ) { if ( \array_key_exists( 'shared_key', $preset ) ) { return self::error( 'Shared library entries cannot reference other entries.' ); } }
 			$presets = $document;
@@ -56,7 +57,7 @@ final class ServiceLivePreview {
 		}
 		unset( $section );
 		if ( 'template' === $mode && $post_id ) {
-			$patched = ServiceDocument::patch_content( $document, ServiceDocument::get_content( $post_id ) );
+			$patched = ServiceDocument::patch_content( $document, ServiceDocument::get_content( $post_id ), false, $post_id );
 			$copies = \array_column( $patched['sections'], null, 'id' );
 			foreach ( $document['sections'] as &$section ) {
 				$fields = 'hero' === $section['type'] ? [ 'title', 'eyebrow', 'body' ] : ( 'rich_text' === $section['type'] ? [ 'title', 'body' ] : ( 'faq' === $section['type'] ? [ 'items' ] : [] ) );
@@ -71,6 +72,9 @@ final class ServiceLivePreview {
 			}
 			unset( $section );
 		}
+		if ( class_exists( __NAMESPACE__ . '\\ServiceLanguages' ) ) {
+			foreach ( $document['sections'] as &$section ) { $data = (array) $section['data']; if ( isset( $data['title'] ) ) { $data['title'] = ServiceLanguages::generic_section_title( $section['type'], $data['title'], $post_id, 'page' === $mode ? null : $language ); $section['data'] = $data; } } unset( $section );
+		}
 		return [ 'document' => $document, 'warnings' => \array_values( \array_unique( $warnings ) ) ];
 	}
 
@@ -79,7 +83,9 @@ final class ServiceLivePreview {
 		if ( \is_wp_error( $allowed ) ) { return $allowed; }
 		$mode = (string) ( $request->get_param( 'mode' ) ?: 'page' );
 		$id = (int) $request->get_param( 'post_id' );
-		$candidate = self::candidate( $mode, $id, $request->get_param( 'document' ) );
+		$language = $request->get_param( 'language' );
+		if ( null !== $language && class_exists( __NAMESPACE__ . '\\ServiceLanguages' ) ) { $language = ServiceLanguages::validate( $language ); if ( \is_wp_error( $language ) ) { return $language; } }
+		$candidate = self::candidate( $mode, $id, $request->get_param( 'document' ), $language );
 		if ( \is_wp_error( $candidate ) ) { return $candidate; }
 		$title = $request->has_param( 'title' ) ? \sanitize_text_field( $request->get_param( 'title' ) ) : ( $id ? \get_the_title( $id ) : \__( 'Service preview', 'nova-bridge-suite' ) );
 		$html = self::frame( $id, $candidate['document'], $title );

@@ -239,7 +239,7 @@
 	function syncPreviewTargetContext() {
 		var hidden = document.getElementById('nova-service-preview-post-id'); if (hidden) { hidden.value = selectedPreviewId; }
 		var settings = root.closest('.nova-service-settings'); if (!settings) { return; }
-		settings.querySelectorAll('a.nav-tab').forEach(function (tab) {
+		settings.querySelectorAll('a.nav-tab, .nova-service-settings-nav > a').forEach(function (tab) {
 			var url = new URL(tab.href, window.location.href);
 			if (url.origin !== window.location.origin) { return; }
 			if (selectedPreviewId) { url.searchParams.set('preview_post_id', selectedPreviewId); } else { url.searchParams.delete('preview_post_id'); }
@@ -369,6 +369,7 @@
 		var controller = window.AbortController ? new window.AbortController() : null; preview.controller = controller;
 		preview.status.textContent = 'Updating preview…'; preview.pane.setAttribute('aria-busy', 'true');
 		var payload = {mode: editorMode, post_id: editorMode === 'page' ? Number(config.postId) : selectedPreviewId, document: clone(doc)};
+		if (config.language) { payload.language = config.language; }
 		var title = document.getElementById('title'); if (editorMode === 'page' && title) { payload.title = title.value; }
 		request(config.editorPreviewUrl, {method: 'POST', body: JSON.stringify(payload), signal: controller ? controller.signal : undefined}).then(function (result) {
 			if (serial !== preview.serial || preview.editing) { return; }
@@ -577,10 +578,12 @@
 	}
 	function renderSharedSelector(container, section) {
 		if (libraryMode) { return; }
-		var choices = {'': 'Local section — content belongs to this page'};
+		var sharedLayoutType = config.layoutOnly && ['hero', 'cta', 'custom_cta', 'reviews', 'credentials', 'people', 'location', 'map', 'video'].indexOf(section.type) >= 0;
+		var choices = sharedLayoutType && section.shared_key ? {} : {'': sharedLayoutType ? 'Existing local section — choose a shared version from Setup settings' : 'Local section — content belongs to this page'};
 		presets.filter(function (preset) { return preset.type === section.type; }).forEach(function (preset) { choices[preset.id] = preset.id + (preset.data && preset.data.title ? ' — ' + preset.data.title : '') + (preset.enabled === false ? ' (globally hidden)' : ''); });
 		if (section.shared_key && !hasOwn(choices, section.shared_key)) { choices[section.shared_key] = section.shared_key + ' (missing shared section)'; }
 		field(container, 'Reusable shared section', section.shared_key || '', function (key) {
+			if (sharedLayoutType && !key) { return; }
 			removeEditors();
 			if (key) {
 				if (!section.shared_key) { localBackups[section.id] = clone(section.data); }
@@ -589,9 +592,13 @@
 				section.data = effectiveData(section); delete section.shared_key;
 			}
 			changed(); render();
-		}, {choices: choices, help: 'Client defaults are selected by the page layout. Leave the shared version linked to follow the site settings, or choose another version. Check an Override box to customize only that field.'});
+		}, {choices: choices, help: config.layoutOnly ? 'Choose the shared version configured in Setup settings. This screen controls where it appears.' : 'Setup settings supply the shared versions used by the page layout. Leave the version linked, or choose another version. Check an Override box to customize only that field.'});
 		if (section.shared_key) {
 			var activePreset = presetFor(section);
+			if (config.layoutOnly) {
+				var editShared = element('a', {className: 'nova-setup-text-button', href: (config.setupUrl || config.sharedUrl) + '#shared-' + encodeURIComponent(section.shared_key)}, 'Edit this shared content in Setup settings');
+				container.appendChild(editShared); return;
+			}
 			container.appendChild(element('p', {className: 'nova-service-shared-note'}, 'Linked to shared section: ' + section.shared_key + '. Unchecked fields inherit shared content. Empty local overrides intentionally clear shared values.' + (activePreset && activePreset.enabled === false ? ' This shared version is globally hidden; enable it in the shared library to show it on linked pages.' : '')));
 			container.appendChild(button('Copy shared section into local fields', function () { removeEditors(); section.data = effectiveData(section); delete section.shared_key; changed(); render(); }));
 			if (localBackups[section.id]) { container.appendChild(button('Restore previous local fields', function () { removeEditors(); section.data = localBackups[section.id]; delete localBackups[section.id]; delete section.shared_key; changed(); render(); })); }
@@ -626,7 +633,7 @@
 			if (value === 'shared') { delete section.data.images; }
 			else { section.data.images = [clone(pool[index])]; }
 			render();
-		}, {choices: choices, help: 'Choose a fixed office photo for this page, or use the pool from Client defaults. A fixed choice overrides only Images; the rest of this section stays linked.'});
+		}, {choices: choices, help: 'Choose a fixed office photo for this page, or use the pool from Setup settings. A fixed choice overrides only Images; the rest of this section stays linked.'});
 	}
 	function renderImages(container, section) {
 		var images = collection(section, 'images');
@@ -993,6 +1000,7 @@
 		var checkbox = element('input', {type: 'checkbox'}); checkbox.checked = section.enabled !== false;
 		checkbox.addEventListener('click', function (event) { event.stopPropagation(); });
 		checkbox.addEventListener('change', function () { section.enabled = checkbox.checked; details.classList.toggle('is-disabled', !checkbox.checked); changed(); });
+		checkbox.disabled = Boolean(config.globalControlsReadOnly);
 		enabled.addEventListener('click', function (event) { event.stopPropagation(); });
 		enabled.appendChild(checkbox); enabled.appendChild(document.createTextNode(libraryMode ? ' Show on linked pages' : ' Show section')); summary.appendChild(enabled);
 		details.appendChild(summary);
@@ -1008,15 +1016,24 @@
 			if (!window.confirm('Remove this section and its content? This takes effect when you save the page.')) { return; }
 			removeEditors(); doc.sections.splice(index, 1); changed(); render();
 		}, 'button-link-delete'));
-		content.appendChild(actions);
+		if (!config.globalControlsReadOnly) { content.appendChild(actions); }
 		if (libraryMode) {
-			field(content, 'Shared section key', section.id, function (value) { expanded[value] = details.open; section.id = value; details.setAttribute('data-section-id', value); }, {pattern: '[a-zA-Z0-9_-]{1,80}', maxLength: 80, help: 'A unique key, for example people-amsterdam or awards-standard. Keep it stable after service pages reference it.'});
+			if (!config.globalControlsReadOnly) { field(content, 'Shared section key', section.id, function (value) { expanded[value] = details.open; section.id = value; details.setAttribute('data-section-id', value); }, {pattern: '[a-zA-Z0-9_-]{1,80}', maxLength: 80, help: 'A unique key, for example people-amsterdam or awards-standard. Keep it stable after service pages reference it.'}); }
+			details.id = 'shared-' + section.id;
 		}
 		renderSharedSelector(content, section);
-		dataField(content, section, 'width', 'Row width', {choices: {full: 'Full row', half: 'Half row — two columns'}, help: 'Place two half-row sections next to each other to share a row. Each section becomes full width on mobile. Shared sections can supply this setting; use an override only when needed.'});
+		if (!config.globalControlsReadOnly) { dataField(content, section, 'width', 'Row width', {choices: {full: 'Full row', half: 'Half row — two columns'}, help: 'Place two half-row sections next to each other to share a row. Each section becomes full width on mobile. Shared sections can supply this setting; use an override only when needed.'}); }
+		if (config.layoutOnly) {
+			if (!section.shared_key) {
+				content.appendChild(element('p', {className: 'nova-service-shared-note'}, ['hero', 'cta', 'custom_cta', 'reviews', 'credentials', 'people', 'location', 'map', 'video'].indexOf(section.type) >= 0 ? 'Choose a reusable version above to inherit the content configured in Setup settings.' : section.type === 'related' ? 'Related services are selected automatically for each page and its language.' : 'The title, rich text and FAQs are supplied separately for each service page.'));
+			}
+			details.appendChild(content);
+			details.addEventListener('toggle', function () { expanded[section.id] = details.open; });
+			return details;
+		}
 		dataField(content, section, 'eyebrow', 'Eyebrow / small label (optional)');
 		dataField(content, section, 'title', section.type === 'hero' ? 'Display title (leave empty to use the page title)' : 'Section heading');
-		if (section.type !== 'hero') { dataField(content, section, 'heading_level', 'Heading level', {choices: {h2: 'H2 — main section', h3: 'H3 — supporting section'}}); }
+		if (section.type !== 'hero' && !config.globalControlsReadOnly) { dataField(content, section, 'heading_level', 'Heading level', {choices: {h2: 'H2 — main section', h3: 'H3 — supporting section'}}); }
 		var appearances = {default: 'Site default'};
 		if (['hero', 'rich_text', 'people', 'location', 'cta'].indexOf(section.type) >= 0) {
 			appearances.split = 'Text and media side by side'; appearances.stacked = 'Stacked';
@@ -1033,10 +1050,10 @@
 		}
 		if (section.type === 'related') { appearances.cards = 'Service cards'; appearances.list = 'Compact service list'; }
 		appearances.compact = 'Compact';
-		dataField(content, section, 'layout', 'Section appearance', {choices: appearances, help: 'Site fonts, colors and shared styling form the baseline. Choose a layout variant only when this section needs a different presentation; linked sections can inherit their library appearance.'});
+		if (!config.globalControlsReadOnly) { dataField(content, section, 'layout', 'Section appearance', {choices: appearances, help: 'Site fonts, colors and shared styling form the baseline. Choose a layout variant only when this section needs a different presentation; linked sections can inherit their library appearance.'}); }
 		if (richTypes.indexOf(section.type) >= 0) { dataField(content, section, 'body', section.type === 'hero' ? 'Introductory copy' : 'Rich text', {rich: true}); }
-		if (section.type === 'location') {
-			dataField(content, section, 'image_selection', 'Office photo selection', {choices: {all: 'Show all photos', one_per_page: 'One photo per page'}, help: 'Add multiple office photos here or in Client defaults. One photo per page selects a stable photo from the pool, even when you reorder it. An Images override with one photo fixes that photo for the page.'});
+		if (section.type === 'location' && !config.globalControlsReadOnly) {
+			dataField(content, section, 'image_selection', 'Office photo selection', {choices: {all: 'Show all photos', one_per_page: 'One photo per page'}, help: 'Add multiple office photos here or in Setup settings. One photo per page selects a stable photo from the pool, even when you reorder it. An Images override with one photo fixes that photo for the page.'});
 			renderOfficePhotoSelector(content, section);
 		}
 		if (imageTypes.indexOf(section.type) >= 0 || section.type === 'rich_text') { collectionGroup(content, section, 'images', 'Images', renderImages); }
@@ -1046,12 +1063,12 @@
 			dataField(content, section, 'map_url', section.type === 'location' ? 'Google Maps embed URL (optional)' : 'Google Maps embed URL', {type: 'url', help: (section.type === 'location' ? 'Show a Google map below the paragraph instead of the address. Leave empty to show the location address. ' : '') + 'In Google Maps choose Share → Embed a map, then paste only the HTTPS iframe src URL (https://www.google.com/maps/embed?…). No API key is needed.'});
 		}
 		if (section.type === 'reviews') {
-			dataCheckbox(content, section, 'link_sources', 'Link to review sources', true, 'Source URLs are optional. Turn this off to show publisher labels and logos without clickable source links. Linked sections follow Client defaults unless you override this setting.');
+			if (!config.globalControlsReadOnly) { dataCheckbox(content, section, 'link_sources', 'Link to review sources', true, 'Source URLs are optional. Turn this off to show publisher labels and logos without clickable source links. Linked sections follow Setup settings unless you override this setting.'); }
 			renderDataLogoControl(content, section, 'source_logo', {label: 'Publisher / source logo', buttonLabel: 'Choose publisher logo', mediaTitle: 'Choose default review publisher logo', previewAlt: 'Default review publisher logo preview', help: 'Default logo for this section’s reviews or website testimonials. Individual cards can override it. Identified review platforms use a source badge and a provider logo when available.'});
 			renderReviewImport(content, section);
 		}
-		if (section.type === 'credentials') {
-			dataCheckbox(content, section, 'link_sources', 'Link to credential sources', true, 'Evidence URLs are optional. Turn this off to keep issuer images and credential text visible without click-through. Linked sections follow Client defaults unless you override this setting.');
+		if (section.type === 'credentials' && !config.globalControlsReadOnly) {
+			dataCheckbox(content, section, 'link_sources', 'Link to credential sources', true, 'Evidence URLs are optional. Turn this off to keep issuer images and credential text visible without click-through. Linked sections follow Setup settings unless you override this setting.');
 		}
 		if (['reviews', 'credentials', 'faq', 'related'].indexOf(section.type) >= 0) { collectionGroup(content, section, 'items', 'Items', renderItems); }
 		if (section.type === 'related') { collectionGroup(content, section, 'post_ids', 'Specific service links', renderRelated); }
@@ -1091,7 +1108,7 @@
 		} else { doc.sections.forEach(function (section, index) { list.appendChild(renderSection(section, index)); }); }
 		list.querySelectorAll('details[open]').forEach(initEditors);
 		if (!doc.sections.length) { list.appendChild(element('p', {className: 'nova-service-empty'}, libraryMode ? 'No shared sections yet. Add the reusable content this site needs.' : 'No sections yet. Add a hero and a call to action to start your page.')); }
-		if (!contextualOrder) { $(list).sortable({items: '> .nova-service-section', handle: '.nova-service-drag', axis: 'y', placeholder: 'nova-service-sort-placeholder', start: function () {
+		if (!contextualOrder && !config.globalControlsReadOnly) { $(list).sortable({items: '> .nova-service-section', handle: '.nova-service-drag', axis: 'y', placeholder: 'nova-service-sort-placeholder', start: function () {
 			collectEditors();
 			Object.keys(richFields).forEach(function (id) { if (window.wp && window.wp.editor) { window.wp.editor.remove(id); } });
 		}, stop: function () {
@@ -1106,6 +1123,7 @@
 		visualNotify('model');
 	}
 	var typeSelect = document.getElementById('nova-service-add-type');
+	if (config.globalControlsReadOnly) { typeSelect.disabled = true; document.getElementById('nova-service-add-section').disabled = true; }
 	Object.keys(registry).forEach(function (type) { typeSelect.appendChild(element('option', {value: type}, registry[type].label)); });
 	document.getElementById('nova-service-add-section').addEventListener('click', function () {
 		if (doc.sections.length >= 60) { status('A service page supports up to 60 sections.', true); return; }
@@ -1142,5 +1160,9 @@
 		saved = true;
 		updatePreviewSavedState();
 		setupVisualCore();
+		if (libraryMode && /^#shared-[a-zA-Z0-9_-]{1,80}$/.test(window.location.hash)) {
+			var linked = document.getElementById(window.location.hash.slice(1));
+			if (linked) { linked.open = true; linked.scrollIntoView({block: 'start'}); }
+		}
 	});
 }(window, document, window.jQuery));

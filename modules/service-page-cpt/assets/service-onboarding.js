@@ -70,9 +70,50 @@
 	}
 	if (typeof module !== 'undefined' && module.exports) { module.exports = {prepareDraft: prepareDraft, applyCTA: applyCTA, ctaIssue: ctaIssue, previewDocument: previewDocument, reviewStyles: reviewStyles, credentialStyles: credentialStyles}; }
 	if (!window || !document) { return; }
-	var config = window.novaServiceOnboarding || {}, root = document.getElementById('nova-service-onboarding');
+	var config = window.novaServiceOnboarding || {}, businessRoot = document.getElementById('nova-service-setup-business');
+	/** Existing installations use the full shared-content editor beside these business fields. */
+	function businessSettings(holder) {
+		var current = clone(config.state || {}), business = Object.assign({name: '', website: '', phone: ''}, config.business || (current.draft || {}).business || {}), saved = clone(business), busy = false, conflictDetected = false;
+		holder.textContent = ''; holder.classList.add('nova-service-setup-business');
+		holder.appendChild(node('h2', '', 'Your business'));
+		holder.appendChild(node('p', 'nova-setup-description', 'These business details apply to every language. Calls to action, people and proof are managed below.'));
+		var fields = node('div', 'nova-service-business-fields'), controls = [];
+		[['name', 'Business name', 'text', 'organization'], ['website', 'Website', 'url', 'url'], ['phone', 'Phone number', 'tel', 'tel']].forEach(function (entry) {
+			var label = node('label', 'nova-setup-field'), input = node('input'); label.appendChild(node('span', 'nova-setup-field-label', entry[1]));
+			input.type = entry[2]; input.autocomplete = entry[3]; input.value = business[entry[0]] || ''; input.setAttribute('data-business-field', entry[0]);
+			input.addEventListener('input', function () { business[entry[0]] = input.value; status.textContent = 'Unsaved business settings'; status.classList.remove('is-saved'); });
+			input.addEventListener('keydown', function (event) { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); saveBusiness(); } });
+			label.appendChild(input); fields.appendChild(label); controls.push(input);
+		});
+		holder.appendChild(fields);
+		var actions = node('div', 'nova-service-business-actions'), save = button('Save business settings', saveBusiness), status = node('span', 'nova-setup-save-status', 'Business settings saved'); status.setAttribute('aria-live', 'polite'); status.classList.add('is-saved'); actions.appendChild(save); actions.appendChild(status); holder.appendChild(actions);
+		var notice = node('div', 'nova-setup-message'); notice.setAttribute('aria-live', 'polite'); holder.appendChild(notice);
+		function dirty() { return JSON.stringify(saved) !== JSON.stringify(business); }
+		function saveBusiness() {
+			if (busy || conflictDetected) { return; }
+			if (!dirty()) { status.textContent = 'Business settings saved'; return; }
+			busy = true; notice.textContent = ''; controls.forEach(function (item) { item.disabled = true; }); save.disabled = true; status.textContent = 'Saving business settings…';
+			var payload = {action: 'save_business', expected_revision: current.revision || 0, draft: {business: clone(business)}};
+			if (current.fingerprint || config.expectedFingerprint) { payload.expected_fingerprint = current.fingerprint || config.expectedFingerprint; }
+			if (config.language || current.language) { payload.language = config.language || current.language; }
+			window.fetch(config.endpoint || config.restUrl, {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json', 'X-WP-Nonce': config.nonce || config.restNonce}, body: JSON.stringify(payload)}).then(function (response) {
+				return response.json().then(function (data) { if (!response.ok) { var error = new Error(data.message || 'Business settings could not be saved.'); error.status = response.status; throw error; } return data; });
+			}).then(function (result) {
+				current = result.state || result;
+				if (current.draft && current.draft.business) { business = Object.assign({name: '', website: '', phone: ''}, clone(current.draft.business)); controls.forEach(function (item) { item.value = business[item.getAttribute('data-business-field')] || ''; }); }
+				saved = clone(business); status.textContent = 'Business settings saved'; status.classList.add('is-saved');
+				var fingerprintField = document.getElementById('nova-service-settings-fingerprint'); if (fingerprintField && current.fingerprint) { fingerprintField.value = current.fingerprint; }
+				if (document.dispatchEvent && window.CustomEvent) { document.dispatchEvent(new window.CustomEvent('nova-service-business-saved', {detail: {state: current, language: config.language || ''}})); }
+			}).catch(function (error) {
+				conflictDetected = error.status === 409; status.textContent = 'Business settings not saved'; notice.textContent = error.message; notice.classList.add('is-error'); notice.setAttribute('role', 'alert');
+			}).finally(function () { busy = false; controls.forEach(function (item) { item.disabled = false; }); save.disabled = conflictDetected; });
+		}
+		window.addEventListener('beforeunload', function (event) { if (busy || dirty()) { event.preventDefault(); event.returnValue = ''; } });
+	}
+	if (businessRoot) { businessSettings(businessRoot); return; }
+	var root = document.getElementById('nova-service-onboarding');
 	if (!root) { return; }
-	var state = config.state || {}, draft = prepareDraft(state.draft), demo = config.demo === true || state.classification === 'upgrade';
+	var state = config.state || {}, draft = prepareDraft(state.draft), demo = config.demo === true;
 	var step = Math.max(0, stepIds.indexOf(state.step)), version = 0, savedVersion = 0, saveTimer, previewTimer, saving = null, saveAgain = false, conflict = false, finishing = false, previewController, previewSequence = 0;
 	var content, progress, message, saveStatus, next, back, previewFrame, previewStatus, previewNote;
 	function node(tag, className, text) { var item = document.createElement(tag); if (className) { item.className = className; } if (text !== undefined) { item.textContent = text; } return item; }

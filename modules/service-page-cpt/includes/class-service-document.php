@@ -78,7 +78,10 @@ final class ServiceDocument {
 	public static function resolve_document( int $post_id ): array {
 		$document = self::get_document( $post_id );
 		if ( class_exists( __NAMESPACE__ . '\\ServiceShared' ) ) {
-			$document['sections'] = array_map( [ ServiceShared::class, 'resolve_section' ], $document['sections'] );
+			$document['sections'] = array_map( static function ( $section ) use ( $post_id ) { return ServiceShared::resolve_section( $section, $post_id ); }, $document['sections'] );
+		}
+		if ( class_exists( __NAMESPACE__ . '\\ServiceLanguages' ) ) {
+			foreach ( $document['sections'] as &$section ) { $data = (array) $section['data']; if ( isset( $data['title'] ) ) { $data['title'] = ServiceLanguages::generic_section_title( $section['type'], $data['title'], $post_id ); $section['data'] = $data; } } unset( $section );
 		}
 		return $document;
 	}
@@ -105,7 +108,7 @@ final class ServiceDocument {
 			$template = ServiceShared::get_template();
 			if ( isset( $template['sections'] ) ) { return $template; }
 		}
-		return self::default_layout( class_exists( __NAMESPACE__ . '\\ServiceShared' ) ? ServiceShared::get_presets() : [] );
+		return self::default_layout( class_exists( __NAMESPACE__ . '\\ServiceShared' ) ? ServiceShared::get_presets( $post_id ) : [] );
 	}
 
 	/** Build the empty fallback layout without reading or replacing a client template. */
@@ -520,7 +523,7 @@ final class ServiceDocument {
 			$document = $request->has_param( 'nova_service_document' ) ? $request->get_param( 'nova_service_document' ) : ( $id ? self::get_document( $id ) : self::default_document() );
 			$valid = self::validate_override_targets( $document, $request->get_param( 'nova_service_content' ) );
 			if ( \is_wp_error( $valid ) ) { return $valid; }
-			$valid = self::validate_document( self::patch_content( $document, $request->get_param( 'nova_service_content' ), ! $id ) );
+			$valid = self::validate_document( self::patch_content( $document, $request->get_param( 'nova_service_content' ), ! $id, $id ) );
 			if ( \is_wp_error( $valid ) ) { return $valid; }
 		}
 		return $prepared_post;
@@ -616,7 +619,7 @@ final class ServiceDocument {
 			$document = $request->has_param( 'nova_service_document' ) ? $request->get_param( 'nova_service_document' ) : ( $id ? self::get_document( $id ) : self::default_document() );
 			$valid = self::validate_override_targets( $document, $value );
 			if ( \is_wp_error( $valid ) ) { return $valid; }
-			$request->set_param( 'nova_service_document', self::public_document( self::patch_content( $document, $value, ! $id ) ) );
+			$request->set_param( 'nova_service_document', self::public_document( self::patch_content( $document, $value, ! $id, $id ) ) );
 			unset( $value['related_service_ids'] );
 		}
 		$request->set_param( 'nova_service_content', $value ?: (object) [] );
@@ -661,7 +664,7 @@ final class ServiceDocument {
 		return $slots;
 	}
 
-	public static function patch_content( array $document, $value, bool $enable_existing = false ): array {
+	public static function patch_content( array $document, $value, bool $enable_existing = false, int $post_id = 0 ): array {
 		$value = self::normalize_content_payload( $value );
 		if ( \is_wp_error( $value ) ) { return $document; }
 		$document = self::normalize_document_slots( $document );
@@ -698,7 +701,7 @@ final class ServiceDocument {
 				if ( $id !== $section['id'] ) { continue; }
 				$override = (array) $override;
 				if ( array_key_exists( 'shared_key', $override ) ) {
-					if ( '' === $override['shared_key'] ) { $resolved = class_exists( __NAMESPACE__ . '\\ServiceShared' ) ? ServiceShared::resolve_section( $section ) : $section; $section['data'] = $resolved['data']; unset( $section['shared_key'] ); }
+					if ( '' === $override['shared_key'] ) { $resolved = class_exists( __NAMESPACE__ . '\\ServiceShared' ) ? ServiceShared::resolve_section( $section, $post_id ) : $section; $section['data'] = $resolved['data']; unset( $section['shared_key'] ); }
 					else { $section['shared_key'] = $override['shared_key']; }
 				}
 				if ( ! empty( $override['inherit'] ) ) { $data = (array) $section['data']; foreach ( $override['inherit'] as $key ) { unset( $data[ $key ] ); } $section['data'] = $data ?: (object) []; }
@@ -718,18 +721,18 @@ final class ServiceDocument {
 		$document = self::get_document( $post_id );
 		$valid = self::validate_override_targets( $document, $value );
 		if ( \is_wp_error( $valid ) ) { return $valid; }
-		return self::save_document( $post_id, self::patch_content( $document, $value, self::$native_request_creating ) );
+		return self::save_document( $post_id, self::patch_content( $document, $value, self::$native_request_creating, $post_id ) );
 	}
 
 	public static function get_content( int $post_id ): array {
-		return self::content_from_document( $post_id ? self::get_document( $post_id ) : self::default_document() );
+		return self::content_from_document( $post_id ? self::get_document( $post_id ) : self::default_document(), $post_id );
 	}
 
-	private static function content_from_document( array $document ): array {
+	private static function content_from_document( array $document, int $post_id = 0 ): array {
 		$result = [];
 		$slots = self::content_slots( $document );
 		foreach ( $document['sections'] as $index => $raw ) {
-			$section = class_exists( __NAMESPACE__ . '\\ServiceShared' ) ? ServiceShared::resolve_section( $raw ) : $raw;
+			$section = class_exists( __NAMESPACE__ . '\\ServiceShared' ) ? ServiceShared::resolve_section( $raw, $post_id ) : $raw;
 			if ( empty( $section['enabled'] ) ) { continue; }
 			$data = (array) $section['data'];
 			if ( 'hero' === $section['type'] && ! isset( $result['hero'] ) ) { $result['hero'] = array_intersect_key( $data, array_flip( [ 'title', 'eyebrow', 'body' ] ) ) ?: (object) []; }
@@ -801,10 +804,11 @@ final class ServiceDocument {
 		$segments[] = 'Disabled content fields are omitted from nova_service_content and meta_descriptions. Client-configured CTAs, forms, media, team, locations, maps, videos and proof apply by default. Related service cards are automatic; routine posting supplies no related IDs. Optional section_overrides can change an existing section’s data, visibility or same-type shared variant for this page, or remove local overrides with inherit. Omitting these overrides retains client defaults.';
 		$segments[] = 'Client location photos can use image_selection:one_per_page to display one consistent shared-pool image per page and section. Routine posting need not select it. A local one-image override supplies a fixed photo; inherit images to restore the client pool.';
 		$segments[] = 'Content writes patch only supplied keys. Omitted values and existing visibility stay unchanged; empty strings or arrays intentionally clear supplied fields. New pages inherit the client layout. Write nova_service_document only for a complete structural replacement. Stored legacy fields remain available for rollback but do not drive native rendering.';
+		$segments[] = 'On multilingual sites, shared content follows the target service page language with default-language fallback for untranslated fields. Layout and styling are global. Routine posting does not need to translate or resupply client defaults.';
 		return implode( ' ', $segments );
 	}
 
-	public static function context(): array {
+	public static function context( int $post_id = 0 ): array {
 		$context = [
 			'version' => 2, 'post_type' => self::CPT, 'field' => 'nova_service_document', 'content_field' => 'nova_service_content', 'content_schema' => self::content_schema(), 'sections' => self::section_registry(), 'schema' => self::document_schema(),
 			'meta_note' => self::meta_note(), 'meta_descriptions' => self::meta_descriptions(),
@@ -822,7 +826,7 @@ final class ServiceDocument {
 			'content_example' => [ 'rich_text_1' => [ 'title' => 'First heading', 'body' => '<p>Original first portion of the source.</p>' ], 'rich_text_2' => [ 'title' => 'Second heading', 'body' => '<p>Original next portion of the source.</p>' ], 'rich_text_3' => [ 'title' => 'Final heading', 'body' => '<p>Original remaining portion of the source.</p>' ] ],
 			'example' => [ 'version' => 2, 'sections' => [ self::section( 'hero', 'hero', [ 'title' => '', 'body' => '' ] ), self::section( 'rich_text_1', 'rich_text', [ 'title' => 'First heading', 'body' => '<p>Original source content.</p>' ] ) ] ],
 		];
-		if ( class_exists( __NAMESPACE__ . '\\ServiceShared' ) ) { $context['shared'] = ServiceShared::context(); }
+		if ( class_exists( __NAMESPACE__ . '\\ServiceShared' ) ) { $context['shared'] = ServiceShared::context( $post_id ); }
 		if ( class_exists( __NAMESPACE__ . '\\ServiceReviewImporter' ) ) { $context['review_import'] = ServiceReviewImporter::context(); }
 		return $context;
 	}

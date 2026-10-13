@@ -1,5 +1,5 @@
 <?php
-/** Required, resumable setup for genuinely fresh Service CPT installations only. */
+/** Required fresh setup and editable identity for existing Service CPT sites. */
 namespace SEORAI\ServicePageCPT;
 
 defined( 'ABSPATH' ) || exit;
@@ -77,9 +77,15 @@ final class ServiceOnboarding {
 		return false;
 	}
 
-	private static function settings_fingerprint(): string {
+	/** Shared editors and setup identity use one snapshot to reject stale saves. */
+	public static function settings_fingerprint(): string {
 		$values = [];
-		foreach ( [ self::OPTION_CONFIGURATION, ServiceShared::OPTION_PRESETS, ServiceShared::OPTION_TEMPLATE ] as $key ) { $missing = new \stdClass(); $value = \get_option( $key, $missing ); $values[ $key ] = $missing === $value ? [ 'exists' => false ] : [ 'exists' => true, 'value' => $value ]; }
+		foreach ( [ self::OPTION_CONFIGURATION, ServiceShared::OPTION_PRESETS, ServiceShared::OPTION_TEMPLATE, 'nova_service_shared_translations' ] as $key ) { $missing = new \stdClass(); $value = \get_option( $key, $missing ); $values[ $key ] = $missing === $value ? [ 'exists' => false ] : [ 'exists' => true, 'value' => $value ]; }
+		// Upgrade sites keep their established preset/template storage. Their new
+		// identity lives in the existing lifecycle option rather than a second set
+		// of active defaults. Draft progress is deliberately not part of this hash.
+		$state = \get_option( self::OPTION_STATE, [] );
+		$values['business'] = \is_array( $state ) ? ( $state['business'] ?? ( 'upgrade' === ( $state['classification'] ?? '' ) ? ( $state['draft']['business'] ?? null ) : null ) ) : null;
 		return \hash( 'sha256', \serialize( $values ) );
 	}
 
@@ -108,14 +114,28 @@ final class ServiceOnboarding {
 		return [ 'business' => [ 'name' => \sanitize_text_field( \get_bloginfo( 'name' ) ), 'website' => \home_url( '/' ), 'phone' => '' ], 'presets' => $presets, 'template' => ServiceDocument::default_layout( $presets ), 'ui' => [ 'cta_type' => 'url', 'cta_label' => '', 'cta_target' => '', 'style' => 'default', 'optional_panels' => [] ] ];
 	}
 
-	public static function state(): array {
+	public static function state( ?string $language = null ): array {
 		self::initialize(); $saved = \get_option( self::OPTION_STATE, [] ); $saved = \is_array( $saved ) ? $saved : []; $active = self::active_settings();
-		$draft = ! empty( $saved['draft'] ) && \is_array( $saved['draft'] ) ? $saved['draft'] : self::initial_draft();
-		if ( $active ) { $draft = [ 'business' => $active['business'], 'presets' => $active['presets'], 'template' => $active['template'], 'ui' => $active['ui'] ?? [] ]; }
-		return [ 'required' => self::is_required(), 'complete' => null !== $active, 'classification' => $saved['classification'] ?? 'upgrade', 'reason' => $saved['reason'] ?? 'existing_configuration', 'revision' => $active['onboarding_revision'] ?? (int) ( $saved['revision'] ?? 0 ), 'step' => $active ? 'review' : ( $saved['step'] ?? 'business' ), 'steps' => self::STEPS, 'draft' => $draft, 'brand' => [ 'mode' => 'inherit_site', 'description' => 'Service pages use the site fonts and brand colors.' ], 'setup_url' => self::setup_url() ];
+		$required = self::is_required();
+		$language = \class_exists( __NAMESPACE__ . '\\ServiceLanguages' ) ? ServiceLanguages::current( 0, $language ) : '';
+		if ( $required ) {
+			$draft = ! empty( $saved['draft'] ) && \is_array( $saved['draft'] ) ? $saved['draft'] : self::initial_draft();
+		} else {
+			$initial = self::initial_draft();
+			$business = $active['business'] ?? ( $saved['business'] ?? $initial['business'] );
+			// Early upgrade setup screens saved identity inside a draft. Retain that
+			// configured identity, while always taking proof and layout from the live
+			// shared settings rather than the obsolete walkthrough document.
+			if ( ! $active && ! isset( $saved['business'] ) && isset( $saved['draft']['business'] ) ) {
+				$prior = self::sanitize_business( $saved['draft']['business'], $initial['business'] );
+				if ( ! \is_wp_error( $prior ) ) { $business = $prior; }
+			}
+			$draft = [ 'business' => $business, 'presets' => ServiceShared::get_presets( 0, $language ), 'template' => ServiceShared::get_template(), 'ui' => $active['ui'] ?? $initial['ui'] ];
+		}
+		return [ 'required' => $required, 'complete' => ! $required, 'editable' => true, 'classification' => $saved['classification'] ?? 'upgrade', 'reason' => $saved['reason'] ?? 'existing_configuration', 'revision' => (int) ( $active['onboarding_revision'] ?? ( $saved['revision'] ?? 0 ) ), 'fingerprint' => self::settings_fingerprint(), 'language' => $language, 'step' => $active ? 'review' : ( $saved['step'] ?? 'business' ), 'steps' => self::STEPS, 'draft' => $draft, 'brand' => [ 'mode' => 'inherit_site', 'description' => 'Service pages use the site fonts and brand colors.' ], 'setup_url' => self::setup_url() ];
 	}
 
-	public static function config(): array { return [ 'endpoint' => \rest_url( 'nova-service/v1/onboarding' ), 'nonce' => \wp_create_nonce( 'wp_rest' ), 'setup_url' => self::setup_url(), 'state' => self::state() ]; }
+	public static function config( ?string $language = null ): array { return [ 'endpoint' => \rest_url( 'nova-service/v1/onboarding' ), 'nonce' => \wp_create_nonce( 'wp_rest' ), 'setup_url' => self::setup_url(), 'state' => self::state( $language ) ]; }
 
 	private static function response( array $state ) {
 		$response = \rest_ensure_response( $state );
@@ -134,9 +154,16 @@ final class ServiceOnboarding {
 
 	public static function register_routes(): void {
 		\register_rest_route( 'nova-service/v1', '/onboarding', [
-			[ 'methods' => 'GET', 'permission_callback' => [ self::class, 'permission' ], 'callback' => static function () { return self::response( self::state() ); } ],
-			[ 'methods' => 'POST', 'permission_callback' => [ self::class, 'permission' ], 'callback' => [ self::class, 'save' ], 'args' => [ 'action' => [ 'type' => 'string', 'enum' => [ 'save', 'finish' ], 'required' => true ], 'expected_revision' => [ 'type' => 'integer', 'minimum' => 0, 'required' => true ], 'step' => [ 'type' => 'string', 'enum' => self::STEPS ], 'draft' => [ 'type' => 'object' ] ] ],
+			[ 'methods' => 'GET', 'permission_callback' => [ self::class, 'permission' ], 'callback' => static function ( $request ) { $language = self::request_language( $request ); return \is_wp_error( $language ) ? $language : self::response( self::state( $language ) ); }, 'args' => [ 'language' => [ 'type' => 'string' ] ] ],
+			[ 'methods' => 'POST', 'permission_callback' => [ self::class, 'permission' ], 'callback' => [ self::class, 'save' ], 'args' => [ 'action' => [ 'type' => 'string', 'enum' => [ 'save', 'finish', 'save_business' ], 'required' => true ], 'expected_revision' => [ 'type' => 'integer', 'minimum' => 0, 'required' => true ], 'expected_fingerprint' => [ 'type' => 'string' ], 'language' => [ 'type' => 'string' ], 'step' => [ 'type' => 'string', 'enum' => self::STEPS ], 'draft' => [ 'type' => 'object' ] ] ],
 		] );
+	}
+
+	private static function request_language( $request ) {
+		$value = $request->has_param( 'language' ) ? $request->get_param( 'language' ) : null;
+		if ( null !== $value && ! \is_string( $value ) ) { return self::error( 'Choose a valid service language.' ); }
+		if ( \class_exists( __NAMESPACE__ . '\\ServiceLanguages' ) ) { return ServiceLanguages::validate( $value ); }
+		return null === $value || '' === $value ? '' : self::error( 'A service language is unavailable on this site.' );
 	}
 
 	/** add_option is atomic, preventing two administrators from finishing together. */
@@ -165,10 +192,20 @@ final class ServiceOnboarding {
 		// A request may have cached state before another administrator finished.
 		// Refresh after acquiring the lock, so revision checks use the saved row.
 		if ( \function_exists( 'wp_cache_delete' ) ) {
-			foreach ( [ self::OPTION_STATE, self::OPTION_CONFIGURATION, ServiceShared::OPTION_PRESETS, ServiceShared::OPTION_TEMPLATE, 'alloptions', 'notoptions' ] as $key ) { \wp_cache_delete( $key, 'options' ); }
+			foreach ( [ self::OPTION_STATE, self::OPTION_CONFIGURATION, ServiceShared::OPTION_PRESETS, ServiceShared::OPTION_TEMPLATE, 'nova_service_shared_translations', 'alloptions', 'notoptions' ] as $key ) { \wp_cache_delete( $key, 'options' ); }
 		}
 		try { return $callback(); }
 		finally { self::delete_lock_if_matches( $lock ); }
+	}
+
+	private static function sanitize_business( $value, array $current ) {
+		if ( ! \is_array( $value ) && ! \is_object( $value ) ) { return self::error( 'Business identity must be an object.' ); }
+		$business = (array) $value;
+		if ( \array_diff( \array_keys( $business ), [ 'name', 'website', 'phone' ] ) ) { return self::error( 'Unknown business identity fields.' ); }
+		foreach ( $business as $key => $text ) { if ( ! \is_string( $text ) || \strlen( $text ) > 2000 ) { return self::error( 'Business identity fields require short text values.' ); } $current[ $key ] = \sanitize_text_field( $text ); }
+		$website = $current['website'] ?? '';
+		if ( '' !== $website && ( ! \filter_var( $website, FILTER_VALIDATE_URL ) || ! \in_array( \strtolower( (string) \wp_parse_url( $website, PHP_URL_SCHEME ) ), [ 'http', 'https' ], true ) || \wp_parse_url( $website, PHP_URL_USER ) || \wp_parse_url( $website, PHP_URL_PASS ) ) ) { return self::error( 'Use a valid HTTP(S) business website URL.' ); }
+		return $current;
 	}
 
 	private static function sanitize_draft( $value, array $current ) {
@@ -177,12 +214,9 @@ final class ServiceOnboarding {
 		if ( \array_diff( \array_keys( $value ), [ 'business', 'presets', 'template', 'ui' ] ) ) { return self::error( 'Unknown setup draft fields.' ); }
 		foreach ( [ 'presets', 'template' ] as $key ) { if ( \array_key_exists( $key, $value ) ) { $current[ $key ] = $value[ $key ]; } }
 		if ( \array_key_exists( 'business', $value ) ) {
-			if ( ! \is_array( $value['business'] ) && ! \is_object( $value['business'] ) ) { return self::error( 'Business identity must be an object.' ); }
-			$business = (array) $value['business'];
-			if ( \array_diff( \array_keys( $business ), [ 'name', 'website', 'phone' ] ) ) { return self::error( 'Unknown business identity fields.' ); }
-			foreach ( $business as $key => $text ) { if ( ! \is_string( $text ) || \strlen( $text ) > 2000 ) { return self::error( 'Business identity fields require short text values.' ); } $current['business'][ $key ] = \sanitize_text_field( $text ); }
-			$website = $current['business']['website'];
-			if ( '' !== $website && ( ! \filter_var( $website, FILTER_VALIDATE_URL ) || ! \in_array( \strtolower( (string) \wp_parse_url( $website, PHP_URL_SCHEME ) ), [ 'http', 'https' ], true ) || \wp_parse_url( $website, PHP_URL_USER ) || \wp_parse_url( $website, PHP_URL_PASS ) ) ) { return self::error( 'Use a valid HTTP(S) business website URL.' ); }
+			$business = self::sanitize_business( $value['business'], $current['business'] );
+			if ( \is_wp_error( $business ) ) { return $business; }
+			$current['business'] = $business;
 		}
 		if ( \array_key_exists( 'ui', $value ) ) {
 			if ( ! \is_array( $value['ui'] ) && ! \is_object( $value['ui'] ) ) { return self::error( 'Setup display choices must be an object.' ); }
@@ -239,7 +273,9 @@ final class ServiceOnboarding {
 	public static function save( $request ) {
 		$allowed = self::permission( $request ); if ( \is_wp_error( $allowed ) ) { return $allowed; }
 		return self::locked( static function () use ( $request ) {
-			$state = self::state();
+			$language = self::request_language( $request ); if ( \is_wp_error( $language ) ) { return $language; }
+			$state = self::state( $language );
+			if ( 'save_business' === $request->get_param( 'action' ) ) { return self::save_business( $request, $state, $language ); }
 			if ( ! $state['required'] ) { return self::error( 'This site is already configured or is an existing installation. Its defaults were not changed.', 409, 'nova_service_setup_not_required' ); }
 			$revision = $request->get_param( 'expected_revision' );
 			if ( ! \is_int( $revision ) || $revision !== $state['revision'] ) { return self::error( 'Setup changed in another session. Reload to continue with the saved progress.', 409, 'nova_service_setup_conflict' ); }
@@ -261,6 +297,30 @@ final class ServiceOnboarding {
 		} );
 	}
 
+	/** Explicit identity saves cannot activate, replace or sanitize shared content. */
+	private static function save_business( $request, array $state, ?string $language ) {
+		if ( $state['required'] ) { return self::pending_error(); }
+		$revision = $request->get_param( 'expected_revision' ); $fingerprint = $request->get_param( 'expected_fingerprint' );
+		if ( ! \is_int( $revision ) || $revision !== $state['revision'] || ! \is_string( $fingerprint ) || ! \hash_equals( $state['fingerprint'], $fingerprint ) ) { return self::error( 'Service settings changed in another session. Reload before saving business settings.', 409, 'nova_service_setup_conflict' ); }
+		$draft = $request->get_param( 'draft' );
+		if ( ( ! \is_array( $draft ) && ! \is_object( $draft ) ) || [ 'business' ] !== \array_keys( (array) $draft ) ) { return self::error( 'Business settings can only update the business identity.' ); }
+		$draft = (array) $draft;
+		$business = self::sanitize_business( $draft['business'], $state['draft']['business'] );
+		if ( \is_wp_error( $business ) ) { return $business; }
+		if ( $business === $state['draft']['business'] ) { return self::response( $state ); }
+		$active = self::active_settings();
+		if ( $active ) {
+			$active['business'] = $business; $active['onboarding_revision'] = $revision + 1;
+			$saved = \update_option( self::OPTION_CONFIGURATION, $active, false );
+		} else {
+			$lifecycle = \get_option( self::OPTION_STATE, [] );
+			$lifecycle['business'] = $business; $lifecycle['revision'] = $revision + 1;
+			$saved = \update_option( self::OPTION_STATE, $lifecycle, false );
+		}
+		if ( ! $saved ) { return self::error( 'Business settings could not be saved. Shared service settings were not changed.', 500 ); }
+		return self::response( self::state( $language ) );
+	}
+
 	/** Subsequent client-default edits keep the fresh configuration as one bundle. */
 	public static function save_active_settings( array $presets, array $template ) {
 		$allowed = self::permission(); if ( \is_wp_error( $allowed ) ) { return $allowed; }
@@ -268,8 +328,8 @@ final class ServiceOnboarding {
 		$presets = ServiceDocument::sanitize_document( $presets ); $template = [] === $template ? [] : ServiceDocument::sanitize_document( $template );
 		return self::locked( static function () use ( $presets, $template ) {
 			$active = self::active_settings(); if ( ! $active ) { return self::error( 'The active service configuration is unavailable.', 409 ); }
-			$active['presets'] = $presets; $active['template'] = $template;
-			if ( $active === \get_option( self::OPTION_CONFIGURATION ) ) { return true; }
+			if ( \serialize( $active['presets'] ) === \serialize( $presets ) && \serialize( $active['template'] ) === \serialize( $template ) ) { return true; }
+			$active['presets'] = $presets; $active['template'] = $template; $active['onboarding_revision'] = (int) ( $active['onboarding_revision'] ?? 0 ) + 1;
 			return \update_option( self::OPTION_CONFIGURATION, $active, false ) ? true : self::error( 'Service defaults could not be saved.', 500 );
 		} );
 	}
