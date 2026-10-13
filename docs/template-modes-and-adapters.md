@@ -1,14 +1,13 @@
-# Static, mixed and rule-driven templates
+# Static and dynamic templates
 
-The mapping design keeps three modes. They describe how much of the content structure may change; all three may preserve branding, navigation, images, dynamic site bindings and other fixed elements.
+The mapper offers two choices. They describe how much of the content structure may change; both can preserve branding, navigation, images, dynamic site bindings and other fixed elements.
 
 | Mode | What the writer receives | What changes per article |
 | --- | --- | --- |
-| Static | Empty content fields and their instructions, with a complete protected native blueprint. | Field values; the number and arrangement of fields stay fixed. |
-| Mixed | Fixed content fields plus explicitly declared repeatable, optional or nested regions. | Field values and the allowed regions, such as a variable number of section cards or FAQ rows. |
-| Rule-driven | A content schema and rules describing how supplied content becomes a native document. | The main article structure, including section counts, nesting and presentation. Fixed surrounding elements can still remain. |
+| Static template | Empty content fields and their instructions, with a complete protected native blueprint. | Field values; the fields and their quantities stay fixed. Optional values may be empty without removing their fixed places. |
+| Dynamic template | Fixed content fields plus explicitly declared repeatable, optional or nested regions. | Different quantities of sections, FAQ rows or nested elements per item. Optional parts can be omitted when empty; fixed surrounding design can remain. |
 
-The supplied Rollit Elementor article is a mixed/rule-driven example: its branding, hero and responsive shells can remain fixed, while article sections expand into desktop cards and mobile tabs. Mobile grouping must be explicit because some desktop sections are combined into one mobile tab. The example is a finished native document, not an exported ruleset.
+The supplied Rollit Elementor article is a dynamic example: its branding, hero and responsive shells can remain fixed, while article sections expand into desktop cards and mobile tabs. Mobile grouping must be explicit because some desktop sections are combined into one mobile tab. The example is a finished native document, not an exported ruleset.
 
 ## What a bridge adapter does
 
@@ -22,7 +21,7 @@ A source page may be used during onboarding to capture a design example. Once it
 
 ## Current implementation boundary
 
-This branch now includes a shared three-mode recipe editor and compiler, alongside the existing static endpoint defaults, filled existing-document inspection and older basic Elementor content-rule editor. The older renderer is retained for compatibility; it does not implement the new native recipe contract.
+This branch includes a shared two-choice template editor and recipe compiler, alongside the existing static endpoint defaults, filled existing-document inspection and older basic Elementor content-rule editor. The older renderer is retained for compatibility; it does not implement the new native recipe contract. The compiler retains the stored `static`, `mixed` and `rules` identifiers for compatibility: `mixed` and `rules` both display as Dynamic template, while new dynamic setups use the flexible `mixed` contract. Existing saved recipes and revisions are not migrated.
 
 The versioned `nova-layout-recipe/v1` contract holds a complete native blueprint, explicit scalar bindings and reviewed repeatable/optional regions. A region can use a composite native pattern, such as a heading plus body. Its replacement range and example-pattern range are separate: seven old cards can be replaced by three new cards using one example card, rather than repeating all seven examples for each new item. Nested regions and finite declared layout variants retain supplied content order.
 
@@ -49,7 +48,7 @@ Native identity changes must retain navigation and styling references. Elementor
 
 ## Guided onboarding
 
-1. Choose the content destination and static, mixed or rules mode.
+1. Choose the content destination and Static template or Dynamic template.
 2. Capture an editable native example or choose an available native starter.
 3. Select fixed writable fields, repeatable/nested regions and declared layout variants. Add content instructions and explicit device grouping. Unselected design remains protected; styling changes are made in the native builder and captured again.
 4. Try short, long and nested example content in desktop/mobile structure previews. A current preview is required for saving.

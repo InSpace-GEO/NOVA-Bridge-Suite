@@ -2,7 +2,9 @@
 
 Open **NOVA Settings → Layouts → Configure creation default** for an endpoint. Existing saved document mappings remain available in the older tools; installing this addition does not migrate or overwrite them.
 
-Choose **Fixed fields**, **Mixed layout**, or **Content-driven layout**, then select the builder or declared custom fields. A native starter needs no source page ID. Capturing an existing example copies its design into a local blueprint; later creation uses that saved blueprint rather than cloning the source item again.
+Choose **Static template** or **Dynamic template**, then select the builder or declared custom fields. A static template always has the same fields and the same number of elements on every page or post. Optional content can be left empty, but its fixed place remains. A dynamic template can have different numbers of sections, FAQ items or nested rows on each page or post; declared optional parts can be omitted when empty. Dynamic templates can still keep fixed surrounding elements.
+
+A native starter needs no source page ID. Capturing an existing example copies its design into a local blueprint; later creation uses that saved blueprint rather than cloning the source item again. Existing `mixed` and `rules` recipes both appear as Dynamic template without rewriting their saved mode or revision history.
 
 The guide separates fixed writable fields from repeated, optional and nested regions. Select the old examples to replace and the smaller design pattern to reuse. Replacing seven old cards with a one-card pattern and three new content items produces three cards. Fields and settings outside the chosen regions remain fixed. In ACF/SCF, the installed field groups define the available fields and flexible-content layouts; NOVA does not create field definitions.
 
