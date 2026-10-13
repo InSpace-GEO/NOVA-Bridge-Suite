@@ -35,6 +35,24 @@ final class Nova_Bridge_Suite_Recipe_Builders {
         return is_wp_error( $adapter ) ? $adapter : $adapter->capture( $post_id );
     }
 
+    /** Report real native carriers, including disabled providers; never guess from rendered text. */
+    public static function detect_reference( int $post_id ) {
+        if ( $post_id < 1 ) { return self::error( 'reference', 'Choose an actual native reference before inspecting its builder.', 404 ); }
+        $post = get_post( $post_id );
+        if ( ! $post || ! current_user_can( 'manage_options' ) || ! current_user_can( 'edit_post', $post_id ) ) { return self::error( 'reference', 'The native reference cannot be inspected by this account.', 403 ); }
+        $content = (string) $post->post_content; $builders = []; $elementor = get_post_meta( $post_id, '_elementor_data', true );
+        if ( 'builder' === get_post_meta( $post_id, '_elementor_edit_mode', true ) || ! empty( $elementor ) && ! in_array( $elementor, [ '[]', [] ], true ) ) { $builders[] = 'elementor'; }
+        $divi5 = 1 === preg_match( '/<!--\s+wp:divi\//i', $content );
+        if ( $divi5 ) { $builders[] = 'divi5'; }
+        if ( preg_match( '/\[et_pb_/i', $content ) || ! $divi5 && 'on' === get_post_meta( $post_id, '_et_pb_use_builder', true ) ) { $builders[] = 'divi4'; }
+        if ( preg_match( '/\[vc_/i', $content ) ) { $builders[] = 'wpbakery'; }
+        if ( preg_match( '/\[fusion_/i', $content ) || ! empty( get_post_meta( $post_id, '_fusion_builder_shortcodes', true ) ) ) { $builders[] = 'avada'; }
+        if ( in_array( get_post_meta( $post_id, '_fl_builder_enabled', true ), [ true, 1, '1', 'true', 'yes', 'on' ], true ) || ! empty( get_post_meta( $post_id, '_fl_builder_data', true ) ) ) { $builders[] = 'beaver'; }
+        if ( ! empty( get_post_meta( $post_id, '_breakdance_data', true ) ) ) { $builders[] = 'breakdance'; }
+        if ( ! $divi5 && preg_match( '/<!--\s+wp:/i', $content ) ) { $builders[] = 'gutenberg'; }
+        return array_values( array_unique( $builders ) );
+    }
+
     public static function starter( string $builder, string $mode = 'mixed' ) {
         $adapter = self::adapter( $builder );
         if ( is_wp_error( $adapter ) ) { return $adapter; }
@@ -406,21 +424,42 @@ final class Nova_Bridge_Suite_Recipe_Native_Adapter {
         return $result;
     }
 
-    private function walk_inventory( array $nodes, string $prefix, array &$result, bool $protected = false, string $context = '' ): void {
+    private function provenance( array $node, string $path, string $target ): array {
+        $type = (string) ( $node['tag'] ?? $node['blockName'] ?? $node['data']['type'] ?? $node['settings']['type'] ?? $node['type'] ?? '' );
+        $id = 'beaver' === $this->builder ? (string) ( $node['node_id'] ?? '' ) : ( 'breakdance' === $this->builder ? (string) ( $node['id'] ?? '' ) : '' );
+        $anchor = '';
+        if ( 'gutenberg' === $this->builder ) { $anchor = $node['attrs']['anchor'] ?? ''; }
+        elseif ( 'wpbakery' === $this->builder ) { $anchor = $node['attributes']['el_id'] ?? ''; }
+        elseif ( 'avada' === $this->builder ) { $anchor = $node['attributes']['id'] ?? ''; }
+        elseif ( 'divi4' === $this->builder ) { $anchor = nova_divi_decode_attr( (string) ( $node['attributes']['module_id'] ?? '' ) ); }
+        elseif ( 'divi5' === $this->builder ) {
+            $attributes = $node['attrs']['module']['decoration']['attributes']['desktop']['value']['attributes'] ?? [];
+            $matches = []; foreach ( (array) $attributes as $attribute ) { if ( 'id' === strtolower( (string) ( $attribute['name'] ?? '' ) ) && '' === ( $attribute['targetElement'] ?? null ) && is_string( $attribute['value'] ?? null ) ) { $matches[] = $attribute['value']; } }
+            if ( 1 === count( $matches ) ) { $anchor = $matches[0]; }
+        }
+        $safe_anchor = is_string( $anchor ) && 1 === preg_match( '/^[a-zA-Z][a-zA-Z0-9_-]{0,127}$/D', $anchor );
+        $beaver_id = 'beaver' === $this->builder && 1 === preg_match( '/^[a-zA-Z0-9_-]{1,128}$/D', $id ) && 0 !== strpos( $id, 'nova-tmp-' );
+        $strategy = $beaver_id ? 'beaver' : ( $safe_anchor ? 'native_anchor' : 'none' );
+        return [ 'native_node_id' => $id, 'node_target' => $path, 'element_type' => $type,
+            'control_path' => Nova_Bridge_Suite_Recipe_Engine::parts( substr( $target, strlen( $path ) ) ),
+            'locator' => [ 'strategy' => $strategy, 'native_node_id' => $id, 'anchor' => $safe_anchor ? $anchor : '', 'precision' => 'element', 'status' => 'none' === $strategy ? 'unavailable' : 'candidate', 'reason' => 'none' === $strategy ? 'This provider does not expose a verified native page locator for this element. Use its named field in the list.' : '' ] ];
+    }
+
+    private function walk_inventory( array $nodes, string $prefix, array &$result, bool $protected = false, string $context = '', array $owner = [] ): void {
         $items = [];
         foreach ( $nodes as $index => $node ) {
             if ( ! is_array( $node ) ) { continue; }
             $path = $prefix . '/' . $index;
             if ( 'beaver' === $this->builder && ! isset( $node['type'] ) && isset( $node['label'], $node['content'] ) ) {
                 foreach ( [ 'label' => [ 'text', 'question' ], 'content' => [ 'html', 'answer' ] ] as $key => $spec ) {
-                    if ( is_string( $node[ $key ] ) ) { $result['fields'][] = [ 'target' => $path . '/' . $key, 'label' => ucfirst( $spec[1] ), 'format' => $spec[0], 'kind' => $spec[1], 'value' => $node[ $key ], 'context' => $context, 'writable' => ! $protected, 'protected' => $protected, 'reason' => $protected ? 'The owning native region is protected.' : '' ]; }
+                    if ( is_string( $node[ $key ] ) ) { $result['fields'][] = [ 'target' => $path . '/' . $key, 'label' => ucfirst( $spec[1] ), 'format' => $spec[0], 'kind' => $spec[1], 'value' => $node[ $key ], 'context' => $context, 'writable' => ! $protected, 'protected' => $protected, 'reason' => $protected ? 'The owning native region is protected.' : '' ] + ( $owner ? $this->provenance( $owner['node'], $owner['path'], $path . '/' . $key ) : $this->provenance( $node, $path, $path . '/' . $key ) ); }
                 }
                 $items[] = [ 'index' => $index, 'label' => 'FAQ item — ' . substr( strip_tags( (string) $node['label'] ), 0, 70 ) ];
                 continue;
             }
             if ( 'breakdance' === $this->builder && ! isset( $node['data'] ) && isset( $node['question'], $node['answer'] ) ) {
                 foreach ( [ 'question' => 'text', 'answer' => 'html' ] as $key => $format ) {
-                    if ( is_string( $node[ $key ] ) ) { $result['fields'][] = [ 'target' => $path . '/' . $key, 'label' => ucfirst( $key ), 'format' => $format, 'kind' => $key, 'value' => $node[ $key ], 'context' => $context, 'writable' => ! $protected, 'protected' => $protected, 'reason' => $protected ? 'The owning native region is protected.' : '' ]; }
+                    if ( is_string( $node[ $key ] ) ) { $result['fields'][] = [ 'target' => $path . '/' . $key, 'label' => ucfirst( $key ), 'format' => $format, 'kind' => $key, 'value' => $node[ $key ], 'context' => $context, 'writable' => ! $protected, 'protected' => $protected, 'reason' => $protected ? 'The owning native region is protected.' : '' ] + ( $owner ? $this->provenance( $owner['node'], $owner['path'], $path . '/' . $key ) : $this->provenance( $node, $path, $path . '/' . $key ) ); }
                 }
                 $items[] = [ 'index' => $index, 'label' => 'FAQ item — ' . substr( strip_tags( (string) $node['question'] ), 0, 70 ) ];
                 continue;
@@ -433,19 +472,30 @@ final class Nova_Bridge_Suite_Recipe_Native_Adapter {
             $display_value = $this->node_example( $node );
             $items[] = [ 'index' => $index, 'label' => $label . ( $display_value ? ' — ' . $display_value : '' ), 'native_type' => $native_tag ];
             $node_context = $context . ( $context ? ' > ' : '' ) . $label . ' ' . ( $index + 1 );
-            $add = function ( string $target, string $format, string $kind = 'text' ) use ( &$result, $label, $node_protected, $node_context, $nodes, $prefix ) {
+            $add = function ( string $target, string $format, string $kind = 'text', $semantic_value = null ) use ( &$result, $label, $node_protected, $node_context, $nodes, $prefix, $node, $path ) {
                 $value = Nova_Bridge_Suite_Recipe_Engine::get( $nodes, substr( $target, strlen( $prefix ) ) );
-                $sensitive_markup = is_string( $value ) && preg_match( '/\[(?:gravityform|wpforms|contact-form|fluentform)|\$variable\(|<script\b/i', $value );
-                $writable = ! $node_protected && ! $sensitive_markup;
+                $native_value = $value;
+                if ( null !== $semantic_value ) { $value = $semantic_value; }
+                $sensitive_markup = is_string( $native_value ) && preg_match( '/\[(?:gravityform|wpforms|contact-form|fluentform)|\$variable\(|<script\b/i', $native_value );
+                $control = basename( $target );
+                $connected = 'beaver' === $this->builder && isset( $node['settings']['connections'][$control] );
+                $writable = ! $node_protected && ! $sensitive_markup && ! $connected && is_string( $value );
                 $result['fields'][] = [ 'target' => $target, 'label' => $label . ' · ' . ucwords( str_replace( '_', ' ', $kind ) ), 'format' => $format, 'kind' => $kind, 'value' => $value,
-                    'context' => $node_context, 'writable' => $writable, 'protected' => ! $writable, 'reason' => $writable ? '' : 'This native value belongs to a protected, dynamic or interactive region.' ];
+                    'context' => $node_context, 'writable' => $writable, 'protected' => ! $writable, 'reason' => $writable ? '' : 'This native value belongs to a protected, dynamic or interactive region.' ] + $this->provenance( $node, $path, $target );
+                if ( null !== $semantic_value ) { $result['fields'][count( $result['fields'] ) - 1]['sample'] = $semantic_value; }
             };
             if ( in_array( $this->builder, [ 'wpbakery', 'avada', 'divi4' ], true ) ) {
                 $tag = $node['tag'] ?? ''; $attrs = $node['attributes'] ?? [];
-                $body_tags = [ 'vc_column_text', 'fusion_text', 'fusion_title', 'fusion_toggle', 'et_pb_text', 'et_pb_accordion_item', 'et_pb_toggle' ];
-                if ( in_array( $tag, $body_tags, true ) && empty( $node['children'] ) ) { $heading = 'divi4' === $this->builder && self::heading_html( (string) ( $node['text'] ?? '' ) ); $add( $path . '/text', $heading ? 'text' : 'html', $heading || false !== strpos( $tag, 'title' ) ? 'heading' : 'body' ); }
-                $keys = 'wpbakery' === $this->builder ? [ 'text', 'title', 'button_text', 'link_url' ] : ( 'avada' === $this->builder ? [ 'title', 'text', 'link', 'alt' ] : [ 'title', 'button_text', 'heading', 'name', 'alt', 'src', 'url' ] );
-                foreach ( $keys as $key ) { if ( isset( $attrs[ $key ] ) && is_string( $attrs[ $key ] ) ) { $add( $path . '/attributes/' . $key, in_array( $key, [ 'url', 'src', 'link_url', 'link' ], true ) ? 'url' : 'text', $key ); } }
+                $body_tags = [ 'vc_column_text', 'fusion_text', 'fusion_title', 'fusion_toggle', 'fusion_button', 'et_pb_text', 'et_pb_accordion_item', 'et_pb_toggle' ];
+                if ( in_array( $tag, $body_tags, true ) && empty( $node['children'] ) ) { $heading = 'divi4' === $this->builder && self::heading_html( (string) ( $node['text'] ?? '' ) ); $button = 'fusion_button' === $tag; $add( $path . '/text', $heading || $button ? 'text' : 'html', $button ? 'button_text' : ( $heading || false !== strpos( $tag, 'title' ) ? 'heading' : 'body' ) ); }
+                $keys = 'wpbakery' === $this->builder ? [ 'text', 'title', 'button_text', 'link_text', 'alt', 'caption', 'url', 'href', 'link_url', 'button_url', 'image_link', 'image_url', 'src' ] : ( 'avada' === $this->builder ? [ 'title', 'text', 'link', 'alt', 'image_url', 'src' ] : [ 'title', 'button_text', 'heading', 'name', 'alt', 'src', 'url', 'button_url' ] );
+                foreach ( $keys as $key ) {
+                    if ( ! isset( $attrs[ $key ] ) || ! is_string( $attrs[ $key ] ) ) { continue; }
+                    $url = in_array( $key, [ 'url', 'src', 'href', 'image_url', 'image_link', 'link_url', 'button_url', 'link' ], true );
+                    if ( in_array( $key, [ 'src', 'image_url' ], true ) && '' !== $attrs[$key] && ! preg_match( '~^(?:https?://|/)~i', $attrs[$key] ) ) { continue; }
+                    $add( $path . '/attributes/' . $key, $url ? 'url' : 'text', $key, 'divi4' === $this->builder ? nova_divi_decode_attr( $attrs[$key] ) : null );
+                }
+                if ( 'wpbakery' === $this->builder && isset( $attrs['link'] ) && is_string( $attrs['link'] ) ) { $packed = nova_wpb_packed_link_url( $attrs['link'], $found_url ); if ( $found_url ) { $add( $path . '/attributes/link', 'url', 'link_url', $packed ); } }
                 $children = $node['children'] ?? []; $child_path = $path . '/children';
             } elseif ( in_array( $this->builder, [ 'gutenberg', 'divi5' ], true ) ) {
                 $name = $node['blockName'] ?? '';
@@ -453,12 +503,17 @@ final class Nova_Bridge_Suite_Recipe_Native_Adapter {
                     $definition = function_exists( 'nova_divi5_field_definitions' ) ? nova_divi5_field_definitions( $name ) : null;
                     foreach ( (array) ( $definition['fields'] ?? [] ) as $key => $field ) {
                         if ( empty( $field['path'] ) ) { continue; }
-                        $parts = array_map( static function ( $part ) { return '{breakpoint}' === $part ? 'desktop' : $part; }, $field['path'] );
-                        $target = $path . '/attrs/' . implode( '/', $parts ); $value = Nova_Bridge_Suite_Recipe_Engine::get( $nodes, substr( $target, strlen( $prefix ) ), $found );
-                        if ( $found && is_string( $value ) ) { $add( $target, 'html' === $field['kind'] ? 'html' : ( 'url' === $field['kind'] ? 'url' : 'text' ), $key ); }
+                        $resolved = nova_divi5_resolve_field( [ 'name' => $name, 'attributes' => $node['attrs'], 'self_closing' => empty( $node['innerBlocks'] ) && '' === $node['innerHTML'] ], $key );
+                        foreach ( $resolved['variants'] ?? [] as $breakpoint => $variant ) { $target = $path . '/attrs/' . implode( '/', $variant['path'] ); $add( $target, 'html' === $field['kind'] ? 'html' : ( 'url' === $field['kind'] ? 'url' : 'text' ), $key ); }
                     }
                 } elseif ( in_array( $name, [ 'core/heading', 'core/paragraph', 'core/list-item', 'core/html', 'core/quote', 'core/preformatted' ], true ) && empty( $node['innerBlocks'] ) ) {
                     $add( $path . '/innerHTML', 'core/heading' === $name ? 'text' : 'html', 'core/heading' === $name ? 'heading' : 'body' );
+                } elseif ( 'core/image' === $name && empty( $node['innerBlocks'] ) ) {
+                    $image_url = self::html_attribute( $node['innerHTML'], 'img', 'src', $found_image );
+                    if ( $found_image ) { $add( $path . '/innerHTML', 'url', 'image_url', $image_url ); }
+                } elseif ( 'core/button' === $name && empty( $node['innerBlocks'] ) ) {
+                    if ( preg_match( '/<a\b[^>]*>([\s\S]*?)<\/a>/i', $node['innerHTML'], $button ) ) { $add( $path . '/innerHTML', 'text', 'button_text', html_entity_decode( strip_tags( $button[1] ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ) ); }
+                    if ( isset( $node['attrs']['url'] ) && is_string( $node['attrs']['url'] ) ) { $add( $path . '/attrs/url', 'url', 'link_url' ); }
                 } elseif ( 'core/details' === $name && isset( $node['innerContent'][0] ) && preg_match( '/<summary\b/i', $node['innerContent'][0] ) ) {
                     $add( $path . '/innerContent/0', 'text', 'question' );
                 }
@@ -467,15 +522,27 @@ final class Nova_Bridge_Suite_Recipe_Native_Adapter {
                 $settings = $node['settings'] ?? [];
                 if ( 'module' === ( $node['type'] ?? '' ) && is_array( $settings ) ) {
                     foreach ( [ 'heading', 'text', 'label', 'link', 'caption', 'alt' ] as $key ) { if ( isset( $settings[ $key ] ) && is_string( $settings[ $key ] ) ) { $add( $path . '/settings/' . $key, 'text' === $key ? 'html' : ( 'link' === $key ? 'url' : 'text' ), $key ); } }
-                    if ( in_array( $settings['type'] ?? '', [ 'accordion', 'tabs' ], true ) && is_array( $settings['items'] ?? null ) ) { $this->walk_inventory( $settings['items'], $path . '/settings/items', $result, $node_protected, $node_context . ' > FAQ items' ); }
+                    if ( 'photo' === ( $settings['type'] ?? '' ) && 'url' === ( $settings['photo_source'] ?? '' ) && isset( $settings['photo_url'] ) && is_string( $settings['photo_url'] ) ) { $add( $path . '/settings/photo_url', 'url', 'image_url' ); }
+                    if ( in_array( $settings['type'] ?? '', [ 'accordion', 'tabs' ], true ) && is_array( $settings['items'] ?? null ) ) { $this->walk_inventory( $settings['items'], $path . '/settings/items', $result, $node_protected, $node_context . ' > FAQ items', [ 'node' => $node, 'path' => $path ] ); }
                 }
                 $children = $node['children'] ?? []; $child_path = $path . '/children';
             } else {
                 $props = $node['data']['properties'] ?? []; $type = $node['data']['type'] ?? '';
-                if ( in_array( $type, [ 'EssentialElements\\Heading', 'EssentialElements\\Text' ], true ) && isset( $props['content']['content']['text'] ) ) { $add( $path . '/data/properties/content/content/text', 'EssentialElements\\Text' === $type ? 'html' : 'text', 'EssentialElements\\Heading' === $type ? 'heading' : 'body' ); }
+                if ( in_array( $type, [ 'EssentialElements\\Heading', 'EssentialElements\\Text', 'EssentialElements\\Button' ], true ) && isset( $props['content']['content']['text'] ) ) { $add( $path . '/data/properties/content/content/text', 'EssentialElements\\Text' === $type ? 'html' : 'text', 'EssentialElements\\Heading' === $type ? 'heading' : ( 'EssentialElements\\Button' === $type ? 'button_text' : 'body' ) ); }
+                if ( in_array( $type, [ 'EssentialElements\\Button', 'EssentialElements\\Heading', 'EssentialElements\\Image' ], true ) ) {
+                    $scan_urls = function ( array $values, string $pointer, bool $media = false ) use ( &$scan_urls, $add ) {
+                        if ( ! empty( $values['dynamic'] ) || ! empty( $values['global'] ) ) { return; }
+                        foreach ( $values as $key => $value ) {
+                            if ( in_array( $key, [ 'dynamic', 'global', 'conditions', 'attributes' ], true ) ) { continue; }
+                            if ( is_array( $value ) ) { if ( in_array( $key, [ 'link', 'image' ], true ) ) { if ( 'image' === $key && ! empty( $value['id'] ) ) { continue; } $scan_urls( $value, $pointer . '/' . $key, true ); } elseif ( ! $media && 'content' === $key ) { $scan_urls( $value, $pointer . '/' . $key ); } }
+                            elseif ( $media && 'url' === $key && is_string( $value ) ) { $add( $pointer . '/url', 'url', false !== strpos( $pointer, '/image' ) ? 'image_url' : 'link_url' ); }
+                        }
+                    };
+                    $scan_urls( $props['content'] ?? [], $path . '/data/properties/content' );
+                }
                 if ( 'EssentialElements\\FrequentlyAskedQuestions' === $type ) {
                     $collection = isset( $props['content']['settings']['items'] ) ? 'items' : 'questions';
-                    if ( is_array( $props['content']['settings'][ $collection ] ?? null ) ) { $this->walk_inventory( $props['content']['settings'][ $collection ], $path . '/data/properties/content/settings/' . $collection, $result, $node_protected, $node_context . ' > FAQ items' ); }
+                    if ( is_array( $props['content']['settings'][ $collection ] ?? null ) ) { $this->walk_inventory( $props['content']['settings'][ $collection ], $path . '/data/properties/content/settings/' . $collection, $result, $node_protected, $node_context . ' > FAQ items', [ 'node' => $node, 'path' => $path ] ); }
                 }
                 $children = $node['children'] ?? []; $child_path = $path . '/children';
             }
@@ -511,13 +578,30 @@ final class Nova_Bridge_Suite_Recipe_Native_Adapter {
         }
         if ( 'gutenberg' === $this->builder && '/innerHTML' === substr( $target, -10 ) ) {
             $parent = Nova_Bridge_Suite_Recipe_Engine::get( $native, substr( $target, 0, -10 ) );
-            if ( 'core/html' !== $parent['blockName'] ) {
+            if ( 'core/image' === $parent['blockName'] ) {
+                $current_url = self::html_attribute( $original, 'img', 'src', $found );
+                $value = $current_url === $value ? $original : self::replace_html_attribute( $original, 'img', 'src', (string) $value );
+                if ( $current_url !== self::html_attribute( $value, 'img', 'src' ) ) {
+                    $old_id = $parent['attrs']['id'] ?? null; unset( $parent['attrs']['id'] );
+                    if ( isset( $parent['attrs']['url'] ) ) { $parent['attrs']['url'] = self::html_attribute( $value, 'img', 'src' ); }
+                    if ( $old_id ) { $value = preg_replace_callback( '/(<img\b[^>]*\sclass\s*=\s*)([\x22\x27])(.*?)\2/is', static function ( $match ) use ( $old_id ) { $classes = preg_split( '/\s+/', $match[3] ); $classes = array_filter( $classes, static function ( $class ) use ( $old_id ) { return '' !== $class && 'wp-image-' . $old_id !== $class; } ); return $match[1] . $match[2] . implode( ' ', $classes ) . $match[2]; }, $value ); }
+                    Nova_Bridge_Suite_Recipe_Engine::put( $native, substr( $target, 0, -10 ), $parent );
+                }
+            } elseif ( 'core/button' === $parent['blockName'] ) {
+                preg_match( '/<a\b[^>]*>([\s\S]*?)<\/a>/i', $original, $button );
+                $current_text = html_entity_decode( strip_tags( $button[1] ?? '' ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+                $value = $current_text === $value ? $original : preg_replace_callback( '/(<a\b[^>]*>)[\s\S]*?(<\/a>)/i', static function ( $match ) use ( $value ) { return $match[1] . esc_html( (string) $value ) . $match[2]; }, $original, 1 );
+            } elseif ( 'core/html' !== $parent['blockName'] ) {
                 $value = self::inline_value( (string) $value, 'core/heading' === $parent['blockName'] ); if ( is_wp_error( $value ) ) { return $value; }
                 $value = self::inside_wrapper( $original, $value, 'text' === $binding['format'] );
             }
         } elseif ( 'gutenberg' === $this->builder && '/innerContent/0' === substr( $target, -15 ) ) {
             $value = preg_replace_callback( '/(<summary\b[^>]*>)[\s\S]*?(<\/summary>)/i', static function ( $match ) use ( $value ) { return $match[1] . esc_html( (string) $value ) . $match[2]; }, (string) $original );
         }
+        if ( 'wpbakery' === $this->builder && '/attributes/link' === substr( $target, -16 ) ) {
+            $value = nova_wpb_packed_link_url( $original ) === $value ? $original : preg_replace_callback( '/(^|\|)url:[^|]*/', static function ( $match ) use ( $value ) { return $match[1] . 'url:' . rawurlencode( (string) $value ); }, (string) $original, 1 );
+        }
+        if ( 'avada' === $this->builder && '/text' === substr( $target, -5 ) ) { $parent = Nova_Bridge_Suite_Recipe_Engine::get( $native, substr( $target, 0, -5 ) ); if ( 'fusion_button' === $parent['tag'] ) { $value = esc_html( (string) $value ); } }
         if ( 'divi4' === $this->builder && false !== strpos( $target, '/attributes/' ) ) { $value = nova_divi_encode_attr( (string) $value ); }
         Nova_Bridge_Suite_Recipe_Engine::put( $native, $target, $value );
         if ( 'breakdance' === $this->builder && false !== strpos( $target, '/content/settings/' ) ) {
@@ -525,11 +609,28 @@ final class Nova_Bridge_Suite_Recipe_Native_Adapter {
             Nova_Bridge_Suite_Recipe_Engine::get( $native, $other, $found ); if ( $other !== $target && $found ) { Nova_Bridge_Suite_Recipe_Engine::put( $native, $other, $value ); }
         }
         if ( 'gutenberg' === $this->builder && '/innerHTML' === substr( $target, -10 ) ) { Nova_Bridge_Suite_Recipe_Engine::put( $native, substr( $target, 0, -10 ) . '/innerContent', [ $value ] ); }
+        elseif ( 'gutenberg' === $this->builder && '/attrs/url' === substr( $target, -10 ) ) {
+            $parent_path = substr( $target, 0, -10 ); $node = Nova_Bridge_Suite_Recipe_Engine::get( $native, $parent_path );
+            if ( 'core/button' === $node['blockName'] ) { $node['innerHTML'] = self::replace_html_attribute( $node['innerHTML'], 'a', 'href', (string) $value ); $node['innerContent'] = [ $node['innerHTML'] ]; Nova_Bridge_Suite_Recipe_Engine::put( $native, $parent_path, $node ); }
+        }
         elseif ( 'gutenberg' === $this->builder && '/innerContent/0' === substr( $target, -15 ) ) {
             $parent_path = substr( $target, 0, -15 ); $node = Nova_Bridge_Suite_Recipe_Engine::get( $native, $parent_path );
             $node['innerHTML'] = implode( '', array_filter( $node['innerContent'], 'is_string' ) ); Nova_Bridge_Suite_Recipe_Engine::put( $native, $parent_path, $node );
         }
         return $native;
+    }
+
+    /** Parse one quoted native HTML carrier; ambiguous images/links remain opaque. */
+    private static function html_attribute( string $html, string $tag, string $attribute, &$found = null ): string {
+        $found = false;
+        if ( 1 !== preg_match_all( '/<' . preg_quote( $tag, '/' ) . '\b[^>]*>/i', $html, $tags ) ) { return ''; }
+        if ( 1 !== preg_match_all( '/\s' . preg_quote( $attribute, '/' ) . '\s*=\s*([\x22\x27])(.*?)\1/is', $tags[0][0], $matches ) ) { return ''; }
+        $found = true; return html_entity_decode( $matches[2][0], ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+    }
+    private static function replace_html_attribute( string $html, string $tag, string $attribute, string $value ): string {
+        return preg_replace_callback( '/<' . preg_quote( $tag, '/' ) . '\b[^>]*>/i', static function ( $match ) use ( $attribute, $value ) {
+            return preg_replace_callback( '/(\s' . preg_quote( $attribute, '/' ) . '\s*=\s*)([\x22\x27])(.*?)\2/is', static function ( $part ) use ( $value ) { return $part[1] . $part[2] . htmlspecialchars( $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8' ) . $part[2]; }, $match[0], 1 );
+        }, $html, 1 );
     }
 
     private static function inline_value( string $value, bool $heading = false ) {

@@ -191,5 +191,25 @@ $registry_denied = [ 'third-party-logo-grid' ]; bad( $adapter->write_draft( $res
 $saved = good( $adapter->write_draft( $result['writer_payload'], [ 'title' => 'Reviewed draft', 'status' => 'publish' ] ), 'Native draft bridge persists complete output' ); check( $inserted_payload['status'] === 'draft' && $saved['status'] === 'draft', 'Draft review cannot publish even if caller asks' );
 good( $adapter->verify_saved( $saved['post_id'], $result['writer_payload'] ), 'Saved full native output verifies' ); $metadata[$saved['post_id']]['_elementor_page_settings']['hide_title'] = 'no'; bad( $adapter->verify_saved( $saved['post_id'], $result['writer_payload'] ), 'Changed native page settings block recovery success' );
 $tamper_save = true; bad( $adapter->write_draft( $result['writer_payload'] ), 'Native bridge content drift is reported for reconciliation' );
+$media_blueprint = [ 'document' => [ widget( 'picture-id', 'image', [ 'image' => [ 'id' => 123, 'url' => 'https://example.test/original.jpg', 'alt' => 'Ignored attachment alt', 'opaque' => 'keep' ], 'link' => [ 'url' => '/original', 'is_external' => true ], 'link_to' => 'none', 'caption' => 'Original caption', 'caption_source' => 'none', 'width' => [ 'unit' => '%', 'size' => 80 ] ] ) ] ];
+$media_before = Engine::digest( $media_blueprint ); $media_fields = good( $adapter->describe( $media_blueprint ), 'Native image visual inventory' )['fields'];
+$image_field = array_values( array_filter( $media_fields, static function ( $field ) { return '/document/0/settings/image/url' === $field['target']; } ) )[0];
+check( $image_field['writable'] && 'picture-id' === $image_field['native_node_id'] && '/document/0' === $image_field['node_target'] && 'elementor' === $image_field['locator']['strategy'] && [ 'settings', 'image', 'url' ] === $image_field['control_path'], 'Image URL exposes its exact certified native widget and control path' );
+$same_image = good( $adapter->bind( $media_blueprint, binding( $image_field['target'], '/image', 'url' ), 'https://example.test/original.jpg' ), 'Unchanged native image URL' );
+check( $same_image === $media_blueprint, 'Unchanged mapped image preserves attachment authority and all native properties' );
+$replaced_image = good( $adapter->bind( $media_blueprint, binding( $image_field['target'], '/image', 'url' ), 'https://example.test/new.jpg' ), 'Attachment-backed image URL replacement' );
+check( 0 === $replaced_image['document'][0]['settings']['image']['id'] && 'https://example.test/new.jpg' === $replaced_image['document'][0]['settings']['image']['url'] && 'keep' === $replaced_image['document'][0]['settings']['image']['opaque'] && $replaced_image['document'][0]['settings']['width'] === $media_blueprint['document'][0]['settings']['width'], 'Replaced image becomes external without rewriting layout or opaque media properties' );
+check( Engine::digest( $media_blueprint ) === $media_before, 'Native image binding leaves the source blueprint unchanged' );
+bad( $adapter->validate_binding( $media_blueprint, binding( '/document/0/settings/image/id', '/image_id', 'number' ) ), 'Attachment ID cannot be overwritten by generated content' );
+bad( $adapter->validate_binding( $media_blueprint, binding( '/document/0/settings/image/alt', '/alt', 'text' ) ), 'Attachment-owned alt text is not advertised as a rendered widget control' );
+good( $adapter->validate_binding( $replaced_image, binding( '/document/0/settings/image/alt', '/alt', 'text' ) ), 'External image alt text is its real native rendered control' );
+$caption_bound = good( $adapter->bind( $media_blueprint, binding( '/document/0/settings/caption', '/caption', 'text' ), 'New caption' ), 'Native custom caption binding' );
+check( 'custom' === $caption_bound['document'][0]['settings']['caption_source'], 'Mapped caption is explicitly visible through the native caption source' );
+$link_bound = good( $adapter->bind( $media_blueprint, binding( '/document/0/settings/link/url', '/url', 'url' ), '/new-link' ), 'Native image hyperlink binding' );
+check( 'custom' === $link_bound['document'][0]['settings']['link_to'] && true === $link_bound['document'][0]['settings']['link']['is_external'], 'Mapped image link is active while its external-link options are preserved' );
+$dynamic_media = $media_blueprint; $dynamic_media['document'][0]['settings']['__dynamic__']['image'] = 'native-dynamic-tag';
+bad( $adapter->validate_binding( $dynamic_media, binding( $image_field['target'], '/image', 'url' ) ), 'Dynamic native image controls remain protected' );
+$dynamic_field = array_values( array_filter( good( $adapter->describe( $dynamic_media ), 'Dynamic image inventory' )['fields'], static function ( $field ) { return '/document/0/settings/image/url' === $field['target']; } ) )[0];
+check( $dynamic_field['protected'] && ! $dynamic_field['writable'] && 'picture-id' === $dynamic_field['native_node_id'], 'Protected native controls retain truthful visual provenance' );
 echo 'Recipe engine/native Elementor: ' . $checks . " assertions passed\n";
 }

@@ -27,7 +27,7 @@ if ( class_exists( 'Nova_Bridge_Suite_Content_Context' ) ) {
 	Nova_Bridge_Suite_Content_Context::bootstrap();
 }
 
-foreach ( [ 'content-transport', 'strategy', 'mapping-drafts', 'posting-settings', 'strategy-admin', 'mapping-preview', 'content-rules', 'content-rules-admin', 'document-mapping', 'endpoint-mappings', 'endpoint-mappings-admin', 'recipe-engine', 'recipe-elementor', 'recipe-builders', 'recipe-acf', 'recipe-core', 'layout-recipes', 'layout-recipes-admin' ] as $nova_context_component ) {
+foreach ( [ 'content-transport', 'strategy', 'mapping-drafts', 'posting-settings', 'strategy-admin', 'mapping-preview', 'content-rules', 'content-rules-admin', 'document-mapping', 'endpoint-mappings', 'endpoint-mappings-admin', 'recipe-engine', 'recipe-elementor', 'recipe-builders', 'recipe-acf', 'recipe-core', 'recipe-visual', 'layout-recipes', 'layout-recipes-admin' ] as $nova_context_component ) {
 	$nova_context_file = NOVA_BRIDGE_SUITE_API_MAPPING_CONTEXT_DIR . 'includes/class-nova-bridge-suite-' . $nova_context_component . '.php';
 	if ( file_exists( $nova_context_file ) ) {
 		require_once $nova_context_file;

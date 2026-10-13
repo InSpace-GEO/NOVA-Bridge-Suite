@@ -45,7 +45,8 @@ final class Nova_Bridge_Suite_Recipe_Elementor {
             elseif ( 'text-editor' === $widget && [ 'editor' ] === $path ) { $formats = [ 'text', 'html' ]; }
             elseif ( 'button' === $widget && [ 'text' ] === $path ) { $formats = [ 'text', 'html' ]; }
             elseif ( in_array( $widget, [ 'heading', 'button', 'image' ], true ) && [ 'link', 'url' ] === $path ) { $formats = [ 'url' ]; }
-            elseif ( 'image' === $widget && in_array( $path, [ [ 'image', 'url' ], [ 'image', 'alt' ] ], true ) && empty( $settings['image']['id'] ) ) { $formats = [ 'url' === end( $path ) ? 'url' : 'text' ]; }
+            elseif ( 'image' === $widget && [ 'image', 'url' ] === $path ) { $formats = [ 'url' ]; }
+            elseif ( 'image' === $widget && [ 'image', 'alt' ] === $path && empty( $settings['image']['id'] ) ) { $formats = [ 'text' ]; }
             elseif ( 'image' === $widget && [ 'caption' ] === $path ) { $formats = [ 'text', 'html' ]; }
             elseif ( in_array( $widget, [ 'accordion', 'toggle', 'nested-tabs' ], true ) && count( $path ) === 3 && 'tabs' === $path[0] && ctype_digit( $path[1] ) && in_array( $path[2], [ 'tab_title', 'tab_content' ], true ) ) { $formats = [ 'text', 'html' ]; }
             elseif ( 'table-of-contents' === $widget && [ 'title' ] === $path ) { $formats = [ 'text', 'html' ]; }
@@ -96,11 +97,21 @@ final class Nova_Bridge_Suite_Recipe_Elementor {
         return $this->safe( function () use ( $native, $binding, $value, $context ) {
             $check = $this->validate_binding( $native, $binding ); if ( is_wp_error( $check ) ) { return $check; }
             list( $node, $path ) = $this->node_for_target( $native, $binding['target'] );
+            if ( $value === Nova_Bridge_Suite_Recipe_Engine::get( $native, $binding['target'] ) && empty( $context['anchor_map'] ) ) { return $native; }
             if ( 'html' === $binding['format'] && ( 'heading' === ( $node['widgetType'] ?? '' ) || [ 'text' ] === $path || 'tab_title' === end( $path ) ) && preg_match( '/<(?:h[1-6]|p|div|section|article|main|ul|ol|li|table|details|blockquote|figure)\b/i', $value ) ) { return $this->error( 'Native heading/button/navigation titles accept inline HTML; put complete paragraphs in a rich-text body slot.' ); }
             if ( 'text' === $binding['format'] && [ 'image', 'alt' ] !== $path ) { $value = htmlspecialchars( $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8' ); }
             if ( 'html' === $binding['format'] ) { $value = $this->html_anchor_references( $value, $context['anchor_map'] ?? [] ); }
             if ( 'url' === $binding['format'] && 0 === strpos( $value, '#' ) && isset( $context['anchor_map'][ substr( $value, 1 ) ] ) ) { $value = '#' . $context['anchor_map'][ substr( $value, 1 ) ]; }
-            Nova_Bridge_Suite_Recipe_Engine::put( $native, $binding['target'], $value ); return $native;
+            $original = Nova_Bridge_Suite_Recipe_Engine::get( $native, $binding['target'] );
+            Nova_Bridge_Suite_Recipe_Engine::put( $native, $binding['target'], $value );
+            $parts = Nova_Bridge_Suite_Recipe_Engine::parts( $binding['target'] ); $settings_at = array_search( 'settings', $parts, true );
+            $settings_target = $this->pointer( array_slice( $parts, 0, $settings_at + 1 ) );
+            if ( 'image' === ( $node['widgetType'] ?? '' ) && $value !== $original ) {
+                if ( [ 'image', 'url' ] === $path ) { Nova_Bridge_Suite_Recipe_Engine::put( $native, $settings_target . '/image/id', 0 ); }
+                elseif ( [ 'link', 'url' ] === $path ) { Nova_Bridge_Suite_Recipe_Engine::put( $native, $settings_target . '/link_to', 'custom' ); }
+                elseif ( [ 'caption' ] === $path ) { Nova_Bridge_Suite_Recipe_Engine::put( $native, $settings_target . '/caption_source', 'custom' ); }
+            }
+            return $native;
         } );
     }
     public function replace_region( array $native, array $region, array $children, array $context = [] ) {
@@ -216,11 +227,14 @@ final class Nova_Bridge_Suite_Recipe_Elementor {
             $this->walk( $blueprint['document'], function ( $node, $path ) use ( $blueprint, $candidate, &$fields, &$containers, &$ordinals ) {
                 $base = $this->pointer( array_merge( [ 'document' ], $path ) ); $widget = $node['widgetType'] ?? $node['elType']; $ordinals[ $widget ] = ( $ordinals[ $widget ] ?? 0 ) + 1; $label = ucfirst( str_replace( '-', ' ', $widget ) ) . ' ' . $ordinals[ $widget ];
                 if ( isset( $node['elements'] ) && $node['elements'] ) { $containers[] = $candidate( $base . '/elements', ( $node['settings']['_title'] ?? '' ) ?: $label, $node['elements'] ); }
-                $visit = function ( $value, array $parts ) use ( &$visit, $blueprint, $base, $label, &$fields ) {
+                $visit = function ( $value, array $parts ) use ( &$visit, $blueprint, $base, $label, $node, $widget, &$fields ) {
                     if ( is_array( $value ) ) { foreach ( $value as $key => $child ) { $visit( $child, array_merge( $parts, [ $key ] ) ); } return; }
                     $target = $base . $this->pointer( array_merge( [ 'settings' ], $parts ) ); $key = (string) end( $parts ); if ( ! in_array( $key, [ 'title', 'editor', 'text', 'url', 'alt', 'caption', 'tab_title', 'tab_content' ], true ) || ! is_string( $value ) ) { return; }
                     $format = 'url' === $key ? 'url' : ( in_array( $key, [ 'editor', 'tab_content', 'title', 'caption' ], true ) ? 'html' : 'text' ); $valid = $this->validate_binding( $blueprint, [ 'target' => $target, 'format' => $format ] );
-                    $fields[] = [ 'target' => $target, 'label' => $label . ' · ' . ucwords( str_replace( '_', ' ', $key ) ), 'format' => $format, 'value' => $value, 'writable' => ! is_wp_error( $valid ), 'protected' => is_wp_error( $valid ), 'reason' => is_wp_error( $valid ) ? $valid->get_error_message() : '' ];
+                    $safe_id = 1 === preg_match( '/^[a-zA-Z0-9_-]+$/D', $node['id'] );
+                    $fields[] = [ 'target' => $target, 'label' => $label . ' · ' . ucwords( str_replace( '_', ' ', $key ) ), 'format' => $format, 'kind' => $key, 'value' => $value, 'writable' => ! is_wp_error( $valid ), 'protected' => is_wp_error( $valid ), 'reason' => is_wp_error( $valid ) ? $valid->get_error_message() : '',
+                        'native_node_id' => $node['id'], 'node_target' => $base, 'element_type' => $widget, 'control_path' => array_merge( [ 'settings' ], $parts ),
+                        'locator' => [ 'strategy' => $safe_id ? 'elementor' : 'none', 'native_node_id' => $node['id'], 'anchor' => '', 'precision' => 'element', 'status' => $safe_id ? 'candidate' : 'unavailable', 'reason' => $safe_id ? '' : 'The native element identity cannot be used safely in the page preview.' ] ];
                 }; $visit( $node['settings'], [] );
             }, [], 0 );
             return [ 'blueprint' => $blueprint, 'fields' => $fields, 'containers' => $containers, 'prototypes' => [], 'capabilities' => $this->capabilities(), 'warnings' => [ 'A captured native example does not declare repetition or semantic grouping. Select and review those regions explicitly.' ] ];
