@@ -23,7 +23,8 @@ check( strpos( $html, 'nova-publishing-app' ) === false, 'The UI shell duplicate
 $_GET = []; Nova_Bridge_Suite_Endpoint_Mappings_Admin::assets( 'settings_page_nova-settings' );
 check( isset( $scripts['nova-endpoint-mappings'], $styles['nova-endpoint-mappings'] ), 'The default Layouts URL without a tab lacks its assets' );
 check( $localized['NovaEndpointMappings']['url'] === 'https://site.example/wp-json/nova-bridge/v1/mapping' && $localized['NovaEndpointMappings']['nonce'] === 'fixture-rest-nonce', 'The UI is not scoped to local nonce-protected APIs' );
-check( array_keys( $localized['NovaEndpointMappings'] ) === [ 'url', 'nonce', 'layoutsUrl' ], 'Source content or connection credentials leaked into localization' );
+check( array_keys( $localized['NovaEndpointMappings'] ) === [ 'url', 'nonce', 'layoutsUrl', 'recipesUrl' ], 'Source content or connection credentials leaked into localization' );
+check( $localized['NovaEndpointMappings']['recipesUrl'] === 'https://site.example/wp-admin/options-general.php?page=nova-settings&tab=layout-recipes', 'Creation setup does not open the guided local mapper' );
 foreach ( [ 'nova-connection', 'modules', 'unknown-fallback-tab' ] as $tab ) { $_GET = [ 'tab' => $tab ]; $scripts = []; Nova_Bridge_Suite_Endpoint_Mappings_Admin::assets( 'settings_page_nova-settings' ); check( isset( $scripts['nova-endpoint-mappings'] ), 'Settings fallback lacks host-guarded assets for ' . $tab ); }
 $scripts = []; Nova_Bridge_Suite_Endpoint_Mappings_Admin::assets( 'post.php' ); check( [] === $scripts, 'Endpoint assets were enqueued outside NOVA settings' );
 $administrator = false; ob_start(); Nova_Bridge_Suite_Endpoint_Mappings_Admin::render(); $html = ob_get_clean(); Nova_Bridge_Suite_Endpoint_Mappings_Admin::assets( 'settings_page_nova-settings' );

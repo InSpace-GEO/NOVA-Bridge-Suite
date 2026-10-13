@@ -58,9 +58,14 @@ final class Nova_Bridge_Suite_Content_Transport {
 
 	/** ACF/SCF's location engine chooses the actual screen, including template conditions. */
 	private static function acf_fields( string $post_type, int $post_id, string $template ): array {
-		if ( ! function_exists( 'acf_get_field_groups' ) || ! function_exists( 'acf_get_fields' ) || ! function_exists( 'update_field' ) || ! function_exists( 'get_field' ) ) { return []; }
 		$screen = [ 'post_type' => $post_type, 'post_id' => $post_id ];
 		if ( '' !== $template ) { $screen['page_template'] = $template; $screen['post_template'] = $template; }
+        return self::acf_schema_for_screen( $screen );
+    }
+
+    /** Shared declared ACF allowlist for post and taxonomy recipe screens. */
+    public static function acf_schema_for_screen( array $screen ): array {
+        if ( ! function_exists( 'acf_get_field_groups' ) || ! function_exists( 'acf_get_fields' ) || ! function_exists( 'update_field' ) || ! function_exists( 'get_field' ) ) { return []; }
 		$fields = [];
 		try {
 			foreach ( (array) acf_get_field_groups( $screen ) as $group ) {
@@ -76,6 +81,13 @@ final class Nova_Bridge_Suite_Content_Transport {
 		} catch ( Throwable $exception ) { return []; }
 		return array_filter( $fields, 'is_array' );
 	}
+
+    public static function validate_named_acf( array $input, array $schema ) {
+        if ( strlen( wp_json_encode( $input ) ) > 2097152 || count( $input ) > 500 ) { return self::error( 'The declared ACF fields exceed the size limit.' ); }
+        $out = []; foreach ( $input as $name => $value ) { if ( ! isset( $schema[$name] ) || ! self::safe_acf_field( $schema[$name] ) ) { return self::error( 'Unknown or protected ACF field: ' . $name ); } $field = $schema[$name]; $checked = self::validate_acf_value( $value, $field, 'acf.' . $name ); if ( is_wp_error( $checked ) ) { return $checked; } if ( function_exists( 'acf_validate_value' ) && ! acf_validate_value( $checked, $field, 'acf.' . $name ) ) { return self::error( 'ACF validation failed for ' . $name ); } $out[$name] = [ 'field' => $field, 'value' => $checked ]; } return $out;
+    }
+    public static function read_named_acf( array $schema, $object_id ): array { $out = []; foreach ( $schema as $name => $field ) { if ( self::safe_acf_field( $field ) ) { $out[$name] = self::acf_response_value( get_field( $field['key'], $object_id, false ), $field ); } } return $out; }
+    public static function verify_named_acf( array $entries, $object_id ) { foreach ( $entries as $name => $entry ) { if ( function_exists( 'acf_flush_value_cache' ) ) { acf_flush_value_cache( $object_id, $name ); } if ( ! self::acf_value_matches( $entry['value'], get_field( $entry['field']['key'], $object_id, false ), $entry['field'] ) ) { return self::error( 'ACF did not retain the translated value for ' . $name, 409 ); } } return true; }
 
 	/** Unsupported field providers and fields containing secrets are never advertised as writable. */
 	private static function safe_acf_field( array $field, int $depth = 0 ): bool {

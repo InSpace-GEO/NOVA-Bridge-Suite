@@ -23,6 +23,7 @@ final class Nova_Bridge_Suite_Endpoint_Mappings_Admin {
             'url' => esc_url_raw( rest_url( 'nova-bridge/v1/mapping' ) ),
             'nonce' => wp_create_nonce( 'wp_rest' ),
             'layoutsUrl' => admin_url( 'options-general.php?page=nova-settings&tab=layouts' ),
+            'recipesUrl' => admin_url( 'options-general.php?page=nova-settings&tab=layout-recipes' ),
         ] );
     }
 

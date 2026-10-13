@@ -273,6 +273,32 @@ function nova_gut_format_list_item( WP_Post $post ): array {
  * @param  WP_REST_Request          $request
  * @return WP_REST_Response|WP_Error
  */
+/** Validate an explicit complete native block document before any write. */
+function nova_gut_validate_native_document( $document ) {
+	if ( ! is_string( $document ) || '' === trim( $document ) || strlen( $document ) > 2097152 || false !== strpos( $document, "\0" ) || 1 !== preg_match( '//u', $document ) ) {
+		return new WP_Error( 'nova_gut_invalid_native_document', 'native_document requires a complete UTF-8 block document of at most 2 MiB.', array( 'status' => 422 ) );
+	}
+	if ( ! function_exists( 'parse_blocks' ) || ! function_exists( 'serialize_blocks' ) ) {
+		return new WP_Error( 'nova_gut_native_parser_unavailable', 'The native WordPress block parser and serializer are unavailable.', array( 'status' => 503 ) );
+	}
+	$blocks = parse_blocks( $document );
+	$count = 0;
+	$has_native = false;
+	$walk = function ( $nodes, $depth = 0 ) use ( &$walk, &$count, &$has_native ) {
+		if ( ! is_array( $nodes ) || $depth > 32 ) { return false; }
+		foreach ( $nodes as $block ) {
+			if ( ! is_array( $block ) || ++$count > 1000 || ! array_key_exists( 'blockName', $block ) || ! is_array( $block['attrs'] ?? null ) || ! is_array( $block['innerBlocks'] ?? null ) || ! is_array( $block['innerContent'] ?? null ) || ! is_string( $block['innerHTML'] ?? null ) ) { return false; }
+			if ( null !== $block['blockName'] ) { $has_native = true; }
+			if ( ! $walk( $block['innerBlocks'], $depth + 1 ) ) { return false; }
+		}
+		return true;
+	};
+	if ( ! $walk( $blocks ) || ! $has_native || serialize_blocks( $blocks ) !== $document ) {
+		return new WP_Error( 'nova_gut_invalid_native_document', 'Use a complete document from the native WordPress block serializer, within 1000 blocks and 32 levels. Malformed or ambiguous block attributes are not accepted.', array( 'status' => 422 ) );
+	}
+	return $document;
+}
+
 function nova_gut_create_page( WP_REST_Request $request ) {
 	// Debug (a): raw request body.
 	nova_gut_debug_log( 'create_raw_body', '(len=' . strlen( (string) $request->get_body() ) . ') ' . substr( (string) $request->get_body(), 0, 200 ) );
@@ -293,6 +319,16 @@ function nova_gut_create_page( WP_REST_Request $request ) {
 	// Type is inferred from the route (/posts → post, /pages → page)
 	// but can be overridden via the "type" body field.
 	$type = nova_gut_infer_type( $request );
+	$native_mode = array_key_exists( 'native_document', $params );
+	if ( $native_mode ) {
+		foreach ( array( 'content', 'blocks', 'source_page_id', 'append_html', 'image_replacements' ) as $key ) {
+			if ( array_key_exists( $key, $params ) ) { return new WP_Error( 'nova_gut_native_conflict', 'native_document cannot be combined with another content, clone or transformation input.', array( 'status' => 400 ) ); }
+		}
+		$type = isset( $params['post_type'] ) ? $params['post_type'] : $type;
+		$object = is_string( $type ) ? get_post_type_object( $type ) : null;
+		if ( ! $object || ! current_user_can( $object->cap->create_posts ?? $object->cap->edit_posts ) || ! current_user_can( $object->cap->edit_posts ) ) { return new WP_Error( 'nova_gut_native_forbidden', 'You cannot create native content of this post type.', array( 'status' => 403 ) ); }
+		if ( in_array( $params['status'] ?? 'draft', array( 'publish', 'private', 'future' ), true ) && ! current_user_can( $object->cap->publish_posts ) ) { return new WP_Error( 'nova_gut_native_forbidden', 'You cannot publish native content of this post type.', array( 'status' => 403 ) ); }
+	}
 
 	$title = isset( $params['title'] ) ? trim( (string) $params['title'] ) : '';
 	if ( '' === $title ) {
@@ -305,7 +341,8 @@ function nova_gut_create_page( WP_REST_Request $request ) {
 
 	// --- Resolve content -------------------------------------------------
 
-	$content = nova_gut_resolve_content( $params );
+	$content = $native_mode ? nova_gut_validate_native_document( $params['native_document'] ) : nova_gut_resolve_content( $params );
+	if ( is_wp_error( $content ) ) { return $content; }
 
 	if ( '' === $content ) {
 		$warnings[] = 'Content resolved to empty. The page/post will have no body. '
@@ -397,6 +434,10 @@ function nova_gut_create_page( WP_REST_Request $request ) {
 
 	// Debug (d): verify stored content immediately after insert.
 	$saved_post = get_post( $post_id );
+	if ( $native_mode && ( ! $saved_post || (string) $saved_post->post_content !== $content ) ) {
+		$deleted = wp_delete_post( $post_id, true );
+		return new WP_Error( 'nova_gut_native_storage_mismatch', 'WordPress did not retain the complete native document.', array( 'status' => 500, 'post_id' => $post_id, 'rollback_failed' => ! $deleted ) );
+	}
 	nova_gut_debug_log( 'create_saved', array(
 		'post_id'          => $post_id,
 		'post_content_len' => $saved_post ? strlen( $saved_post->post_content ) : -1,
@@ -442,6 +483,9 @@ function nova_gut_create_page( WP_REST_Request $request ) {
  * @return WP_REST_Response|WP_Error
  */
 function nova_gut_update_page( WP_REST_Request $request ) {
+	$native_params = nova_gut_get_request_json_params_safe( $request );
+	if ( is_wp_error( $native_params ) ) { return $native_params; }
+	if ( array_key_exists( 'native_document', $native_params ) ) { return new WP_Error( 'nova_gut_native_create_only', 'native_document is a create-only complete document input.', array( 'status' => 422 ) ); }
 	$post_id = absint( $request->get_param( 'id' ) );
 	$post    = get_post( $post_id );
 
