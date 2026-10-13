@@ -4,7 +4,7 @@ REST bridge for the **Divi Builder**. Creates and updates posts/pages whose layo
 
 **Divi 5:** content written by this module renders on Divi 5 sites through Divi's backwards-compatibility layer and can be converted per page with the official Divi 5 Migrator. Responses include a `divi` info block (`builder_version`, `divi5_active`).
 
-Native Divi 5 block documents can be inspected, cloned, and updated in place. The bridge exposes only recognized existing text fields and replaces their JSON string values without reserializing the surrounding block attributes. Native structural removal, append, and wholesale layout replacement remain unavailable and return HTTP 422.
+Native Divi 5 block documents can be inspected, cloned, created from a complete native document without a source page, and updated in place. The bridge exposes only recognized existing text fields and replaces their JSON string values without reserializing the surrounding block attributes. Native structural removal, append, and wholesale replacement of existing layouts remain unavailable and return HTTP 422.
 
 - Namespace: `nova-divi/v1`
 - Auth: standard WordPress REST authentication (application passwords). Permissions: `edit_post` on the resolved target, else `edit_posts` / `edit_pages` by post type.
@@ -46,6 +46,7 @@ JSON body (all keys optional unless noted):
 | `append_sections` | `[{title, body, title_tag, type?}]` — each becomes a section > row > column with the heading as `<h2>` HTML inside an `et_pb_text`. `type: "faq"` renders an `et_pb_accordion` from `<h3>Q</h3><p>A</p>` pairs in `body`. In clone mode (and on updates), a single section whose body holds multiple `<h2>` blocks is auto-split into one section per `<h2>` (FAQ headings auto-detected); for from-scratch creates pass `split_sections: true` to opt in |
 | `append_html` | One extra text module in its own section |
 | `layout.raw_shortcodes` / `layout.compact` | Replace the layout wholesale (power use) |
+| `layout.native_document` | Create-only: a complete serialized native Divi 5 document, without a source page ID. Requires the loaded Divi 5 provider and `unfiltered_html`; see below. |
 | `keep_source_content` | Clone mode: `true` appends sections instead of replacing the template's text slots |
 | `meta_all` | Suite-wide post-meta payload, including provider-aware SEO keys, dotted paths, nested values, and ACF |
 | `meta`, `meta_title`, `meta_description` | Legacy Divi post meta; SEO title/description are mapped to Yoast / AIOSEO / Rank Math keys. When combined with `meta_all`, these legacy/top-level values are applied last |
@@ -58,6 +59,20 @@ Clone mode (`source_page_id` + `append_sections`) writes the sections **into the
 Capability model: the effective post type (including the `type` alias and values nested in a JSON `content` payload) is re-validated server-side — creating requires that type's `edit_posts` capability, `publish`/`future`/`private` status requires its `publish_posts`, and assigning another `author` requires `edit_others_posts` (silently dropped otherwise).
 
 For native Divi 5, supported fields are existing text/blurb/heading/accordion-item/toggle text, Divi Supreme button labels/URLs, and existing blurb URL/anchor values. Dynamic content, locked/global blocks, embedded forms, unknown modules, paired leaf modules, stale hashes, and unrecognized responsive variants fail closed. Use `sync_responsive: true` when the outline marks a field as requiring responsive synchronization.
+
+## Source-free native Divi 5 creation
+
+Send `POST /wp-json/nova-divi/v1/pages` with standard post fields and `layout: {"native_document": "...complete serialized document..."}`. The bridge validates and stores that document directly. It does not look up or copy a source page, apply shortcode transforms, or generate a layout from unstructured article text.
+
+Divi 5 uses serialized WordPress blocks, as described in the [official native format documentation](https://dev.elegantthemes.com/docs/introducing-divi-5/what-is-divi-5/). Supply one enclosing `divi/placeholder` block with valid nested block delimiters and object attributes. Content belongs in native attributes; only whitespace is accepted outside/between delimiters. Duplicate JSON keys, malformed nesting, mixed Divi 4/5 content and unsupported limits are rejected before inserting a post. The limits are 2 MiB for the complete document, 1000 blocks, 32 block nesting levels and 32 JSON container levels; the existing JSON parser also limits each attribute object to 1 MiB.
+
+This mode cannot be combined with `source_page_id` or `source_page` (even empty), another layout/content input, or nonempty `text_updates`, `remove_paths`, `append_sections` or `append_html`. Empty transform arrays and an empty `append_html` string are accepted; other input types are rejected. Sending `layout.native_document` to any update route fails before changing content or metadata. Existing clone and hash-checked text-update behavior stays available independently.
+
+The existing JSON-string `content` envelope can carry the new request as transport, provided the decoded object has no additional content input. Post type, status and permissions are checked after that envelope is decoded.
+
+The loaded Divi 5 provider and the user's `unfiltered_html` capability are required because a complete native document can carry arbitrary module settings and HTML. Normal post-type editing and publication permissions still apply; the new native mode also respects a separately declared `create_posts` capability. Responses advertise `native_create` for the authenticated user and destination post type. Successful native creation returns a document hash after exact stored-content verification; if WordPress changes the document bytes, the new post is removed and the bridge returns an error.
+
+This is a native persistence foundation for a future rule-to-Divi compiler. It does not add a Divi rule editor, infer layout rules from a source page, or certify a supplied document's appearance in the Divi Visual Builder. See [template modes and adapters](../../docs/template-modes-and-adapters.md) for the static/mixed/rule-driven design.
 
 ## Divi format notes (for maintainers)
 

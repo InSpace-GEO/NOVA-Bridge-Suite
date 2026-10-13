@@ -51,6 +51,149 @@ function nova_divi_is_divi5() {
     return false;
 }
 
+/** Raw native creation needs the loaded Divi 5 provider and native parsers. */
+function nova_divi5_native_create_available() {
+    $provider = ( defined( 'ET_BUILDER_5' ) && ET_BUILDER_5 )
+        || ( defined( 'ET_BUILDER_VERSION' ) && version_compare( (string) ET_BUILDER_VERSION, '5.0', '>=' ) );
+    return $provider && class_exists( 'WP_Block_Parser' )
+        && function_exists( 'nova_divi5_scan_document' ) && function_exists( 'nova_divi5_json_parse' );
+}
+
+/** Advertise permission to create a native draft, not permission to publish. */
+function nova_divi5_can_create_native_document( $post_type = 'page' ) {
+    $type = get_post_type_object( $post_type );
+    return nova_divi5_native_create_available() && $type
+        && current_user_can( $type->cap->edit_posts )
+        && current_user_can( isset( $type->cap->create_posts ) ? $type->cap->create_posts : $type->cap->edit_posts )
+        && current_user_can( 'unfiltered_html' );
+}
+
+/**
+ * Validate complete native bytes without changing the inspected document parser.
+ * New documents contain block delimiters and whitespace; content lives in native
+ * JSON attributes. Raw HTML between blocks is not an additional content channel.
+ */
+function nova_divi5_validate_create_document( $document ) {
+    if ( ! is_string( $document ) ) {
+        return new WP_Error( 'nova_divi5_invalid_document', 'layout.native_document must be a complete UTF-8 native document string.', array( 'status' => 422 ) );
+    }
+    if ( strlen( $document ) > 2097152 ) {
+        return new WP_Error( 'nova_divi5_document_limit', 'A native creation document must not exceed 2 MiB.', array( 'status' => 422 ) );
+    }
+    if ( '' === trim( $document ) || false !== strpos( $document, "\0" ) || 1 !== preg_match( '//u', $document ) ) {
+        return new WP_Error( 'nova_divi5_invalid_document', 'layout.native_document must be a complete UTF-8 native document string.', array( 'status' => 422 ) );
+    }
+    if ( false !== strpos( $document, '[et_pb_' ) ) {
+        return new WP_Error( 'nova_divi5_invalid_document', 'A native creation document cannot include legacy Divi shortcode content.', array( 'status' => 422 ) );
+    }
+    if ( ! class_exists( 'WP_Block_Parser' ) || ! function_exists( 'nova_divi5_scan_document' ) || ! function_exists( 'nova_divi5_json_parse' ) ) {
+        return new WP_Error( 'missing_dependency', 'The native Divi document parsers are unavailable.', array( 'status' => 500 ) );
+    }
+
+    $parser = new WP_Block_Parser();
+    $parser->document = $document;
+    $parser->offset   = 0;
+    $count            = 0;
+    $depth            = 0;
+    while ( true ) {
+        $token = $parser->next_token();
+        if ( 'no-more-tokens' === $token[0] ) {
+            if ( 1 !== preg_match( '/\A[ \t\r\n\f\v]*\z/', substr( $document, $parser->offset ) ) ) {
+                return new WP_Error( 'nova_divi5_invalid_document', 'Native creation documents cannot contain text or HTML outside their block delimiters.', array( 'status' => 422 ) );
+            }
+            break;
+        }
+        if (
+            ! in_array( $token[0], array( 'block-opener', 'block-closer', 'void-block' ), true )
+            || ! is_int( $token[3] ) || ! is_int( $token[4] )
+            || $token[3] < $parser->offset || $token[4] <= 0
+        ) {
+            return new WP_Error( 'nova_divi5_invalid_document', 'Invalid native creation block token.', array( 'status' => 422 ) );
+        }
+        if ( 1 !== preg_match( '/\A[ \t\r\n\f\v]*\z/', substr( $document, $parser->offset, $token[3] - $parser->offset ) ) ) {
+            return new WP_Error( 'nova_divi5_invalid_document', 'Native creation documents cannot contain text or HTML between block delimiters.', array( 'status' => 422 ) );
+        }
+        if ( 'block-closer' === $token[0] ) {
+            $depth--;
+        } else {
+            $count++;
+            $node_depth = $depth + 1;
+            if ( $count > 1000 || $node_depth > 32 ) {
+                return new WP_Error( 'nova_divi5_document_limit', 'A native creation document permits at most 1000 blocks and 32 block levels.', array( 'status' => 422 ) );
+            }
+            if ( 'block-opener' === $token[0] ) {
+                $depth++;
+            }
+        }
+        if ( $depth < 0 ) {
+            return new WP_Error( 'nova_divi5_invalid_document', 'Native block nesting is malformed.', array( 'status' => 422 ) );
+        }
+        $parser->offset = $token[3] + $token[4];
+    }
+
+    $blocks = nova_divi5_scan_document( $document );
+    if ( is_wp_error( $blocks ) ) {
+        return $blocks;
+    }
+    foreach ( $blocks as $block ) {
+        if ( '' === $block['parent_path'] && $block['self_closing'] ) {
+            return new WP_Error( 'nova_divi5_invalid_document', 'The native divi/placeholder root must enclose the complete document.', array( 'status' => 422 ) );
+        }
+        if ( $block['attributes_start'] < 0 ) {
+            continue;
+        }
+        $json = nova_divi5_json_parse( substr( $document, $block['attributes_start'], $block['attributes_length'] ) );
+        if ( is_wp_error( $json ) ) {
+            return $json;
+        }
+        $pending = array( array( $json, 1 ) );
+        while ( $pending ) {
+            list( $node, $json_depth ) = array_pop( $pending );
+            if ( $json_depth > 32 ) {
+                return new WP_Error( 'nova_divi5_document_limit', 'Native creation attributes permit at most 32 JSON container levels.', array( 'status' => 422 ) );
+            }
+            $children = 'object' === $node['type'] ? $node['members'] : ( 'array' === $node['type'] ? $node['items'] : array() );
+            foreach ( $children as $child ) {
+                if ( in_array( $child['type'], array( 'object', 'array' ), true ) ) {
+                    $pending[] = array( $child, $json_depth + 1 );
+                }
+            }
+        }
+    }
+    return $document;
+}
+
+/** The raw native input is a create-only mode, separate from clone mutation. */
+function nova_divi5_validate_create_request( array $params ) {
+    if ( ! isset( $params['layout'] ) || ! is_array( $params['layout'] ) || ! array_key_exists( 'native_document', $params['layout'] ) ) {
+        return null;
+    }
+    if (
+        array_diff( array_keys( $params['layout'] ), array( 'native_document' ) )
+        || array_key_exists( 'source_page_id', $params ) || array_key_exists( 'source_page', $params )
+    ) {
+        return new WP_Error( 'nova_divi5_native_create_conflict', 'Use layout.native_document without a source page or another layout input.', array( 'status' => 400 ) );
+    }
+    foreach ( array( 'text_updates', 'remove_paths', 'append_html', 'append_sections' ) as $key ) {
+        if ( array_key_exists( $key, $params ) && ( 'append_html' === $key ? ! is_string( $params[ $key ] ) : ! is_array( $params[ $key ] ) ) ) {
+            return new WP_Error( 'rest_invalid_param', $key . ( 'append_html' === $key ? ' must be a string.' : ' must be an array.' ), array( 'status' => 400 ) );
+        }
+        if ( array_key_exists( $key, $params ) && ( 'append_html' === $key ? '' !== $params[ $key ] : array() !== $params[ $key ] ) ) {
+            return new WP_Error( 'nova_divi5_native_create_conflict', 'A native creation document cannot be combined with ' . $key . '.', array( 'status' => 400 ) );
+        }
+    }
+    if ( array_key_exists( 'content', $params ) && '' !== $params['content'] && null !== $params['content'] ) {
+        return new WP_Error( 'nova_divi5_native_create_conflict', 'Send the complete native document in layout.native_document without another content input.', array( 'status' => 400 ) );
+    }
+    if ( ! nova_divi5_native_create_available() ) {
+        return new WP_Error( 'nova_divi5_native_create_unavailable', 'Source-free native documents require the loaded Divi 5 provider.', array( 'status' => 422 ) );
+    }
+    if ( ! nova_divi5_can_create_native_document( nova_divi_resolve_request_post_type( $params ) ) ) {
+        return new WP_Error( 'nova_divi5_native_create_forbidden', 'Raw native document creation requires permission to create the target post type and the unfiltered_html capability.', array( 'status' => 403 ) );
+    }
+    return nova_divi5_validate_create_document( $params['layout']['native_document'] );
+}
+
 /**
  * Encode a value for use inside a Divi shortcode attribute.
  *
@@ -88,7 +231,7 @@ function nova_divi_has_divi_layout( $post ) {
         return true;
     }
     $content = (string) $post->post_content;
-    return ( false !== strpos( $content, '[et_pb_' ) || false !== strpos( $content, '<!-- wp:divi/' ) );
+    return 'plain' !== nova_divi_content_format( $content );
 }
 
 /**
@@ -97,7 +240,7 @@ function nova_divi_has_divi_layout( $post ) {
 function nova_divi_content_format( $content ) {
     $content        = (string) $content;
     $has_shortcodes = false !== strpos( $content, '[et_pb_' );
-    $has_blocks     = false !== strpos( $content, '<!-- wp:divi/' );
+    $has_blocks     = 1 === preg_match( '/<!--\s+wp:divi\//i', $content );
 
     if ( $has_shortcodes && $has_blocks ) {
         return 'hybrid';
@@ -132,7 +275,7 @@ function nova_divi_request_mutates_layout( $params ) {
 
     return isset( $params['layout'] )
         && is_array( $params['layout'] )
-        && ( array_key_exists( 'raw_shortcodes', $params['layout'] ) || array_key_exists( 'compact', $params['layout'] ) );
+        && ( array_key_exists( 'raw_shortcodes', $params['layout'] ) || array_key_exists( 'compact', $params['layout'] ) || array_key_exists( 'native_document', $params['layout'] ) );
 }
 
 /**
@@ -167,7 +310,7 @@ function nova_divi_validate_native_write_request( $params ) {
     if (
         isset( $params['layout'] )
         && is_array( $params['layout'] )
-        && ( array_key_exists( 'raw_shortcodes', $params['layout'] ) || array_key_exists( 'compact', $params['layout'] ) )
+        && ( array_key_exists( 'raw_shortcodes', $params['layout'] ) || array_key_exists( 'compact', $params['layout'] ) || array_key_exists( 'native_document', $params['layout'] ) )
     ) {
         $unsupported[] = 'layout';
     }

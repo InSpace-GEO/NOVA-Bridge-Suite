@@ -137,6 +137,90 @@ try {
 <!-- wp:divi/text {"content":{"innerContent":{"desktop":{"value":"[gravityform id=\"2\"]"}}}} /-->
 <!-- /wp:divi/placeholder -->
 DIVI5;
+    // Source-free creation is a separate complete-document mode. These checks
+    // use WordPress's real parser/storage; they do not certify Divi rendering.
+    nova_divi_test_assert( function_exists( 'nova_divi5_validate_create_document' ), 'The source-free Divi 5 validators are not loaded.' );
+    $source_free_body = array( 'title' => $marker . '-source-free', 'status' => 'draft', 'layout' => array( 'native_document' => $native_content ) );
+    $source_free_slug = sanitize_title( $marker . '-source-free-guard' );
+    if ( ! nova_divi5_native_create_available() || ! current_user_can( 'unfiltered_html' ) ) {
+        $guard_body = $source_free_body; $guard_body['slug'] = $source_free_slug;
+        $guard = nova_divi_create_page( nova_divi_test_request( 'POST', '/nova-divi/v1/pages', $guard_body ) );
+        $guard_status = nova_divi5_native_create_available() ? 403 : 422;
+        nova_divi_test_assert( is_wp_error( $guard ) && $guard_status === (int) $guard->get_error_data()['status'], 'Unavailable/unprivileged raw native creation was accepted.' );
+        nova_divi_test_assert( null === get_page_by_path( $source_free_slug, OBJECT, 'page' ), 'The native provider/permission guard inserted a page.' );
+        $source_free_status = 'source-free provider/permission guard (native success skipped)';
+    } else {
+        $spaced_native = str_replace( '<!-- wp:', '<!--  wp:', $native_content );
+        foreach ( array( $native_content, $spaced_native ) as $case => $document ) {
+            $body = $source_free_body; $body['title'] = $marker . '-source-free-' . $case; $body['layout']['native_document'] = $document;
+            $result = nova_divi_create_page( nova_divi_test_request( 'POST', '/nova-divi/v1/pages', $body ) );
+            nova_divi_test_assert( $result instanceof WP_REST_Response && 201 === $result->get_status(), 'A complete source-free native document failed to create.' );
+            $id = (int) $result->get_data()['id']; $created_ids[] = $id;
+            nova_divi_test_assert( $document === (string) get_post_field( 'post_content', $id ), 'Source-free native bytes, styles or responsive content changed in storage.' );
+            nova_divi_test_assert( 'on' === get_post_meta( $id, '_et_pb_use_builder', true ), 'Source-free native creation did not enable the builder.' );
+            nova_divi_test_assert( nova_divi5_document_hash( $document ) === $result->get_data()['document_hash'] && true === $result->get_data()['divi']['native_create'] && 'divi5-blocks' === $result->get_data()['divi']['format'], 'Source-free native response lost its verified hash/capability/format.' );
+        }
+        $wrapped = array( 'content' => wp_json_encode( array_merge( $source_free_body, array( 'title' => $marker . '-source-free-wrapped' ) ) ) );
+        $result = nova_divi_create_page( nova_divi_test_request( 'POST', '/nova-divi/v1/pages', $wrapped ) );
+        nova_divi_test_assert( $result instanceof WP_REST_Response && 201 === $result->get_status(), 'A legacy JSON transport wrapper rejected source-free native creation.' );
+        $id = (int) $result->get_data()['id']; $created_ids[] = $id;
+        nova_divi_test_assert( $native_content === (string) get_post_field( 'post_content', $id ), 'Wrapped source-free native bytes changed.' );
+
+        $invalid_native_cases = array(
+            '<p>Outside body</p>' . $native_content,
+            str_replace( "\n", "\n<p>Between blocks</p>\n", $native_content ),
+            $native_content . $native_content,
+            '<!-- wp:divi/placeholder /-->',
+            str_replace( '<!-- /wp:divi/placeholder -->', '', $native_content ),
+            str_replace( '"builderVersion":"5.7.3"', '"builderVersion":"5.7.3","builderVersion":"5.7.3"', $native_content ),
+            str_replace( 'Desktop old', '[et_pb_text]Legacy[/et_pb_text]', $spaced_native ),
+            '<!-- wp:divi/placeholder -->' . str_repeat( '<!-- wp:divi/text {} /-->', 1000 ) . '<!-- /wp:divi/placeholder -->',
+            str_repeat( '<!-- wp:divi/placeholder -->', 33 ) . str_repeat( '<!-- /wp:divi/placeholder -->', 33 ),
+            '<!-- wp:divi/placeholder --><!-- wp:divi/text {"value":"' . str_repeat( 'x', 2097152 ) . '"} /--><!-- /wp:divi/placeholder -->',
+        );
+        $nested = 'value'; for ( $depth = 0; $depth < 33; ++$depth ) { $nested = array( 'child' => $nested ); }
+        $invalid_native_cases[] = '<!-- wp:divi/placeholder --><!-- wp:divi/text ' . wp_json_encode( $nested ) . ' /--><!-- /wp:divi/placeholder -->';
+        foreach ( $invalid_native_cases as $case => $document ) {
+            $body = $source_free_body; $body['slug'] = sanitize_title( $marker . '-source-free-invalid-' . $case ); $body['layout']['native_document'] = $document;
+            $result = nova_divi_create_page( nova_divi_test_request( 'POST', '/nova-divi/v1/pages', $body ) );
+            nova_divi_test_assert( is_wp_error( $result ) && 422 === (int) $result->get_error_data()['status'], 'An invalid or oversized source-free native document was accepted.' );
+            nova_divi_test_assert( null === get_page_by_path( $body['slug'], OBJECT, 'page' ), 'Invalid native creation inserted a page before failing.' );
+        }
+        $deny_raw = static function( $caps ) { $caps['unfiltered_html'] = false; return $caps; };
+        add_filter( 'user_has_cap', $deny_raw, 999, 1 );
+        try {
+            $body = $source_free_body; $body['slug'] = sanitize_title( $marker . '-source-free-permission' );
+            $denied_create = nova_divi_create_page( nova_divi_test_request( 'POST', '/nova-divi/v1/pages', $body ) );
+            nova_divi_test_assert( is_wp_error( $denied_create ) && 403 === (int) $denied_create->get_error_data()['status'], 'Raw native creation ignored unfiltered_html.' );
+            nova_divi_test_assert( null === get_page_by_path( $body['slug'], OBJECT, 'page' ), 'Permission failure inserted a native page.' );
+        } finally { remove_filter( 'user_has_cap', $deny_raw, 999 ); }
+        $guard_type = 'nova_d5_' . substr( str_replace( '-', '', wp_generate_uuid4() ), 0, 8 );
+        register_post_type( $guard_type, array( 'public' => false, 'supports' => array( 'title', 'editor' ), 'capabilities' => array( 'edit_posts' => 'edit_pages', 'create_posts' => 'do_not_allow' ) ) );
+        try {
+            $body = $source_free_body; $body['post_type'] = $guard_type;
+            $denied_create = nova_divi_create_page( nova_divi_test_request( 'POST', '/nova-divi/v1/pages', $body ) );
+            nova_divi_test_assert( is_wp_error( $denied_create ) && 403 === (int) $denied_create->get_error_data()['status'], 'A distinct denied create_posts capability was ignored.' );
+            nova_divi_test_assert( false === nova_divi5_can_create_native_document( $guard_type ), 'Native creation was advertised for a forbidden post type.' );
+        } finally { unregister_post_type( $guard_type ); }
+        $alter_storage = static function( $data ) use ( $marker ) { if ( ( $data['post_title'] ?? '' ) === $marker . '-source-free-mismatch' ) { $data['post_content'] .= "\n"; } return $data; };
+        add_filter( 'wp_insert_post_data', $alter_storage, 999, 1 );
+        try {
+            $body = $source_free_body; $body['title'] = $marker . '-source-free-mismatch'; $body['slug'] = sanitize_title( $body['title'] );
+            $mismatch_create = nova_divi_create_page( nova_divi_test_request( 'POST', '/nova-divi/v1/pages', $body ) );
+            nova_divi_test_assert( is_wp_error( $mismatch_create ) && 'nova_divi5_storage_mismatch' === $mismatch_create->get_error_code(), 'Native storage mismatch was accepted.' );
+            nova_divi_test_assert( null === get_page_by_path( $body['slug'], OBJECT, 'page' ), 'Mismatched native creation retained a partial page.' );
+        } finally { remove_filter( 'wp_insert_post_data', $alter_storage, 999 ); }
+        $source_free_status = 'source-free native creation/parser/storage';
+    }
+    // Whole native replacement remains forbidden on updates of any document format.
+    $plain_id = wp_insert_post( array( 'post_type' => 'page', 'post_status' => 'draft', 'post_title' => $marker . '-plain-update-guard', 'post_content' => '<p>Original plain body.</p>' ), true );
+    nova_divi_test_assert( ! is_wp_error( $plain_id ), 'Could not create the plain update guard fixture.' ); $created_ids[] = (int) $plain_id;
+    foreach ( array( $plain_id, $source_id ) as $guard_id ) {
+        $before_title = get_the_title( $guard_id ); $before_content = (string) get_post_field( 'post_content', $guard_id );
+        $result = nova_divi_update_page( nova_divi_test_request( 'PATCH', '/nova-divi/v1/pages/' . $guard_id, array( 'title' => 'Do not overwrite', 'layout' => array( 'native_document' => $native_content ) ), $guard_id ) );
+        nova_divi_test_assert( is_wp_error( $result ) && 'nova_divi5_native_create_only' === $result->get_error_code() && 422 === (int) $result->get_error_data()['status'], 'A plain/Divi 4 update accepted the create-only document.' );
+        nova_divi_test_assert( $before_title === get_the_title( $guard_id ) && $before_content === (string) get_post_field( 'post_content', $guard_id ), 'A forbidden whole-document update changed content.' );
+    }
     $native_id      = wp_insert_post(
         array(
             'post_type'    => 'page',
@@ -150,6 +234,10 @@ DIVI5;
     $created_ids[] = (int) $native_id;
     $native_content = (string) get_post_field( 'post_content', $native_id );
     $native_hash    = nova_divi5_document_hash( $native_content );
+    $native_title_before_replacement = get_the_title( $native_id );
+    $replacement_result = nova_divi_update_page( nova_divi_test_request( 'PATCH', '/nova-divi/v1/pages/' . $native_id, array( 'title' => 'Do not replace native page', 'layout' => array( 'native_document' => $native_content ) ), $native_id ) );
+    nova_divi_test_assert( is_wp_error( $replacement_result ) && 'nova_divi5_native_create_only' === $replacement_result->get_error_code() && 422 === (int) $replacement_result->get_error_data()['status'], 'An existing native page accepted the create-only document.' );
+    nova_divi_test_assert( $native_title_before_replacement === get_the_title( $native_id ) && $native_content === (string) get_post_field( 'post_content', $native_id ), 'Native whole-document rejection changed existing content.' );
 
     $native_get = new WP_REST_Request( 'GET', '/nova-divi/v1/pages/' . $native_id );
     $native_get->set_param( 'id_or_slug', (string) $native_id );
@@ -365,7 +453,7 @@ DIVI5;
     nova_divi_test_assert( 'native-meta' === get_post_meta( $native_clone_id, $marker, true ), 'Native metadata was not applied.' );
     nova_divi_test_assert( $native_meta_hash === nova_divi5_document_hash( (string) get_post_field( 'post_content', $native_clone_id ) ), 'A metadata-only native update changed content.' );
 
-    echo 'PASS: Divi 4 compatibility, metadata, and byte-preserving native Divi 5 text updates.' . PHP_EOL;
+    echo 'PASS: Divi 4 compatibility, metadata, byte-preserving native Divi 5 text updates, and ' . $source_free_status . '.' . PHP_EOL;
 } finally {
     $matches = get_posts(
         array(

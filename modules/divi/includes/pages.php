@@ -166,11 +166,11 @@ function nova_divi_validate_write_request( $params, $post = null ) {
  * checks exactly this). Without it the Visual Builder won't open the page as
  * a builder page and wp-admin shows raw shortcode soup.
  */
-function nova_divi_finalize_builder_meta( $post_id, $shortcodes, $params = array() ) {
+function nova_divi_finalize_builder_meta( $post_id, $shortcodes, $params = array(), $native_create = false ) {
     $post_id    = (int) $post_id;
     $shortcodes = (string) $shortcodes;
 
-    $has_layout = ( false !== strpos( $shortcodes, '[et_pb_' ) || false !== strpos( $shortcodes, '<!-- wp:divi/' ) );
+    $has_layout = $native_create || 'plain' !== nova_divi_content_format( $shortcodes );
 
     if ( $has_layout || ! empty( $params['publish_builder'] ) ) {
         update_post_meta( $post_id, '_et_pb_use_builder', 'on' );
@@ -224,8 +224,8 @@ function nova_divi_clear_divi_caches() {
  * Info block returned with write responses so callers can see how the site
  * will treat the content.
  */
-function nova_divi_response_info( $content = '' ) {
-    $format = nova_divi_content_format( $content );
+function nova_divi_response_info( $content = '', $post_type = 'page', $native_create = false ) {
+    $format = $native_create ? 'divi5-blocks' : nova_divi_content_format( $content );
     if ( 'divi4-shortcodes' === $format && nova_divi_is_divi5() ) {
         $format .= ' (rendered via Divi 5 backwards compatibility)';
     }
@@ -234,6 +234,7 @@ function nova_divi_response_info( $content = '' ) {
         'builder_version' => nova_divi_builder_version(),
         'divi5_active'    => nova_divi_is_divi5(),
         'format'          => $format,
+        'native_create'   => nova_divi5_can_create_native_document( $post_type ),
     );
 }
 
@@ -612,6 +613,7 @@ function nova_divi_get_page( $request ) {
                 'append_html'       => false,
                 'remove_paths'      => false,
                 'layout_replacement' => false,
+                'native_create'     => nova_divi5_can_create_native_document( $post->post_type ),
             );
 
             if ( 'full' === $layout_mode ) {
@@ -678,7 +680,7 @@ function nova_divi_get_page( $request ) {
         'permalink'    => get_permalink( $post ),
         'excerpt'      => $post->post_excerpt,
         'layout'       => $layout,
-        'divi'         => nova_divi_response_info( $raw_shortcodes ),
+        'divi'         => nova_divi_response_info( $raw_shortcodes, $post->post_type ),
     );
 
     if ( $include_meta ) {
@@ -702,6 +704,7 @@ function nova_divi_get_page( $request ) {
 /**
  * POST /pages – create (clone + replace template content slots + transforms,
  * or build from scratch via append_sections / layout.raw_shortcodes).
+ * layout.native_document creates complete native Divi 5 bytes without a source.
  */
 function nova_divi_create_page( $request ) {
     $params = nova_divi_get_request_json_params_safe( $request );
@@ -716,6 +719,15 @@ function nova_divi_create_page( $request ) {
             $decoded = json_decode( $trimmed, true );
             if ( json_last_error() === JSON_ERROR_NONE && is_array( $decoded ) ) {
                 $params = array_merge( $params, $decoded );
+                // The legacy JSON-content envelope is transport, not a second
+                // native body. A real nested content input remains a conflict.
+                if (
+                    ! array_key_exists( 'content', $decoded )
+                    && isset( $params['layout'] ) && is_array( $params['layout'] )
+                    && array_key_exists( 'native_document', $params['layout'] )
+                ) {
+                    unset( $params['content'] );
+                }
             }
         }
     }
@@ -726,6 +738,12 @@ function nova_divi_create_page( $request ) {
     if ( is_wp_error( $params ) ) {
         return $params;
     }
+
+    $native_document = nova_divi5_validate_create_request( $params );
+    if ( is_wp_error( $native_document ) ) {
+        return $native_document;
+    }
+    $native_create = null !== $native_document;
 
     $clone_mode  = ! empty( $params['source_page_id'] ) || ! empty( $params['source_page'] );
     $source_post = null;
@@ -774,8 +792,8 @@ function nova_divi_create_page( $request ) {
         $postarr['post_author'] = (int) $params['author'];
     }
 
-    $requested_content = null;
-    if ( isset( $params['layout'] ) && is_array( $params['layout'] ) ) {
+    $requested_content = $native_create ? $native_document : null;
+    if ( ! $native_create && isset( $params['layout'] ) && is_array( $params['layout'] ) ) {
         if ( ! empty( $params['layout']['raw_shortcodes'] ) ) {
             $requested_content = (string) $params['layout']['raw_shortcodes'];
         } elseif ( ! empty( $params['layout']['compact'] ) ) {
@@ -816,13 +834,13 @@ function nova_divi_create_page( $request ) {
     }
 
     $base_format  = nova_divi_content_format( $base_shortcodes );
-    $using_native = $using_template && 'divi5-blocks' === $base_format;
+    $using_native = $native_create || ( $using_template && 'divi5-blocks' === $base_format );
 
     if ( 'hybrid' === $base_format && nova_divi_request_mutates_layout( $params ) ) {
         return nova_divi_unsupported_content_format_error( $base_format );
     }
 
-    if ( 'divi5-blocks' === $base_format ) {
+    if ( ! $native_create && 'divi5-blocks' === $base_format ) {
         $native_validation = nova_divi_validate_native_write_request( $params );
         if ( is_wp_error( $native_validation ) ) {
             return $native_validation;
@@ -964,10 +982,20 @@ function nova_divi_create_page( $request ) {
     }
 
     // Divi builder meta + cache clear.
-    nova_divi_finalize_builder_meta( $post_id, $shortcodes, $params );
+    nova_divi_finalize_builder_meta( $post_id, $shortcodes, $params, $native_create );
+    if (
+        $native_create
+        && ( (string) get_post_field( 'post_content', $post_id ) !== $native_document || 'on' !== get_post_meta( $post_id, '_et_pb_use_builder', true ) )
+    ) {
+        wp_delete_post( $post_id, true );
+        return new WP_Error( 'nova_divi5_storage_mismatch', 'The complete native document or Divi builder metadata was not retained; the new page was removed.', array( 'status' => 500 ) );
+    }
 
     // Featured image (non-fatal).
-    $response_body = array( 'id' => $post_id, 'divi' => nova_divi_response_info( $shortcodes ) );
+    $response_body = array( 'id' => $post_id, 'divi' => nova_divi_response_info( $shortcodes, $post_type, $native_create ) );
+    if ( $using_native ) {
+        $response_body['document_hash'] = nova_divi5_document_hash( $shortcodes );
+    }
 
     $featured_payload = nova_divi_extract_featured_image_payload( $params );
     if ( null !== $featured_payload ) {
@@ -996,6 +1024,10 @@ function nova_divi_update_page( $request ) {
     $params = nova_divi_get_request_json_params_safe( $request );
     if ( is_wp_error( $params ) ) {
         return $params; // 400 instead of fatal 500.
+    }
+
+    if ( isset( $params['layout'] ) && is_array( $params['layout'] ) && array_key_exists( 'native_document', $params['layout'] ) ) {
+        return new WP_Error( 'nova_divi5_native_create_only', 'layout.native_document is available only when creating a new page.', array( 'status' => 422 ) );
     }
 
     $params = nova_divi_validate_write_request( $params, $post );
@@ -1160,7 +1192,7 @@ function nova_divi_update_page( $request ) {
     nova_divi_finalize_builder_meta( $post_id, $shortcodes, $params );
 
     // Featured image (non-fatal).
-    $response_body = array( 'id' => $post_id, 'divi' => nova_divi_response_info( $shortcodes ) );
+    $response_body = array( 'id' => $post_id, 'divi' => nova_divi_response_info( $shortcodes, $post->post_type ) );
 
     $featured_payload = nova_divi_extract_featured_image_payload( $params );
     if ( null !== $featured_payload ) {

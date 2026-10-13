@@ -4,6 +4,8 @@ Open **NOVA settings → Layouts** for the endpoint checklist and guided creatio
 
 The two older editors described below remain under the collapsed **Other layout tools** section. Their saved drafts and rules are retained independently from endpoint creation defaults.
 
+The agreed next mapping design keeps **static**, **mixed** and **rule-driven** templates separate. Mixed templates combine known fields with explicit repeatable/nested regions; rule-driven templates generate the main content structure and may still retain fixed elements. See [template modes and bridge adapters](template-modes-and-adapters.md) for the design and the current implementation boundary. The existing Elementor widget-rule guide below has not yet been expanded into that broader editor.
+
 Each settings section has its own title: **Layouts**, **NOVA connection** or **Modules**. The two layout editors stay under **Layouts**.
 
 The NOVA screen uses the available WordPress admin width. External theme/plugin admin notices are suppressed on this screen only; WordPress core and NOVA notices remain available. Other admin screens are unaffected.

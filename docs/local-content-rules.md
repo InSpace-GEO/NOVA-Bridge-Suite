@@ -2,6 +2,8 @@
 
 This plugin feature keeps rendering rules in WordPress. It changes neither posting-service nor nova-agents-backend, and uploads no rules. Existing fixed-field update/clone profiles remain a separate workflow.
 
+The next design distinguishes static, mixed and rule-driven templates; see [template modes and bridge adapters](template-modes-and-adapters.md). A native bridge's ability to create without a source ID is a foundation for that design, rather than a complete advanced rule compiler. This document describes the current basic Elementor renderer.
+
 ## Use the editor
 
 Enable API Mapping Context and open **Settings → NOVA Settings → Build from content**. Start with the Elementor article preset, choose a WordPress post type, and name the profile. Each content type has one rule: for example, every heading becomes a Heading widget and every paragraph becomes a Text Editor widget. Styles are optional; otherwise the site's Elementor defaults apply. FAQ can use an Accordion or a group of headings and answers. Groups repeat and nest according to the supplied content rather than a fixed row count.

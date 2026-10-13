@@ -5,6 +5,8 @@
  * REST bridge for the Divi Builder. Writes Divi 4 `et_pb_*` shortcode layouts
  * into post_content (+ `_et_pb_use_builder` meta). Divi 5 renders this content
  * through its backwards-compatibility layer and can migrate it per page.
+ * Complete native Divi 5 documents also have a privileged source-free create
+ * path; existing native documents keep their inspected text-only update path.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
