@@ -120,6 +120,9 @@
 .nova-setup-field > textarea { resize: vertical; }
 .nova-setup-field :is(input, textarea)::placeholder { color: var(--nova-setup-secondary); opacity: 1; }
 .nova-setup-help { display: block; margin: 8px 0; color: var(--nova-setup-secondary); font-size: 14px !important; line-height: 1.5; }
+.nova-setup-advanced { margin-top: 28px; padding: 18px 20px; border: 1px solid var(--nova-setup-line); border-radius: 12px; background: var(--nova-setup-wash); }
+.nova-setup-advanced p { margin: 0 0 10px; color: var(--nova-setup-secondary); font-size: 14px; }
+.nova-setup-style-card:disabled { cursor: default; opacity: .72; }
 .nova-setup-info-card { display: flex; gap: 16px; margin: 24px 0; padding: 20px; border: 1px solid var(--nova-setup-line); border-radius: 12px; color: var(--nova-setup-secondary); background: var(--nova-setup-wash); }
 .nova-setup-info-card strong { color: var(--nova-setup-ink); font-weight: 500; }
 .nova-setup-info-card p { margin: 8px 0 0; }

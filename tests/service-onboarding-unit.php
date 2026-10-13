@@ -201,4 +201,97 @@ check( ! is_wp_error( $localized_saved ) && $localized_expected === $GLOBALS['te
 $language_before_invalid = $GLOBALS['test_options'];
 check( is_wp_error( Onboarding::save( new OnboardingRequest( [ 'action' => 'save_business', 'language' => 'unknown', 'expected_revision' => $localized_saved['revision'], 'expected_fingerprint' => $localized_saved['fingerprint'], 'draft' => [ 'business' => [ 'name' => 'Wrong language' ] ] ] ) ) ) && $language_before_invalid === $GLOBALS['test_options'], 'unsupported language selection cannot fall through to a global identity write' );
 check( 'nl' === Onboarding::config( 'nl' )['state']['language'] && 'Klanten over ons' === Onboarding::config( 'nl' )['state']['draft']['presets']['sections'][0]['data']['title'], 'setup localization config uses the explicit language chosen in settings' );
+
+// The same five screens reopen against real defaults, with an explicit final save.
+$save_setup = static function ( array $draft, ?string $language = 'en', ?array $state = null ) {
+	$state = $state ?? Onboarding::state( $language );
+	return Onboarding::save( new OnboardingRequest( [ 'action' => 'save_settings', 'language' => $language, 'expected_revision' => $state['revision'], 'expected_fingerprint' => $state['fingerprint'], 'draft' => $draft, 'step' => 'review' ] ) );
+};
+$GLOBALS['test_options'] = $fresh_options;
+$GLOBALS['test_options'][ Onboarding::OPTION_CONFIGURATION ]['ui'] = [ 'cta_type' => 'url', 'cta_label' => 'Obsolete setup label', 'cta_target' => 'https://obsolete.test/', 'style' => 'editorial', 'optional_panels' => [] ];
+$GLOBALS['test_options'][ Onboarding::OPTION_CONFIGURATION ]['presets']['sections'][0]['data']['buttons'][] = [ 'label' => 'Secondary existing action', 'url' => '/keep-secondary/' ];
+$GLOBALS['test_options'][ Onboarding::OPTION_CONFIGURATION ]['presets']['sections'][0]['data']['legacy_extra'] = 'Untouched older field';
+$reopened = Onboarding::state( 'en' ); $fresh_reopened_before = $GLOBALS['test_options'];
+check( 'business' === $reopened['step'] && 'Book an appointment' === $reopened['draft']['ui']['cta_label'] && 'form' === $reopened['draft']['ui']['cta_type'] && '[contact-form-7 id="10"]' === $reopened['draft']['ui']['cta_target'], 'reopened setup starts at the same business screen and derives the current form action instead of stale saved UI labels' );
+check( ! is_wp_error( $save_setup( $reopened['draft'] ) ) && $fresh_reopened_before === $GLOBALS['test_options'], 'full no-op setup save preserves the exact active bundle, old raw fields, timestamps, lifecycle and revision' );
+$fresh_edit = $reopened['draft'];
+foreach ( $fresh_edit['presets']['sections'] as &$preset ) { if ( 'default_people' === $preset['id'] ) { $preset['data']['body'] = '<p>Meet our real team.</p>'; } if ( 'default_reviews' === $preset['id'] ) { $preset['data']['layout'] = 'compact_rail'; } } unset( $preset );
+$fresh_edit['business']['phone'] = '+31 40 9876543';
+$fresh_setup_saved = $save_setup( $fresh_edit ); $fresh_reopened_expected = $fresh_reopened_before;
+foreach ( $fresh_reopened_expected[ Onboarding::OPTION_CONFIGURATION ]['presets']['sections'] as &$preset ) { if ( 'default_people' === $preset['id'] ) { $preset['data']['body'] = '<p>Meet our real team.</p>'; } if ( 'default_reviews' === $preset['id'] ) { $preset['data']['layout'] = 'compact_rail'; } } unset( $preset );
+$fresh_reopened_expected[ Onboarding::OPTION_CONFIGURATION ]['business']['phone'] = '+31 40 9876543'; $fresh_reopened_expected[ Onboarding::OPTION_CONFIGURATION ]['onboarding_revision']++;
+check( ! is_wp_error( $fresh_setup_saved ) && $fresh_reopened_expected === $GLOBALS['test_options'] && 'compact_rail' === $fresh_setup_saved['draft']['ui']['style'] && ! isset( $GLOBALS['test_options'][ Shared::OPTION_PRESETS ], $GLOBALS['test_options'][ Shared::OPTION_TEMPLATE ] ), 'completed fresh setup changes only chosen business, team and proof fields in its single canonical bundle, with one revision' );
+check( is_wp_error( $save_setup( $reopened['draft'], 'en', $reopened ) ) && $fresh_reopened_expected === $GLOBALS['test_options'], 'a stale completed-wizard revision cannot overwrite newly saved setup content' );
+
+$GLOBALS['test_posts'] = [ 4 => (object) [ 'ID' => 4, 'post_type' => 'service_page', 'post_status' => 'draft' ] ];
+$upgrade_library = [ 'version' => 2, 'sections' => [] ];
+foreach ( [ 'hero', 'cta', 'custom_cta', 'credentials', 'reviews', 'location', 'map', 'people', 'video' ] as $type ) { $upgrade_library['sections'][] = section( 'default_' . $type, $type, [ 'title' => 'Actual ' . $type, 'body' => '<p>Keep this original content.</p>', 'older_field' => 'Preserve raw data' ] ); }
+for ( $i = 1; $i <= 13; ++$i ) { $upgrade_library['sections'][] = section( 'variant_' . $i, 'reviews', [ 'body' => 'Actual quotation ' . $i, 'items' => [ [ 'author' => 'Existing customer', 'source' => 'Google' ] ] ] ); }
+$upgrade_library['sections'][0]['data']['buttons'] = [ [ 'label' => 'Contact us', 'url' => '/contact/' ], [ 'label' => 'Telephone', 'url' => 'tel:+31401234567' ] ];
+$upgrade_library['sections'][1]['data']['buttons'] = [ [ 'label' => 'More information', 'url' => '/info/' ], [ 'label' => 'Other action', 'url' => '/other/' ] ];
+$GLOBALS['test_options'] = [ Shared::OPTION_PRESETS => $upgrade_library, Shared::OPTION_TEMPLATE => $preserved_template ]; Onboarding::initialize();
+$upgrade_reopened = Onboarding::state( 'en' ); $upgrade_reopened_before = $GLOBALS['test_options'];
+check( 22 === count( $upgrade_reopened['draft']['presets']['sections'] ) && '/contact/' === $upgrade_reopened['draft']['ui']['cta_target'] && 'business' === $upgrade_reopened['step'], 'upgrade setup reopens all actual shared variants and the live primary action with its arbitrary existing layout' );
+check( ! is_wp_error( $save_setup( $upgrade_reopened['draft'] ) ) && $upgrade_reopened_before === $GLOBALS['test_options'], 'a no-op upgrade walkthrough leaves all twenty-two raw presets and arbitrary content-first layout byte identical' );
+$upgrade_edit = $upgrade_reopened['draft']; foreach ( $upgrade_edit['presets']['sections'] as &$preset ) { if ( 'default_people' === $preset['id'] ) { $preset['data']['body'] = '<p>Updated team introduction.</p>'; } } unset( $preset ); $upgrade_edit['business']['name'] = 'Updated existing company';
+$upgrade_result = $save_setup( $upgrade_edit ); $upgrade_reopened_expected = $upgrade_reopened_before;
+$upgrade_reopened_expected[ Shared::OPTION_PRESETS ]['sections'][7]['data']['body'] = '<p>Updated team introduction.</p>';
+$upgrade_reopened_expected[ Onboarding::OPTION_STATE ]['business'] = $upgrade_edit['business']; $upgrade_reopened_expected[ Onboarding::OPTION_STATE ]['revision']++;
+check( ! is_wp_error( $upgrade_result ) && $upgrade_reopened_expected === $GLOBALS['test_options'] && ! Onboarding::active_settings(), 'upgrade explicit setup save patches only the edited field and global identity, preserving all raw variants, secondary CTA buttons, unrelated old data and layout' );
+$bad_setup = $upgrade_result['draft']; $bad_setup['business']['name'] = 'Should never save'; $bad_setup['template']['sections'][0]['data']['body'] = 'Forbidden page layout edit'; $bad_before = $GLOBALS['test_options'];
+check( is_wp_error( $save_setup( $bad_setup ) ) && $bad_before === $GLOBALS['test_options'], 'mixed valid identity and forbidden template updates reject the complete save before writing any option' );
+$unknown_setup = $upgrade_result['draft']; $unknown_setup['presets']['sections'][0]['type'] = 'cta';
+check( is_wp_error( $save_setup( $unknown_setup ) ) && $bad_before === $GLOBALS['test_options'], 'the five setup screens cannot silently replace an existing shared variant type' );
+$stale_fingerprint = Onboarding::state( 'en' ); $GLOBALS['test_options'][ Shared::OPTION_PRESETS ]['sections'][1]['data']['title'] = 'Changed externally'; $concurrent_setup = $GLOBALS['test_options'];
+check( is_wp_error( $save_setup( $stale_fingerprint['draft'], 'en', $stale_fingerprint ) ) && $concurrent_setup === $GLOBALS['test_options'], 'an external raw-default edit invalidates the full wizard fingerprint even when lifecycle revision is unchanged' );
+
+// Lazy reserved fields and an empty saved layout are not activated by opening/saving.
+$GLOBALS['test_options'] = []; Onboarding::initialize(); $empty_upgrade = Onboarding::state( 'en' ); $empty_before = $GLOBALS['test_options'];
+check( ! $empty_upgrade['required'] && [] === $empty_upgrade['draft']['template'] && 9 === count( $empty_upgrade['draft']['presets']['sections'] ) && ! is_wp_error( $save_setup( $empty_upgrade['draft'] ) ) && $empty_before === $GLOBALS['test_options'], 'saving an unconfigured upgrade does not persist lazy default sections or generate a fallback layout' );
+$empty_edit = $empty_upgrade['draft']; foreach ( $empty_edit['presets']['sections'] as &$preset ) { if ( 'default_people' === $preset['id'] ) { $preset['data']['body'] = '<p>Our actual people.</p>'; } } unset( $preset );
+$empty_result = $save_setup( $empty_edit );
+check( ! is_wp_error( $empty_result ) && [ 'version' => 2, 'sections' => [ section( 'default_people', 'people', [ 'body' => '<p>Our actual people.</p>' ] ) ] ] === get_option( Shared::OPTION_PRESETS ) && ! isset( $GLOBALS['test_options'][ Shared::OPTION_TEMPLATE ] ) && ! Onboarding::active_settings(), 'editing one previously lazy shared field creates just that real preset while leaving absent template and competing bundle absent' );
+
+// Explicit form editing can enable the existing target without renaming it.
+$form_library = $upgrade_library; $form_library['sections'][2]['data']['shortcode'] = '[contact-form-7 id="99"]';
+$form_template = Document::sanitize_document( doc( [ array_merge( section( 'office-first', 'location', (object) [] ), [ 'shared_key' => 'default_location' ] ), array_merge( section( 'existing-request-form', 'custom_cta', (object) [] ), [ 'shared_key' => 'default_custom_cta', 'enabled' => false ] ) ] ) );
+$GLOBALS['test_options'] = [ Shared::OPTION_PRESETS => $form_library, Shared::OPTION_TEMPLATE => $form_template ]; Onboarding::initialize(); $form_state = Onboarding::state( 'en' ); $form_before = $GLOBALS['test_options']; $form_edit = $form_state['draft'];
+$form_edit['ui']['cta_type'] = 'form'; $form_edit['ui']['cta_target'] = '[contact-form-7 id="99"]';
+$form_edit['presets']['sections'][0]['data']['buttons'][0] = [ 'label' => 'Contact us', 'url' => '#nova-service-existing-request-form' ]; $form_edit['template']['sections'][1]['enabled'] = true;
+$form_result = $save_setup( $form_edit );
+check( ! is_wp_error( $form_result ) && 'existing-request-form' === get_option( Shared::OPTION_TEMPLATE )['sections'][1]['id'] && true === get_option( Shared::OPTION_TEMPLATE )['sections'][1]['enabled'] && $form_before[ Shared::OPTION_PRESETS ]['sections'][0]['data']['buttons'][1] === get_option( Shared::OPTION_PRESETS )['sections'][0]['data']['buttons'][1] && 'office-first' === get_option( Shared::OPTION_TEMPLATE )['sections'][0]['id'], 'explicit form CTA editing enables its original target ID and preserves first-section order plus secondary hero action' );
+$broken_form = $form_result['draft']; $broken_form['presets']['sections'][2]['data']['shortcode'] = ''; $broken_form['presets']['sections'][2]['data']['html'] = '<p>Decorative text only</p>'; $form_saved_before = $GLOBALS['test_options'];
+check( is_wp_error( $save_setup( $broken_form ) ) && $form_saved_before === $GLOBALS['test_options'], 'changed form content must remain a real form or calendar target even if its template section was already enabled' );
+
+// Existing hidden form configuration stays hidden when only button text changes.
+$disabled_form_library = $form_library; $disabled_form_library['sections'][0]['data']['buttons'][0]['url'] = '#nova-service-existing-request-form'; $disabled_form_library['sections'][2]['enabled'] = false;
+$GLOBALS['test_options'] = [ Shared::OPTION_PRESETS => $disabled_form_library, Shared::OPTION_TEMPLATE => $form_template ]; Onboarding::initialize(); $disabled_form_state = Onboarding::state( 'en' ); $disabled_form_before = $GLOBALS['test_options']; $disabled_label_edit = $disabled_form_state['draft'];
+$disabled_label_edit['presets']['sections'][0]['data']['buttons'][0]['label'] = 'Request your consultation'; $disabled_label_edit['ui']['cta_label'] = 'Request your consultation';
+$disabled_label_result = $save_setup( $disabled_label_edit ); $disabled_label_expected = $disabled_form_before;
+$disabled_label_expected[ Shared::OPTION_PRESETS ]['sections'][0]['data']['buttons'][0]['label'] = 'Request your consultation'; $disabled_label_expected[ Onboarding::OPTION_STATE ]['revision']++;
+check( ! is_wp_error( $disabled_label_result ) && $disabled_label_expected === $GLOBALS['test_options'] && false === get_option( Shared::OPTION_PRESETS )['sections'][2]['enabled'] && false === get_option( Shared::OPTION_TEMPLATE )['sections'][1]['enabled'], 'a label-only edit to an existing anchored form changes only its primary label and revision, preserving hidden form preset, hidden layout section, code and secondary button' );
+$disabled_secondary_edit = Onboarding::state( 'en' )['draft']; $disabled_secondary_edit['presets']['sections'][0]['data']['buttons'][1]['label'] = 'Updated secondary label'; $disabled_secondary_edit['presets']['sections'][0]['data']['buttons'][1]['url'] = '/updated-secondary/'; $disabled_secondary_result = $save_setup( $disabled_secondary_edit );
+check( ! is_wp_error( $disabled_secondary_result ) && false === get_option( Shared::OPTION_PRESETS )['sections'][2]['enabled'] && false === get_option( Shared::OPTION_TEMPLATE )['sections'][1]['enabled'] && '[contact-form-7 id="99"]' === get_option( Shared::OPTION_PRESETS )['sections'][2]['data']['shortcode'], 'secondary CTA changes do not force an unchanged existing hidden primary form target to activate or be rewritten' );
+$disabled_target_edit = Onboarding::state( 'en' )['draft']; $disabled_target_edit['presets']['sections'][0]['data']['buttons'][0]['url'] = '#nova-service-missing-form'; $disabled_target_before = $GLOBALS['test_options'];
+check( is_wp_error( $save_setup( $disabled_target_edit ) ) && $disabled_target_before === $GLOBALS['test_options'], 'a genuinely changed primary form target still requires an enabled working destination and rejects the entire save' );
+
+// Translated wizard edits patch only their sparse content overlay and global business.
+$translations = [ 'nl' => doc( [ section( 'default_reviews', 'reviews', [ 'title' => 'Klanten over ons', 'body' => '', 'old_content_field' => 'Preserve untouched translated raw data' ] ), section( 'variant_1', 'reviews', [ 'body' => 'Oude klantreactie' ] ) ] ) ];
+$GLOBALS['test_options'] = [ Shared::OPTION_PRESETS => $upgrade_library, Shared::OPTION_TEMPLATE => $preserved_template, Shared::OPTION_TRANSLATIONS => $translations ]; Onboarding::initialize(); $translated_state = Onboarding::state( 'nl' ); $translated_before = $GLOBALS['test_options'];
+check( ! is_wp_error( $save_setup( $translated_state['draft'], 'nl' ) ) && $translated_before === $GLOBALS['test_options'], 'a no-op translated walkthrough retains sparse fallback, explicit empty fields and untouched unknown legacy overlay data' );
+$translated_edit = $translated_state['draft']; foreach ( $translated_edit['presets']['sections'] as &$preset ) { if ( 'default_people' === $preset['id'] ) { $preset['data']['body'] = '<p>Maak kennis met ons team.</p>'; } } unset( $preset ); $translated_edit['business']['phone'] = '+31 40 5555555';
+$translated_result = $save_setup( $translated_edit, 'nl' ); $translated_expected = $translated_before;
+$translated_expected[ Shared::OPTION_TRANSLATIONS ]['nl']['sections'][] = section( 'default_people', 'people', [ 'body' => '<p>Maak kennis met ons team.</p>' ] );
+$translated_expected[ Onboarding::OPTION_STATE ]['business'] = $translated_edit['business']; $translated_expected[ Onboarding::OPTION_STATE ]['revision']++;
+check( ! is_wp_error( $translated_result ) && $translated_expected === $GLOBALS['test_options'] && '<p>Keep this original content.</p>' === array_column( Shared::get_presets( 0, 'en' )['sections'], null, 'id' )['default_people']['data']['body'], 'one translated save updates only the selected content overlay and global business with one revision, preserving all base style, variants and layout' );
+foreach ( [ 'style', 'visibility', 'layout' ] as $global_change ) {
+	$translated_bad = Onboarding::state( 'nl' )['draft']; if ( 'style' === $global_change ) { $translated_bad['presets']['sections'][4]['data']['layout'] = 'compact_rail'; } elseif ( 'visibility' === $global_change ) { $translated_bad['presets']['sections'][4]['enabled'] = false; } else { $translated_bad['template']['sections'][0]['enabled'] = false; } $translated_bad['business']['name'] = 'Never save together';
+	check( is_wp_error( $save_setup( $translated_bad, 'nl' ) ) && $translated_expected === $GLOBALS['test_options'], 'translated setup cannot alter global ' . $global_change . ' or partially save a mixed identity edit' );
+}
+$fallback_edit = Onboarding::state( 'nl' )['draft']; foreach ( $fallback_edit['presets']['sections'] as &$preset ) { if ( 'default_people' === $preset['id'] ) { $preset['data']['body'] = '<p>Keep this original content.</p>'; } } unset( $preset ); $fallback_result = $save_setup( $fallback_edit, 'nl' );
+check( ! is_wp_error( $fallback_result ) && $translations === get_option( Shared::OPTION_TRANSLATIONS ) && '' === array_column( Shared::get_presets( 0, 'nl' )['sections'], null, 'id' )['default_reviews']['data']['body'], 'changing a translated value back to default content restores fallback while retaining unrelated explicit empty translated fields and variants' );
+$unknown_language_before = $GLOBALS['test_options'];
+check( is_wp_error( $save_setup( Onboarding::state( 'en' )['draft'], 'unknown' ) ) && $unknown_language_before === $GLOBALS['test_options'], 'a full wizard save with an unavailable language cannot fall through to default-language storage' );
+$GLOBALS['test_posts'] = []; $GLOBALS['test_options'] = []; Onboarding::initialize(); $pending = Onboarding::state( 'en' ); $pending_before = $GLOBALS['test_options'];
+check( is_wp_error( $save_setup( $pending['draft'] ) ) && $pending_before === $GLOBALS['test_options'] && Onboarding::is_required(), 'save_settings cannot bypass fresh draft and finish activation requirements' );
 echo 'PASS: ' . $checks . ' service onboarding checks.' . PHP_EOL;

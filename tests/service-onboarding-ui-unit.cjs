@@ -83,21 +83,24 @@ function fixture(options = {}) {
 	const requests = [];
 	const beforeUnload = [];
 	let timerId = 0;
-	const draft = onboarding.prepareDraft({
+	const supplied = {
 		business: {name: 'Example clinic', website: 'https://example.test', phone: ''},
 		ui: {cta_type: 'booking', cta_label: 'Book a consultation', cta_target: 'https://example.test/book', style: 'editorial'},
 		...(options.draft || {}),
-	});
+	};
+	const draft = options.wizardSettings && options.draft?.presets ? copy(supplied) : onboarding.prepareDraft(supplied);
 	// A resumed, valid first action makes the timing tests independent of typing steps.
-	onboarding.applyCTA(draft);
+	if (!(options.wizardSettings && options.draft?.presets)) { onboarding.applyCTA(draft); }
 	const state = {
 		required: options.classification !== 'upgrade', complete: false,
 		classification: options.classification || 'fresh', revision: 0,
 		step: options.step || 'business', draft,
 	};
-	if (options.settings) { state.complete = true; state.required = false; state.fingerprint = 'saved-configuration-fingerprint'; state.language = options.language || 'nl'; }
+	if (options.settings || options.wizardSettings) { state.complete = true; state.required = false; state.fingerprint = 'saved-configuration-fingerprint'; state.language = options.language || 'nl'; }
 	const config = {state, demo: options.demo === true, endpoint: 'https://example.test/onboarding', nonce: 'fixture-rest-nonce'};
-	if (options.settings) { config.mode = 'settings'; if (!options.stateLanguageOnly) { config.language = options.language || 'nl'; } }
+	if (options.settings || options.wizardSettings) { config.mode = 'settings'; if (!options.stateLanguageOnly) { config.language = options.language || 'nl'; } }
+	if (options.initialStep) { config.initialStep = options.initialStep; }
+	if (options.wizardSettings) { config.advancedUrl = 'https://example.test/settings?view=advanced'; config.isTranslated = Boolean(options.translated); }
 	if (options.preview) { config.previewUrl = 'https://example.test/editor-preview'; }
 	const window = {
 		novaServiceOnboarding: config,
@@ -138,7 +141,7 @@ function fixture(options = {}) {
 			const status = options.status || 200;
 			const data = options.data || (record.url === config.previewUrl ? {html: '<p>Preview</p>'} : {
 				...state, revision: record.body.expected_revision + 1, draft: record.body.draft, step: record.body.step,
-				complete: record.body.action === 'finish', required: record.body.action !== 'finish',
+				complete: record.body.action === 'finish' || record.body.action === 'save_settings', required: record.body.action !== 'finish' && record.body.action !== 'save_settings',
 			});
 			record.resolve({ok: status < 400, status, json: () => Promise.resolve(data)});
 		},
@@ -316,6 +319,118 @@ async function main() {
 		equal(view.requests[0].body.language, 'fr', 'Selected settings language survives when it is localized only inside state');
 		view.respond(view.requests[0]); await flush();
 		check(!view.navigationIsBlocked(), 'Saving through the state language receives the same navigation protection');
+	});
+
+	await scenario('The reopened five-screen setup reads canonical content without seeding defaults', () => {
+		const supplied = {business: {name: 'Existing business'}, presets: {version: 2, sections: [{id: 'default_hero', type: 'hero', enabled: true, data: {buttons: [{label: 'Current contact', url: '/contact/', target: '_blank'}, {label: 'Secondary action', url: '/about/', variant: 'quiet'}]}}, {id: 'other_variant', type: 'reviews', enabled: false, data: {items: [{body: '<p>Original quote</p>', author: 'Customer', image: 'https://example.test/customer.jpg', rating: 5}]}}]}, template: {version: 2, sections: []}, ui: {cta_type: 'booking', cta_label: 'Obsolete label', cta_target: 'https://example.test/obsolete'}};
+		const original = copy(supplied), draft = onboarding.prepareDraft(supplied, true);
+		equal(draft.ui.cta_label, 'Current contact', 'Reopened setup uses the actual primary hero action, not an obsolete setup UI cache');
+		equal(draft.ui.cta_target, '/contact/', 'An existing relative target remains visible as its actual saved value');
+		equal(onboarding.ctaIssue(draft, true), '', 'Existing same-site relative actions are accepted');
+		equal(draft.template, original.template, 'An empty saved page template is not replaced while reopening setup');
+		check(!defaultPreset(draft, 'reviews').data.layout && !defaultPreset(draft, 'credentials').data.layout, 'Existing inherited style choices are not seeded into shared content');
+		const payload = onboarding.settingsPayload(draft, original);
+		equal(payload.presets, original.presets, 'Display placeholders are removed from an unrelated settings payload');
+		equal(payload.business, original.business, 'Empty display-only business fields are not added to an existing identity');
+		equal(supplied, original, 'Reopening retains the original serialized document and every variant');
+		const fallback = {version: 2, sections: [{id: 'hero', type: 'hero', enabled: true, shared_key: 'default_hero', data: {}}]};
+		check(onboarding.previewDocument(draft, true, fallback).sections.length === 1, 'An empty saved layout can still show a request-local fallback preview');
+		equal(draft.template, original.template, 'The fallback preview never fills the saved template');
+	});
+
+	await scenario('Completed installations reopen the same five screens and save only explicitly', async () => {
+		const view = fixture({wizardSettings: true, classification: 'upgrade', step: 'review', language: 'de'}), original = copy(view.config.state.draft);
+		equal(view.field('Business name').value, 'Example clinic', 'Settings reopen on the first screen instead of a completion or reduced business form');
+		equal(view.root.querySelectorAll('nav')[0].querySelectorAll('button').map(item => item.children[1].textContent), ['Your business', 'First call to action', 'People and proof', 'Visual style', 'Review and finish'], 'The five original setup screens remain available');
+		check(!view.button('Save draft') && !view.root.textContent.includes('Preview mode'), 'Completed settings have neither draft autosave action nor a read-only demo');
+		view.button(/People and proof$/).fire('click');
+		check(view.root.querySelectorAll('a').some(link => link.textContent === 'Advanced shared content settings'), 'Imports and detailed reusable variants remain reachable from People and proof');
+		view.button(/Visual style$/).fire('click'); view.button(/Review and finish$/).fire('click');
+		view.button('Save settings').fire('click');
+		equal(view.requests.length, 0, 'Inspecting every screen and saving unchanged settings performs no write');
+		check(!view.navigationIsBlocked(), 'Screen navigation alone does not dirty settings');
+		view.button(/Your business$/).fire('click'); view.input('Business name', 'Updated real business');
+		check(![...view.timers.values()].some(timer => timer.delay === 900), 'Typing in reopened setup schedules no live autosave');
+		check(view.navigationIsBlocked(), 'Explicit settings changes remain protected until saved');
+		view.button(/Review and finish$/).fire('click'); view.button('Save settings').fire('click');
+		equal(view.requests[0].body.action, 'save_settings', 'The final action saves existing settings rather than activating a fresh setup');
+		equal(view.requests[0].body.language, 'de', 'The settings save keeps its selected language scope');
+		equal(view.requests[0].body.expected_fingerprint, 'saved-configuration-fingerprint', 'The canonical shared fingerprint guards concurrent edits');
+		equal(view.requests[0].body.draft.presets, original.presets, 'Changing identity preserves the full shared library');
+		equal(view.requests[0].body.draft.template, original.template, 'Changing identity preserves the original page layout');
+		check(view.button('Saving settings…').disabled, 'An in-flight settings save freezes the final action');
+		view.respond(view.requests[0], {data: {...view.config.state, revision: 1, fingerprint: 'next-fingerprint', draft: view.requests[0].body.draft}}); await flush();
+		check(view.button('Save settings') && !view.navigationIsBlocked(), 'A completed save stays in the five-screen editor and acknowledges the saved baseline');
+		view.button('Save settings').fire('click'); equal(view.requests.length, 1, 'A repeated unchanged Save settings makes no redundant request');
+		equal(view.config.state.draft, original, 'Local changes never mutate the original localized state');
+	});
+
+	await scenario('Direct navigation does not require existing pages to re-enter mandatory setup content', () => {
+		const view = fixture({wizardSettings: true, draft: {business: {name: ''}, presets: {version: 2, sections: []}, template: {version: 2, sections: []}}, initialStep: 'cta'});
+		check(view.root.textContent.includes('Give visitors a clear next step'), 'A direct CTA settings link opens the requested second screen');
+		view.button(/Review and finish$/).fire('click'); check(view.button('Save settings'), 'An existing incomplete CTA does not block inspecting other setup screens');
+		view.button('Save settings').fire('click'); equal(view.requests.length, 0, 'An unchanged incomplete historical setup is not rewritten or reactivated');
+	});
+
+	await scenario('A raw unconfigured upgrade template stays an array in the real settings JSON payload', async () => {
+		const view = fixture({wizardSettings: true, draft: {business: {name: 'Upgrade business'}, presets: {version: 2, sections: []}, template: []}});
+		view.input('Business name', 'Updated upgrade business'); view.button(/Review and finish$/).fire('click'); view.button('Save settings').fire('click');
+		equal(view.requests[0].body.draft.template, [], 'A business-only wire payload retains the actual empty-array template storage shape');
+		equal(view.requests[0].body.draft.presets.sections, [], 'Display-only reserved sections are not persisted during an upgrade business edit');
+		view.respond(view.requests[0]); await flush();
+		check(!view.navigationIsBlocked(), 'The array template baseline is acknowledged without generating a hidden layout');
+	});
+
+	await scenario('Primary and extra CTA edits retain secondary buttons, form metadata and stable form anchors', () => {
+		const supplied = {business: {name: 'Existing business'}, presets: {version: 2, sections: [{id: 'default_hero', type: 'hero', enabled: true, data: {buttons: [{label: 'Contact', url: '#nova-service-existing-form', target: '_self'}, {label: 'Phone', url: 'tel:+31401234567', variant: 'secondary'}]}}, {id: 'default_custom_cta', type: 'custom_cta', enabled: true, data: {shortcode: '[form id="7"]', html: '<p>Keep the existing HTML</p>', title: 'Existing form'}}, {id: 'default_cta', type: 'cta', enabled: true, data: {buttons: [{label: 'Existing primary', url: '/primary/'}, {label: 'Existing secondary', url: '/secondary/', variant: 'quiet'}]}}]}, template: {version: 2, sections: [{id: 'existing-form', type: 'custom_cta', enabled: true, shared_key: 'default_custom_cta', data: {}}]}};
+		const draft = onboarding.prepareDraft(supplied, true), oldCustom = copy(defaultPreset(draft, 'custom_cta')), oldTemplate = copy(draft.template);
+		equal(draft.ui.cta_type, 'form', 'The existing form anchor is recognized without renaming its layout section');
+		draft.ui.cta_label = 'Updated label'; onboarding.applyCTA(draft, true, false);
+		equal(defaultPreset(draft, 'hero').data.buttons[1], supplied.presets.sections[0].data.buttons[1], 'Updating the primary CTA preserves secondary actions and their metadata');
+		equal(defaultPreset(draft, 'hero').data.buttons[0].target, '_self', 'Primary CTA metadata is retained while label and destination are edited');
+		equal(defaultPreset(draft, 'custom_cta'), oldCustom, 'A form button label edit does not overwrite untouched shortcode and HTML fields');
+		equal(draft.template, oldTemplate, 'An existing form section keeps its original stable ID and complete layout');
+		const disabled = copy(supplied); defaultPreset(disabled, 'custom_cta').enabled = false; disabled.template.sections[0].enabled = false;
+		const disabledDraft = onboarding.prepareDraft(disabled, true); disabledDraft.ui.cta_label = 'Updated disabled form label'; onboarding.applyCTA(disabledDraft, true, false);
+		check(defaultPreset(disabledDraft, 'custom_cta').enabled === false && disabledDraft.template.sections[0].enabled === false, 'A label-only edit never reactivates an existing disabled shared form or layout section');
+		equal(defaultPreset(disabledDraft, 'custom_cta').data, defaultPreset(disabled, 'custom_cta').data, 'The disabled form HTML, shortcode and metadata remain untouched when only its button label changes');
+		draft.ui.cta_type = 'url'; draft.ui.cta_target = '/contact/'; onboarding.applyCTA(draft, true);
+		check(defaultPreset(draft, 'custom_cta').enabled, 'Switching the primary CTA to a URL does not disable an independently used form');
+		onboarding.replaceFirstButton(defaultPreset(draft, 'cta').data, {label: 'New extra label', url: '/primary/'});
+		equal(defaultPreset(draft, 'cta').data.buttons[1], supplied.presets.sections[2].data.buttons[1], 'Extra CTA editing also retains every secondary button');
+		const absent = onboarding.prepareDraft({presets: {version: 2, sections: []}, template: {version: 2, sections: []}}, true); absent.ui.cta_type = 'form'; absent.ui.cta_label = 'Book'; absent.ui.cta_target = '[form id="1"]';
+		check(onboarding.applyCTA(absent, true).includes('Page defaults'), 'A missing historical form layout requires an explicit section addition rather than silently rewriting the template');
+		equal(absent.template.sections, [], 'No replacement form section is generated behind the scenes');
+	});
+
+	await scenario('People and proof edits target the office map and preserve untouched review details', async () => {
+		const draft = onboarding.prepareDraft({business: {name: 'Actual business'}}); onboarding.applyCTA(Object.assign(draft, {ui: {...draft.ui, cta_label: 'Contact', cta_target: 'https://example.test/contact'}}));
+		defaultPreset(draft, 'reviews').data = {title: 'Real testimonials', body: '<p>Keep original introduction</p>', review_source: 'https://example.test/profile', items: [{body: '<p>Original customer story</p>', author: 'Real customer', rating: 5, avatar: 'https://example.test/avatar.jpg', source_logo: 'https://example.test/logo.svg', company: 'Original company'}]};
+		defaultPreset(draft, 'location').data = {title: 'Office', body: '<p>Original office text</p>', map_url: 'https://www.google.com/maps?original', images: [{id: 12, url: 'https://example.test/office.jpg', alt: 'Original office'}], image_selection: 'one_per_page'};
+		defaultPreset(draft, 'map').data.map_url = 'https://www.google.com/maps?standalone';
+		const view = fixture({wizardSettings: true, draft}), original = copy(view.config.state.draft); view.button(/People and proof$/).fire('click');
+		equal(view.field('Google Maps embed URL (optional)').value, 'https://www.google.com/maps?original', 'Office setup displays the map belonging to the office section');
+		view.input('Office introduction (optional)', '<p>Updated office introduction</p>'); view.input('Google Maps embed URL (optional)', 'https://www.google.com/maps?updated');
+		view.button(/Review and finish$/).fire('click'); view.button('Save settings').fire('click');
+		const sent = view.requests[0].body.draft;
+		equal(defaultPreset(sent, 'location').data.map_url, 'https://www.google.com/maps?updated', 'Editing the office embed targets the visible location section');
+		equal(defaultPreset(sent, 'map'), defaultPreset(original, 'map'), 'A separate existing map remains unchanged');
+		equal(defaultPreset(sent, 'reviews'), defaultPreset(original, 'reviews'), 'The untouched review profile, introduction, images and metadata remain exact');
+		equal(defaultPreset(sent, 'location').data.images, defaultPreset(original, 'location').data.images, 'Editing office text and map preserves the complete photo pool');
+		equal(defaultPreset(sent, 'location').data.image_selection, 'one_per_page', 'Existing office photo selection behavior is preserved');
+		view.respond(view.requests[0]); await flush();
+	});
+
+	await scenario('Settings conflicts retain edits and translated presentation stays shared', async () => {
+		const translated = fixture({wizardSettings: true, translated: true}); translated.button(/Visual style$/).fire('click');
+		check(translated.button('Conversation').disabled && translated.root.textContent.includes('shared across languages'), 'Translated sites show shared style choices without writing language-specific styling');
+		translated.button(/People and proof$/).fire('click'); const sourceLinks = translated.root.querySelectorAll('input').filter(input => input.type === 'checkbox');
+		check(sourceLinks.length === 2 && sourceLinks.every(input => input.disabled), 'Review and credential source-link visibility is also inherited rather than editable per language');
+		const view = fixture({wizardSettings: true}); view.input('Business name', 'Unsaved local business'); view.button(/Review and finish$/).fire('click'); view.button('Save settings').fire('click');
+		view.respond(view.requests[0], {status: 409, data: {message: 'Settings changed in another tab. Reload to continue.'}}); await flush();
+		check(view.button('Save settings').disabled, 'A fingerprint conflict prevents another stale write');
+		view.button(/Your business$/).fire('click'); equal(view.field('Business name').value, 'Unsaved local business', 'Concurrent updates retain the local work for review');
+		check(view.navigationIsBlocked(), 'Uncommitted settings remain protected after a conflict');
 	});
 
 	await scenario('Fresh edits autosave only a draft and resume with the current revision', async () => {

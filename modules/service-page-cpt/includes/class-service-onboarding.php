@@ -130,9 +130,33 @@ final class ServiceOnboarding {
 				$prior = self::sanitize_business( $saved['draft']['business'], $initial['business'] );
 				if ( ! \is_wp_error( $prior ) ) { $business = $prior; }
 			}
-			$draft = [ 'business' => $business, 'presets' => ServiceShared::get_presets( 0, $language ), 'template' => ServiceShared::get_template(), 'ui' => $active['ui'] ?? $initial['ui'] ];
+			$draft = [ 'business' => $business, 'presets' => ServiceShared::get_presets( 0, $language ), 'template' => ServiceShared::get_template() ];
+			$draft['ui'] = self::settings_ui( $draft, $active['ui'] ?? ( $saved['ui'] ?? $initial['ui'] ) );
 		}
-		return [ 'required' => $required, 'complete' => ! $required, 'editable' => true, 'classification' => $saved['classification'] ?? 'upgrade', 'reason' => $saved['reason'] ?? 'existing_configuration', 'revision' => (int) ( $active['onboarding_revision'] ?? ( $saved['revision'] ?? 0 ) ), 'fingerprint' => self::settings_fingerprint(), 'language' => $language, 'step' => $active ? 'review' : ( $saved['step'] ?? 'business' ), 'steps' => self::STEPS, 'draft' => $draft, 'brand' => [ 'mode' => 'inherit_site', 'description' => 'Service pages use the site fonts and brand colors.' ], 'setup_url' => self::setup_url() ];
+		return [ 'required' => $required, 'complete' => ! $required, 'editable' => true, 'classification' => $saved['classification'] ?? 'upgrade', 'reason' => $saved['reason'] ?? 'existing_configuration', 'revision' => (int) ( $active['onboarding_revision'] ?? ( $saved['revision'] ?? 0 ) ), 'fingerprint' => self::settings_fingerprint(), 'language' => $language, 'step' => $required ? ( $saved['step'] ?? 'business' ) : 'business', 'steps' => self::STEPS, 'draft' => $draft, 'brand' => [ 'mode' => 'inherit_site', 'description' => 'Service pages use the site fonts and brand colors.' ], 'setup_url' => self::setup_url() ];
+	}
+
+	/** The walkthrough edits the live button and proof, not obsolete setup choices. */
+	private static function settings_ui( array $draft, array $saved ): array {
+		$ui = [ 'cta_type' => 'url', 'cta_label' => '', 'cta_target' => '', 'style' => 'default', 'optional_panels' => \is_array( $saved['optional_panels'] ?? null ) ? $saved['optional_panels'] : [] ];
+		$presets = \array_column( $draft['presets']['sections'], null, 'id' );
+		$buttons = (array) ( ( (array) ( $presets['default_hero']['data'] ?? [] ) )['buttons'] ?? [] );
+		$button = (array) ( $buttons[0] ?? [] );
+		$ui['cta_label'] = (string) ( $button['label'] ?? '' ); $ui['cta_target'] = (string) ( $button['url'] ?? '' );
+		if ( 0 === \stripos( $ui['cta_target'], 'tel:' ) ) { $ui['cta_type'] = 'phone'; $ui['cta_target'] = \substr( $ui['cta_target'], 4 ); }
+		elseif ( '#' === \substr( $ui['cta_target'], 0, 1 ) ) {
+			foreach ( (array) ( $draft['template']['sections'] ?? [] ) as $section ) {
+				if ( 'custom_cta' !== ( $section['type'] ?? '' ) || '#nova-service-' . $section['id'] !== $ui['cta_target'] ) { continue; }
+				$resolved = ServiceShared::resolve_section( $section, 0, $draft['language'] ?? null );
+				if ( isset( $presets[ $section['shared_key'] ?? '' ] ) ) { $resolved['data'] = \array_replace( (array) $presets[ $section['shared_key'] ]['data'], (array) $section['data'] ); }
+				$data = (array) $resolved['data']; $form = (string) ( ! empty( $data['shortcode'] ) ? $data['shortcode'] : ( $data['html'] ?? '' ) );
+				if ( '' !== $form ) { $ui['cta_type'] = 'form'; $ui['cta_target'] = $form; }
+				break;
+			}
+		}
+		elseif ( 'booking' === ( $saved['cta_type'] ?? '' ) && $ui['cta_target'] === ( $saved['cta_target'] ?? '' ) ) { $ui['cta_type'] = 'booking'; }
+		$ui['style'] = (string) ( ( (array) ( $presets['default_reviews']['data'] ?? [] ) )['layout'] ?? 'default' );
+		return $ui;
 	}
 
 	public static function config( ?string $language = null ): array { return [ 'endpoint' => \rest_url( 'nova-service/v1/onboarding' ), 'nonce' => \wp_create_nonce( 'wp_rest' ), 'setup_url' => self::setup_url(), 'state' => self::state( $language ) ]; }
@@ -155,7 +179,7 @@ final class ServiceOnboarding {
 	public static function register_routes(): void {
 		\register_rest_route( 'nova-service/v1', '/onboarding', [
 			[ 'methods' => 'GET', 'permission_callback' => [ self::class, 'permission' ], 'callback' => static function ( $request ) { $language = self::request_language( $request ); return \is_wp_error( $language ) ? $language : self::response( self::state( $language ) ); }, 'args' => [ 'language' => [ 'type' => 'string' ] ] ],
-			[ 'methods' => 'POST', 'permission_callback' => [ self::class, 'permission' ], 'callback' => [ self::class, 'save' ], 'args' => [ 'action' => [ 'type' => 'string', 'enum' => [ 'save', 'finish', 'save_business' ], 'required' => true ], 'expected_revision' => [ 'type' => 'integer', 'minimum' => 0, 'required' => true ], 'expected_fingerprint' => [ 'type' => 'string' ], 'language' => [ 'type' => 'string' ], 'step' => [ 'type' => 'string', 'enum' => self::STEPS ], 'draft' => [ 'type' => 'object' ] ] ],
+			[ 'methods' => 'POST', 'permission_callback' => [ self::class, 'permission' ], 'callback' => [ self::class, 'save' ], 'args' => [ 'action' => [ 'type' => 'string', 'enum' => [ 'save', 'finish', 'save_business', 'save_settings' ], 'required' => true ], 'expected_revision' => [ 'type' => 'integer', 'minimum' => 0, 'required' => true ], 'expected_fingerprint' => [ 'type' => 'string' ], 'language' => [ 'type' => 'string' ], 'step' => [ 'type' => 'string', 'enum' => self::STEPS ], 'draft' => [ 'type' => 'object' ] ] ],
 		] );
 	}
 
@@ -275,6 +299,7 @@ final class ServiceOnboarding {
 		return self::locked( static function () use ( $request ) {
 			$language = self::request_language( $request ); if ( \is_wp_error( $language ) ) { return $language; }
 			$state = self::state( $language );
+			if ( 'save_settings' === $request->get_param( 'action' ) ) { return self::save_settings( $request, $state, $language ); }
 			if ( 'save_business' === $request->get_param( 'action' ) ) { return self::save_business( $request, $state, $language ); }
 			if ( ! $state['required'] ) { return self::error( 'This site is already configured or is an existing installation. Its defaults were not changed.', 409, 'nova_service_setup_not_required' ); }
 			$revision = $request->get_param( 'expected_revision' );
@@ -295,6 +320,148 @@ final class ServiceOnboarding {
 			}
 			return self::response( self::state() );
 		} );
+	}
+
+	/** Reopening setup applies a validated patch to the established storage only. */
+	private static function save_settings( $request, array $state, ?string $language ) {
+		if ( $state['required'] ) { return self::pending_error(); }
+		$revision = $request->get_param( 'expected_revision' ); $fingerprint = $request->get_param( 'expected_fingerprint' );
+		if ( ! \is_int( $revision ) || $revision !== $state['revision'] || ! \is_string( $fingerprint ) || ! \hash_equals( $state['fingerprint'], $fingerprint ) ) { return self::error( 'Service settings changed in another session. Reload before saving setup settings.', 409, 'nova_service_setup_conflict' ); }
+		$draft = self::sanitize_draft( $request->has_param( 'draft' ) ? $request->get_param( 'draft' ) : [], $state['draft'] );
+		if ( \is_wp_error( $draft ) ) { return $draft; }
+		$localized = \class_exists( __NAMESPACE__ . '\\ServiceLanguages' ) && ServiceLanguages::is_localized( $language );
+		$before = $state['draft']; $incoming = $draft['presets']['sections']; $current = $before['presets']['sections'];
+		if ( \array_column( $incoming, 'id' ) !== \array_column( $current, 'id' ) ) { return self::error( 'Manage shared section variants and ordering in the advanced setup settings.' ); }
+		foreach ( $current as $index => $section ) {
+			$metadata = $section; $new_metadata = $incoming[ $index ]; unset( $metadata['data'], $metadata['enabled'], $new_metadata['data'], $new_metadata['enabled'] );
+			if ( \serialize( $metadata ) !== \serialize( $new_metadata ) ) { return self::error( 'Existing shared section identities and types must be preserved in setup settings.' ); }
+			if ( $localized && ( $section['enabled'] !== $incoming[ $index ]['enabled'] || \array_diff_key( (array) $section['data'], \array_flip( ServiceShared::content_fields() ) ) !== \array_diff_key( (array) $incoming[ $index ]['data'], \array_flip( ServiceShared::content_fields() ) ) ) ) { return self::error( 'Shared visibility and visual styling are global. Edit them in the default language.', 400, 'nova_service_translation_structure' ); }
+		}
+		$valid = self::validate_settings_template( $before, $draft, $localized ); if ( \is_wp_error( $valid ) ) { return $valid; }
+		$valid = self::validate_settings_form( $before, $draft ); if ( \is_wp_error( $valid ) ) { return $valid; }
+		$active = self::active_settings(); $lifecycle = \get_option( self::OPTION_STATE, [] ); $records = [];
+		if ( $localized ) {
+			$translations = \get_option( ServiceShared::OPTION_TRANSLATIONS, [] ); $translations = \is_array( $translations ) ? $translations : [];
+			$raw_overlay = $translations[ $language ] ?? [ 'version' => 2, 'sections' => [] ];
+			$overlay = self::patch_translation( $raw_overlay, $current, $incoming );
+			if ( \serialize( $overlay ) !== \serialize( $raw_overlay ) ) {
+				if ( empty( $overlay['sections'] ) ) { unset( $translations[ $language ] ); } else { $translations[ $language ] = $overlay; }
+				$records[ ServiceShared::OPTION_TRANSLATIONS ] = $translations;
+			}
+		} else {
+			$raw_presets = $active ? $active['presets'] : \get_option( ServiceShared::OPTION_PRESETS, [] );
+			$presets = self::patch_presets( $raw_presets, $current, $incoming );
+			if ( \serialize( $presets ) !== \serialize( $raw_presets ) ) {
+				if ( $active ) { $active['presets'] = $presets; } else { $records[ ServiceShared::OPTION_PRESETS ] = $presets; }
+			}
+			if ( \serialize( $draft['template'] ) !== \serialize( $before['template'] ) ) {
+				// The only layout edit accepted here enables an existing form target.
+				$raw_template = $active ? $active['template'] : \get_option( ServiceShared::OPTION_TEMPLATE, [] );
+				$template = $raw_template;
+				foreach ( (array) ( $draft['template']['sections'] ?? [] ) as $index => $section ) { if ( $section['enabled'] !== $before['template']['sections'][ $index ]['enabled'] ) { $template['sections'][ $index ]['enabled'] = $section['enabled']; } }
+				if ( $active ) { $active['template'] = $template; } else { $records[ ServiceShared::OPTION_TEMPLATE ] = $template; }
+			}
+		}
+		if ( $draft['business'] !== $before['business'] ) { if ( $active ) { $active['business'] = $draft['business']; } else { $lifecycle['business'] = $draft['business']; } }
+		// Reconstructed CTA/style controls and open panels are display state. Keep
+		// old setup UI caches untouched; the edited presets are their source of truth.
+		$changed = $records || ( $active && \serialize( $active ) !== \serialize( self::active_settings() ) ) || \serialize( $lifecycle ) !== \serialize( \get_option( self::OPTION_STATE, [] ) );
+		if ( ! $changed ) { return self::response( $state ); }
+		if ( $active ) { $active['onboarding_revision'] = $revision + 1; $records[ self::OPTION_CONFIGURATION ] = $active; }
+		else { $lifecycle['revision'] = $revision + 1; $records[ self::OPTION_STATE ] = $lifecycle; }
+		$saved = self::persist_settings_patch( $records ); if ( \is_wp_error( $saved ) ) { return $saved; }
+		return self::response( self::state( $language ) );
+	}
+
+	private static function validate_settings_template( array $before, array $after, bool $localized ) {
+		if ( \serialize( $before['template'] ) === \serialize( $after['template'] ) ) { return true; }
+		if ( $localized || 'form' !== $after['ui']['cta_type'] ) { return self::error( 'Change the page layout in Page defaults. Setup settings keep the existing layout.', 400, 'nova_service_setup_layout' ); }
+		$presets = \array_column( $after['presets']['sections'], null, 'id' ); $buttons = (array) ( ( (array) ( $presets['default_hero']['data'] ?? [] ) )['buttons'] ?? [] );
+		$target = (string) ( $buttons[0]['url'] ?? '' ); $expected = $before['template']; $found = false;
+		if ( ! isset( $expected['sections'] ) || ! \is_array( $expected['sections'] ) ) { return self::error( 'Add a shared form section in Page defaults before using a form action.', 400, 'nova_service_setup_layout' ); }
+		foreach ( $expected['sections'] as &$section ) {
+			if ( 'custom_cta' === $section['type'] && 'default_custom_cta' === ( $section['shared_key'] ?? '' ) && '#nova-service-' . $section['id'] === $target ) { $section['enabled'] = true; $found = true; }
+		} unset( $section );
+		if ( ! $found || \serialize( $expected ) !== \serialize( $after['template'] ) ) { return self::error( 'A form action can enable its existing form section, but cannot rename, move or replace the page layout.', 400, 'nova_service_setup_layout' ); }
+		return true;
+	}
+
+	private static function validate_settings_form( array $before, array $after ) {
+		if ( 'form' !== $after['ui']['cta_type'] ) { return true; }
+		$previous = \array_column( $before['presets']['sections'], null, 'id' ); $presets = \array_column( $after['presets']['sections'], null, 'id' );
+		$changed = \serialize( $before['template'] ) !== \serialize( $after['template'] );
+		$old_buttons = (array) ( ( (array) ( $previous['default_hero']['data'] ?? [] ) )['buttons'] ?? [] );
+		$buttons = (array) ( ( (array) ( $presets['default_hero']['data'] ?? [] ) )['buttons'] ?? [] );
+		if ( (string) ( $old_buttons[0]['url'] ?? '' ) !== (string) ( $buttons[0]['url'] ?? '' ) ) { $changed = true; }
+		foreach ( [ 'html', 'shortcode' ] as $field ) {
+			if ( \serialize( ( (array) ( $previous['default_custom_cta']['data'] ?? [] ) )[ $field ] ?? null ) !== \serialize( ( (array) ( $presets['default_custom_cta']['data'] ?? [] ) )[ $field ] ?? null ) ) { $changed = true; }
+		}
+		if ( ! $changed ) { return true; }
+		$target = (string) ( $buttons[0]['url'] ?? '' );
+		foreach ( (array) ( $after['template']['sections'] ?? [] ) as $section ) {
+			if ( 'custom_cta' !== $section['type'] || '#nova-service-' . $section['id'] !== $target ) { continue; }
+			$preset = $presets[ $section['shared_key'] ?? '' ] ?? null; $data = \array_replace( (array) ( $preset['data'] ?? [] ), (array) $section['data'] );
+			if ( $section['enabled'] && ( ! $preset || $preset['enabled'] ) && ( ! empty( $data['shortcode'] ) || ( ! empty( $data['html'] ) && \preg_match( '/<(?:form|iframe)\b/i', $data['html'] ) ) ) ) { return true; }
+		}
+		return self::error( 'The form action must target an existing enabled form or calendar section.' );
+	}
+
+	/** Preserve untouched raw values, empty fields, variants and unknown old data. */
+	private static function patch_presets( $raw, array $before, array $after ): array {
+		$raw = \is_array( $raw ) ? $raw : []; $positions = [];
+		foreach ( (array) ( $raw['sections'] ?? [] ) as $index => $section ) { $positions[ $section['id'] ] = $index; }
+		foreach ( $before as $index => $section ) {
+			$new = $after[ $index ]; $old_data = (array) $section['data']; $new_data = (array) $new['data']; $changes = [];
+			foreach ( \array_unique( \array_merge( \array_keys( $old_data ), \array_keys( $new_data ) ) ) as $key ) {
+				if ( \array_key_exists( $key, $old_data ) === \array_key_exists( $key, $new_data ) && \serialize( $old_data[ $key ] ?? null ) === \serialize( $new_data[ $key ] ?? null ) ) { continue; }
+				$changes[] = $key;
+			}
+			if ( ! $changes && $section['enabled'] === $new['enabled'] ) { continue; }
+			if ( ! isset( $positions[ $section['id'] ] ) ) { $raw['version'] = 2; $raw['sections'] = $raw['sections'] ?? []; $positions[ $section['id'] ] = \count( $raw['sections'] ); $raw['sections'][] = [ 'id' => $section['id'], 'type' => $section['type'], 'enabled' => $new['enabled'], 'data' => (object) [] ]; }
+			$position = $positions[ $section['id'] ]; $data = (array) ( $raw['sections'][ $position ]['data'] ?? [] );
+			foreach ( $changes as $key ) { if ( \array_key_exists( $key, $new_data ) ) { $data[ $key ] = $new_data[ $key ]; } else { unset( $data[ $key ] ); } }
+			$raw['sections'][ $position ]['data'] = $data ?: (object) [];
+			if ( $section['enabled'] !== $new['enabled'] ) { $raw['sections'][ $position ]['enabled'] = $new['enabled']; }
+		}
+		return $raw;
+	}
+
+	/** Translate only changed content fields; missing translations keep fallback. */
+	private static function patch_translation( $raw, array $before, array $after ): array {
+		$raw = \is_array( $raw ) ? $raw : [ 'version' => 2, 'sections' => [] ]; $positions = []; $changed = false;
+		foreach ( (array) ( $raw['sections'] ?? [] ) as $index => $section ) { $positions[ $section['id'] ] = $index; }
+		$base = \array_column( ServiceShared::get_base_presets()['sections'], null, 'id' ); $fields = \array_flip( ServiceShared::content_fields() );
+		foreach ( $before as $index => $section ) {
+			$old = \array_intersect_key( (array) $section['data'], $fields ); $new = \array_intersect_key( (array) $after[ $index ]['data'], $fields ); $changes = [];
+			foreach ( \array_unique( \array_merge( \array_keys( $old ), \array_keys( $new ) ) ) as $key ) {
+				if ( \array_key_exists( $key, $old ) === \array_key_exists( $key, $new ) && \serialize( $old[ $key ] ?? null ) === \serialize( $new[ $key ] ?? null ) ) { continue; }
+				$changes[] = $key;
+			}
+			if ( ! $changes ) { continue; }
+			$changed = true;
+			$data = isset( $positions[ $section['id'] ] ) ? (array) ( $raw['sections'][ $positions[ $section['id'] ] ]['data'] ?? [] ) : [];
+			$base_data = (array) $base[ $section['id'] ]['data'];
+			foreach ( $changes as $key ) { if ( ! \array_key_exists( $key, $new ) || ( \array_key_exists( $key, $base_data ) && \serialize( $new[ $key ] ) === \serialize( $base_data[ $key ] ) ) ) { unset( $data[ $key ] ); } else { $data[ $key ] = $new[ $key ]; } }
+			if ( ! isset( $positions[ $section['id'] ] ) && $data ) { $raw['version'] = 2; $raw['sections'] = $raw['sections'] ?? []; $raw['sections'][] = [ 'id' => $section['id'], 'type' => $section['type'], 'enabled' => true, 'data' => $data ]; $positions[ $section['id'] ] = \array_key_last( $raw['sections'] ); }
+			elseif ( isset( $positions[ $section['id'] ] ) ) { $position = $positions[ $section['id'] ]; if ( $data ) { $raw['sections'][ $position ]['data'] = $data; } else { unset( $raw['sections'][ $position ] ); } }
+		}
+		if ( $changed ) { $raw['sections'] = \array_values( (array) ( $raw['sections'] ?? [] ) ); }
+		return $raw;
+	}
+
+	/** If an option write fails, restore only the rows this save already wrote. */
+	private static function persist_settings_patch( array $records ) {
+		$snapshots = []; $written = [];
+		foreach ( $records as $key => $value ) {
+			$missing = new \stdClass(); $old = \get_option( $key, $missing ); $snapshots[ $key ] = [ 'exists' => $missing !== $old, 'value' => $old ];
+			if ( $missing !== $old && \serialize( $old ) === \serialize( $value ) ) { continue; }
+			if ( ! \update_option( $key, $value, false ) ) {
+				foreach ( \array_reverse( $written ) as $restore ) { if ( $snapshots[ $restore ]['exists'] ) { \update_option( $restore, $snapshots[ $restore ]['value'], false ); } else { \delete_option( $restore ); } }
+				return self::error( 'Setup settings could not be saved. Reload the settings before trying again.', 500 );
+			}
+			$written[] = $key;
+		}
+		return true;
 	}
 
 	/** Explicit identity saves cannot activate, replace or sanitize shared content. */

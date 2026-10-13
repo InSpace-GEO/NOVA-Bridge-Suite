@@ -37,6 +37,10 @@ final class ServiceSharedAdmin {
 		return isset( $request['preview_post_id'] ) && \is_scalar( $request['preview_post_id'] ) ? \absint( $request['preview_post_id'] ) : 0;
 	}
 
+	private static function advanced_setup(): bool {
+		return 'setup' === self::mode() && ! ServiceOnboarding::is_required() && isset( $_GET['view'] ) && \is_scalar( $_GET['view'] ) && 'advanced' === (string) $_GET['view'];
+	}
+
 	public static function settings_url( string $mode = 'defaults', int $preview_post_id = 0 ): string {
 		$mode = 'library' === $mode ? 'setup' : ( 'template' === $mode ? 'defaults' : $mode );
 		$args = [ 'post_type' => 'service_page', 'page' => self::PAGE, 'tab' => \in_array( $mode, [ 'defaults', 'legacy', 'setup' ], true ) ? $mode : 'defaults' ];
@@ -126,13 +130,13 @@ final class ServiceSharedAdmin {
 		$mode = self::mode();
 		if ( 'legacy' === $mode ) { return; }
 		self::enqueue_setup_assets();
-		if ( 'setup' === $mode && ServiceOnboarding::is_required() ) { return; }
+		if ( 'setup' === $mode && ! self::advanced_setup() ) { return; }
 		$presets = ServiceShared::get_presets();
 		$template = ServiceShared::get_template();
 		$layout = $template ?: ServiceDocument::default_document();
 		ServiceEditor::enqueue_document_assets( \array_merge( [
 			'postId' => 0, 'isV2' => true, 'isNew' => true, 'mode' => 'setup' === $mode ? 'library' : 'template',
-			'layoutOnly' => 'defaults' === $mode, 'setupUrl' => self::settings_url( 'setup' ),
+			'layoutOnly' => 'defaults' === $mode, 'setupUrl' => self::settings_url( 'setup' ), 'advancedSetupUrl' => \add_query_arg( 'view', 'advanced', self::settings_url( 'setup' ) ),
 			'globalControlsReadOnly' => 'setup' === $mode && ServiceLanguages::is_translated(),
 			'document' => 'setup' === $mode ? $presets : $layout,
 			'sections' => ServiceDocument::section_registry(), 'presets' => $presets,
@@ -156,6 +160,11 @@ final class ServiceSharedAdmin {
 		$config['mode'] = ServiceOnboarding::is_required() ? 'setup' : 'settings';
 		$config['previewUrl'] = \rest_url( 'nova-service/v1/editor-preview' );
 		$config['settingsUrl'] = self::settings_url( 'defaults' );
+		$config['advancedUrl'] = \add_query_arg( 'view', 'advanced', self::settings_url( 'setup' ) );
+		$config['previewTemplate'] = ServiceShared::get_template() ?: ServiceDocument::default_layout( ServiceShared::get_presets() );
+		$config['language'] = ServiceLanguages::current();
+		$config['isTranslated'] = ServiceLanguages::is_translated();
+		$config['initialStep'] = isset( $_GET['step'] ) && \is_scalar( $_GET['step'] ) && \in_array( (string) $_GET['step'], [ 'business', 'cta', 'content', 'style', 'review' ], true ) ? (string) $_GET['step'] : ( ServiceOnboarding::is_required() ? ( $config['state']['step'] ?? 'business' ) : 'business' );
 		$config['createUrl'] = \admin_url( 'post-new.php?post_type=service_page' );
 		if ( \is_file( $directory . 'branding/inspace-wordmark.svg' ) ) { $config['logoUrl'] = $url . 'branding/inspace-wordmark.svg'; }
 		\wp_localize_script( 'nova-service-onboarding', 'novaServiceOnboarding', $config );
@@ -174,7 +183,8 @@ final class ServiceSharedAdmin {
 			<header class="nova-service-settings-header"><img src="<?php echo \esc_url( \plugins_url( 'assets/branding/inspace-wordmark.svg', \dirname( __DIR__ ) . '/service-page-cpt.php' ) ); ?>" alt="InSpace"><div><h1><?php \esc_html_e( 'NOVA Services', 'nova-bridge-suite' ); ?></h1><p><?php \esc_html_e( 'Shared content in setup. One starting layout for your service pages.', 'nova-bridge-suite' ); ?></p></div></header>
 			<?php else : ?><h1><?php \esc_html_e( 'Service page settings', 'nova-bridge-suite' ); ?></h1><?php endif; ?>
 			<nav class="<?php echo 'legacy' === $mode ? 'nav-tab-wrapper' : 'nova-service-settings-nav'; ?>" aria-label="<?php \esc_attr_e( 'Service settings', 'nova-bridge-suite' ); ?>"><?php foreach ( $tabs as $tab => $label ) : ?><a class="<?php echo 'legacy' === $mode ? 'nav-tab ' . ( $tab === $mode ? 'nav-tab-active' : '' ) : ( $tab === $mode ? 'is-active' : '' ); ?>" <?php if ( $tab === $mode ) { echo 'aria-current="page"'; } ?> href="<?php echo \esc_url( self::settings_url( $tab ) ); ?>"><?php echo \esc_html( $label ); ?></a><?php endforeach; ?></nav>
-			<?php if ( 'setup' === $mode && $setup && $required ) : ?>
+			<?php if ( 'setup' === $mode && $setup && ! self::advanced_setup() ) : ?>
+				<?php self::render_languages( $mode ); ?>
 				<div id="nova-service-onboarding"><p><?php \esc_html_e( 'Preparing your service page setup…', 'nova-bridge-suite' ); ?></p></div>
 				<noscript><p><?php \esc_html_e( 'Enable JavaScript to complete the service page setup.', 'nova-bridge-suite' ); ?></p></noscript>
 			</div>
@@ -188,7 +198,8 @@ final class ServiceSharedAdmin {
 			<?php if ( isset( $_GET['saved'] ) ) : ?><div class="notice notice-success"><p><?php \esc_html_e( 'Service settings saved.', 'nova-bridge-suite' ); ?></p></div><?php endif; ?>
 			<?php $error = \get_transient( 'nova_service_shared_error_' . \get_current_user_id() ); if ( $error ) { \delete_transient( 'nova_service_shared_error_' . \get_current_user_id() ); echo '<div class="notice notice-error"><p>' . \esc_html( $error ) . '</p></div>'; } ?>
 			<?php if ( 'setup' === $mode ) : ?>
-				<h2><?php \esc_html_e( 'Your business and shared content', 'nova-bridge-suite' ); ?></h2>
+				<h2><?php \esc_html_e( 'Advanced shared content', 'nova-bridge-suite' ); ?></h2>
+				<p><a class="nova-setup-text-button" href="<?php echo \esc_url( self::settings_url( 'setup' ) ); ?>"><?php \esc_html_e( 'Back to the five setup screens', 'nova-bridge-suite' ); ?></a></p>
 				<div id="nova-service-setup-business"></div>
 				<p><?php \esc_html_e( 'Manage calls to action, people, locations, reviews, qualifications, forms and videos here. Linked pages follow these settings; local page overrides remain in place. You can keep separate reusable versions for different services.', 'nova-bridge-suite' ); ?></p>
 			<?php else : ?>
@@ -221,6 +232,7 @@ final class ServiceSharedAdmin {
 			echo '<p>' . \esc_html__( 'Choose a language for shared text, links and media. Unchanged fields follow the default language. Section order, visibility and appearance apply to every language.', 'nova-bridge-suite' ) . '</p>';
 			foreach ( $context['languages'] as $link ) {
 				$url = \add_query_arg( 'lang', $link['code'], self::settings_url( 'setup' ) );
+				if ( self::advanced_setup() ) { $url = \add_query_arg( 'view', 'advanced', $url ); }
 				echo '<a class="button ' . ( ! empty( $link['is_current'] ) ? 'button-primary' : '' ) . '" href="' . \esc_url( $url ) . '">' . \esc_html( $link['label'] . ( ! empty( $link['is_default'] ) ? ' (' . __( 'default', 'nova-bridge-suite' ) . ')' : '' ) ) . '</a> ';
 			}
 		}
@@ -243,6 +255,7 @@ final class ServiceSharedAdmin {
 		else { $result = 'library' === $mode ? ServiceShared::save_presets( $document, $language ) : ServiceShared::save_template( $document ); }
 		if ( \is_wp_error( $result ) ) { \set_transient( 'nova_service_shared_error_' . \get_current_user_id(), $result->get_error_message(), 120 ); }
 		$url = self::settings_url( $mode, self::preview_post_id( $_POST ) );
+		if ( 'library' === $mode ) { $url = \add_query_arg( 'view', 'advanced', $url ); }
 		if ( ! \is_wp_error( $language ) && '' !== $language ) { $url = \add_query_arg( 'lang', $language, $url ); }
 		\wp_safe_redirect( \is_wp_error( $result ) ? $url : \add_query_arg( 'saved', '1', $url ) );
 		exit;

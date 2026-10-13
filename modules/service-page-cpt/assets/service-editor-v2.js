@@ -299,6 +299,7 @@
 	}
 	function renderOrderContext() {
 		if (!orderPanel) { return; }
+		if (config.layoutOnly) { orderPanel.hidden = true; return; }
 		var wasOpen = orderPanel.open;
 		orderPanel.textContent = '';
 		var sections = previewTargetSections(), target = selectedPreviewTarget();
@@ -452,8 +453,10 @@
 			if (hidden) { fitPreviewFrame(); pane.scrollIntoView({block: 'nearest'}); }
 		}, 'button nova-service-preview-toggle'); mobileToggle.setAttribute('aria-expanded', String(!stacked)); workspace.insertBefore(mobileToggle, workspace.firstChild);
 		if (stacked) { pane.hidden = true; workspace.classList.add('is-preview-hidden'); }
-		orderPanel = element('details', {className: 'nova-service-order-context'}); orderPanel.open = true;
-		var editPane = workspace.querySelector('.nova-service-edit-pane'); editPane.insertBefore(orderPanel, list);
+		if (!config.layoutOnly) {
+			orderPanel = element('details', {className: 'nova-service-order-context'}); orderPanel.open = true;
+			var editPane = workspace.querySelector('.nova-service-edit-pane'); editPane.insertBefore(orderPanel, list);
+		}
 		if (window.ResizeObserver) { preview.resizeObserver = new window.ResizeObserver(fitPreviewFrame); preview.resizeObserver.observe(preview.viewport); } else { window.addEventListener('resize', fitPreviewFrame); }
 		list.addEventListener('focusin', function (event) { var section = event.target.closest('.nova-service-section'); if (section && !preview.visual) { focusPreviewSection(section.getAttribute('data-section-id'), '', true); } });
 		list.addEventListener('click', function (event) { var section = event.target.closest('.nova-service-section'); if (section && !preview.visual) { focusPreviewSection(section.getAttribute('data-section-id'), '', true); } });
@@ -577,10 +580,12 @@
 		container.appendChild(wrapper);
 	}
 	function renderSharedSelector(container, section) {
-		if (libraryMode) { return; }
+		if (libraryMode || section.type === 'rich_text') { return; }
+		var matchingPresets = presets.filter(function (preset) { return preset.type === section.type; });
+		if (!matchingPresets.length && !section.shared_key) { return; }
 		var sharedLayoutType = config.layoutOnly && ['hero', 'cta', 'custom_cta', 'reviews', 'credentials', 'people', 'location', 'map', 'video'].indexOf(section.type) >= 0;
 		var choices = sharedLayoutType && section.shared_key ? {} : {'': sharedLayoutType ? 'Existing local section — choose a shared version from Setup settings' : 'Local section — content belongs to this page'};
-		presets.filter(function (preset) { return preset.type === section.type; }).forEach(function (preset) { choices[preset.id] = preset.id + (preset.data && preset.data.title ? ' — ' + preset.data.title : '') + (preset.enabled === false ? ' (globally hidden)' : ''); });
+		matchingPresets.forEach(function (preset) { choices[preset.id] = preset.id + (preset.data && preset.data.title ? ' — ' + preset.data.title : '') + (preset.enabled === false ? ' (globally hidden)' : ''); });
 		if (section.shared_key && !hasOwn(choices, section.shared_key)) { choices[section.shared_key] = section.shared_key + ' (missing shared section)'; }
 		field(container, 'Reusable shared section', section.shared_key || '', function (key) {
 			if (sharedLayoutType && !key) { return; }
@@ -596,7 +601,10 @@
 		if (section.shared_key) {
 			var activePreset = presetFor(section);
 			if (config.layoutOnly) {
-				var editShared = element('a', {className: 'nova-setup-text-button', href: (config.setupUrl || config.sharedUrl) + '#shared-' + encodeURIComponent(section.shared_key)}, 'Edit this shared content in Setup settings');
+				var isDefault = section.shared_key === 'default_' + section.type;
+				var setupStep = section.type === 'hero' ? 'cta' : 'content';
+				var setupHref = isDefault ? (config.setupUrl || config.sharedUrl) + '&step=' + setupStep : (config.advancedSetupUrl || config.setupUrl || config.sharedUrl) + '#shared-' + encodeURIComponent(section.shared_key);
+				var editShared = element('a', {className: 'nova-setup-text-button', href: setupHref}, 'Edit this shared content in Setup settings');
 				container.appendChild(editShared); return;
 			}
 			container.appendChild(element('p', {className: 'nova-service-shared-note'}, 'Linked to shared section: ' + section.shared_key + '. Unchecked fields inherit shared content. Empty local overrides intentionally clear shared values.' + (activePreset && activePreset.enabled === false ? ' This shared version is globally hidden; enable it in the shared library to show it on linked pages.' : '')));
