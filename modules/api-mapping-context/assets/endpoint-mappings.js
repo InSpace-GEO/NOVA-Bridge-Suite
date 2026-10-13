@@ -225,16 +225,18 @@
 			var summary = coverage( state.resources ), line = el( 'div', 'nem-summary' ); line.append( el( 'span', 'nem-badge ' + ( summary.complete ? 'saved' : 'pending' ), summary.supported ? summary.saved + ' of ' + summary.supported + ' client defaults set up' : 'No client defaults to set up' ), button( 'Refresh destinations', function () { if ( ! state.busy ) { loadCatalog( false ); } } ) ); if ( summary.managed ) { line.appendChild( el( 'span', 'nem-badge saved', summary.managed + ' mapped by NOVA' ) ); } if ( summary.unavailable ) { line.appendChild( el( 'span', 'nem-badge blocked', summary.unavailable + ' destinations need capability review' ) ); } host.appendChild( line );
 			var grid = el( 'div', 'nem-resource-grid' ); grid.hidden = !! state.mode;
 			state.resources.forEach( function ( item ) {
-				var card = el( 'article', 'nem-resource' ), actions = el( 'div', 'nem-actions' ); card.appendChild( el( 'h3', '', item.label ) );
-				if ( comingSoon( item ) ) { card.appendChild( el( 'span', 'nem-badge', 'Coming soon' ) ); grid.appendChild( card ); return; }
+				var card = el( 'article', 'nem-resource' ), actions = el( 'div', 'nem-actions' ); card.dataset.resourceId = item.id; card.appendChild( el( 'h3', 'nem-card-title', item.label ) );
+				if ( comingSoon( item ) ) { card.appendChild( el( 'span', 'nem-badge nem-card-status', 'Coming soon' ) ); grid.appendChild( card ); return; }
 				if ( item.system_managed ) {
-					var automatic = el( 'span', 'nem-badge saved' ), checkmark = el( 'span', 'nem-auto-check', '✓' ); checkmark.setAttribute( 'aria-hidden', 'true' ); automatic.append( checkmark, el( 'span', '', 'Automatically mapped by NOVA' ) ); card.appendChild( automatic ); grid.appendChild( card ); return;
+					var automatic = el( 'span', 'nem-badge saved nem-card-status' ), checkmark = el( 'span', 'nem-auto-check', '✓' ); checkmark.setAttribute( 'aria-hidden', 'true' ); automatic.append( checkmark, el( 'span', '', 'Automatically mapped by NOVA' ) ); card.appendChild( automatic ); grid.appendChild( card ); return;
 				} else {
-					card.append( el( 'span', 'nem-badge ' + ( item.default_mapping ? 'saved' : item.creation_supported ? 'pending' : 'blocked' ), item.default_mapping ? 'Default saved · revision ' + item.default_mapping.revision : item.creation_supported ? 'Default needed for new content' : 'Creation needs review' ), el( 'p', 'nem-help', 'Existing content uses its current filled native document.' ) );
-					var setup = button( item.default_mapping ? 'Edit creation default' : 'Configure creation default', function () { open( item.id, 'creation' ); }, true ); setup.disabled = state.busy || item.creation_supported !== true; actions.appendChild( setup );
+					card.appendChild( el( 'span', 'nem-badge nem-card-status ' + ( item.default_mapping ? 'saved' : item.creation_supported ? 'pending' : 'blocked' ), item.default_mapping ? 'Default saved · revision ' + item.default_mapping.revision : item.creation_supported ? 'Default needed for new content' : 'Creation needs review' ) );
+					var setup = button( item.default_mapping ? 'Edit creation default' : 'Configure creation default', function () { open( item.id, 'creation' ); }, true ); setup.dataset.action = 'creation'; setup.disabled = state.busy || item.creation_supported !== true; actions.appendChild( setup );
 				}
-				var inspect = button( 'Inspect existing content', function () { open( item.id, 'inspect' ); } ); inspect.disabled = state.busy || item.can_inspect_existing === false || ! item.targets.length; actions.appendChild( inspect ); card.appendChild( actions );
-				if ( ! item.system_managed && ( item.creation_supported === false || item.can_inspect_existing === false ) && item.reasons && item.reasons.length ) { warnings( card, item.reasons ); }
+				var inspect = button( 'Inspect existing content', function () { open( item.id, 'inspect' ); } ); inspect.dataset.action = 'inspect'; inspect.disabled = state.busy || item.can_inspect_existing === false || ! item.targets.length; actions.appendChild( inspect );
+				var description = el( 'div', 'nem-card-description' ); description.appendChild( el( 'p', 'nem-help', 'Existing content uses its current filled native document.' ) );
+				if ( ( item.creation_supported === false || item.can_inspect_existing === false ) && item.reasons && item.reasons.length ) { warnings( description, item.reasons ); }
+				var spacer = el( 'span', 'nem-card-spacer' ); spacer.setAttribute( 'aria-hidden', 'true' ); card.append( description, spacer, actions );
 				if ( item.endpoint || item.route ) { card.appendChild( el( 'code', 'nem-endpoint-address', item.endpoint || item.route ) ); } grid.appendChild( card );
 			} ); host.appendChild( grid ); if ( ! state.resources.length ) { host.appendChild( el( 'p', '', 'No supported editable content destinations were discovered.' ) ); } renderWorkspace( host );
 		}
