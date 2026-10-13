@@ -235,7 +235,7 @@
 				}
 				var inspect = button( 'Inspect existing content', function () { open( item.id, 'inspect' ); } ); inspect.disabled = state.busy || item.can_inspect_existing === false || ! item.targets.length; actions.appendChild( inspect ); card.appendChild( actions );
 				if ( ! item.system_managed && ( item.creation_supported === false || item.can_inspect_existing === false ) && item.reasons && item.reasons.length ) { warnings( card, item.reasons ); }
-				if ( item.endpoint || item.route ) { details( card, 'Destination details', item.endpoint || item.route ); } grid.appendChild( card );
+				if ( item.endpoint || item.route ) { card.appendChild( el( 'code', 'nem-endpoint-address', item.endpoint || item.route ) ); } grid.appendChild( card );
 			} ); host.appendChild( grid ); if ( ! state.resources.length ) { host.appendChild( el( 'p', '', 'No supported editable content destinations were discovered.' ) ); } renderWorkspace( host );
 		}
 		render(); var ready = loadCatalog( true );
