@@ -86,7 +86,7 @@
 		function highlight( id, scroll ) {
 			if ( id && ! targets.has( id ) && ! containerTargets.has( id ) ) { return false; }
 			selected = id; marked.forEach( function ( node ) { node.classList.remove( 'nrc-selected' ); } );
-			var target = targets.get( id ) || containerTargets.get( id ); if ( target ) { mark( target.node, 'nrc-selected', true ); if ( scroll && visible( target.node, win ) ) { target.node.scrollIntoView( { behavior: 'smooth', block: 'center' } ); } } return true;
+			var target = targets.get( id ) || containerTargets.get( id ); if ( target ) { mark( target.node, 'nrc-selected', true ); if ( scroll && visible( target.node, win ) ) { var bounds = target.node.getBoundingClientRect(); win.scrollTo( { top: Math.max( 0, ( win.scrollY || 0 ) + bounds.top - Math.max( 0, ( win.innerHeight - bounds.height ) / 2 ) ), left: win.scrollX || 0, behavior: 'smooth' } ); } } return true;
 		}
 		function bind() {
 			prepareMedia( document, config, fields );
