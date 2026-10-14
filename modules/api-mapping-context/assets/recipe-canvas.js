@@ -22,11 +22,29 @@
 		items.forEach( function ( item ) {
 			var id = item && ( containers ? item.container_id || item.field_id : item.field_id );
 			if ( ! item || typeof id !== 'string' || ! safeId.test( id ) || seen.has( id ) || typeof item.target !== 'string' || ! item.target.startsWith( '/' ) || item.target.length > 1200 || ! item.locator || item.locator.reference_id !== config.referenceId ) { return; }
-			seen.add( id ); out.push( { id: id, target: item.target, label: typeof item.label === 'string' ? item.label.slice( 0, 200 ) : id, writable: item.writable === true, assigned: item.assigned === true, locator: item.locator } );
+			seen.add( id ); out.push( { id: id, target: item.target, label: typeof item.label === 'string' ? item.label.slice( 0, 200 ) : id, writable: item.writable === true, assigned: item.assigned === true, locator: item.locator, current_value: typeof item.current_value === 'string' ? item.current_value : typeof item.value === 'string' ? item.value : '' } );
 		} ); return out;
 	}
 	function unique( document, selector ) { var nodes = document.querySelectorAll( selector ); return nodes.length === 1 ? nodes[0] : null; }
 	function controlPath( locator ) { var path = Array.isArray( locator.control_path ) ? locator.control_path.join( '.' ) : String( locator.control_path || '' ); return path.replace( /^\/?(?:settings|core)\//, '' ).replace( /\//g, '.' ).replace( /^settings\./, '' ); }
+	function mediaUrl( value, base ) { if ( typeof value !== 'string' || ! value.trim() ) { return ''; } try { var url = new URL( value, base ); return url.protocol === 'https:' && ! url.username && ! url.password ? url.href : /^data:image\/(?:png|jpeg|gif|webp|avif);base64,/i.test( value ) ? value : ''; } catch ( error ) { return ''; } }
+	function prepareMedia( document, config, fields ) {
+		var scope = unique( document, '[data-elementor-id="' + config.referenceId + '"]' ); if ( ! scope ) { return; } fields = fields || [];
+		function nativeValue( owner, type, control ) { var id = owner.getAttribute( 'data-id' ); if ( ! safeId.test( id || '' ) || unique( scope, '[data-id="' + id + '"]' ) !== owner ) { return null; } return fields.find( function ( item ) { return item.writable && item.locator.strategy === 'elementor' && item.locator.reference_id === config.referenceId && item.locator.node_id === id && item.locator.element_type === type && controlPath( item.locator ) === control; } ); }
+		scope.querySelectorAll( '[data-widget_type="google_maps.default"]' ).forEach( function ( owner ) {
+			var id = owner.getAttribute( 'data-id' ); if ( ! safeId.test( id || '' ) || unique( scope, '[data-id="' + id + '"]' ) !== owner ) { return; }
+			var frame = unique( owner, 'iframe' ), field = nativeValue( owner, 'google_maps', 'address' ), placeholder = unique( owner, '.nrc-map-placeholder' ), address = field ? field.current_value : frame && ( frame.getAttribute( 'title' ) || frame.getAttribute( 'aria-label' ) ) || '';
+			if ( placeholder ) { if ( field || frame ) { var text = unique( placeholder, '.nrc-map-address' ), next = address || 'No location set', accessible = 'Google Maps location: ' + ( address || 'Not set' ); if ( text && text.textContent !== next ) { text.textContent = next; } if ( placeholder.getAttribute( 'aria-label' ) !== accessible ) { placeholder.setAttribute( 'aria-label', accessible ); } } return; }
+			if ( ! frame && ! field ) { return; } placeholder = document.createElement( 'div' ); placeholder.className = 'nrc-map-placeholder'; placeholder.setAttribute( 'role', 'img' ); placeholder.setAttribute( 'aria-label', 'Google Maps location: ' + ( address || 'Not set' ) ); var heading = document.createElement( 'strong' ); heading.textContent = 'Google Maps'; var location = document.createElement( 'p' ); location.className = 'nrc-map-address'; location.textContent = address || 'No location set'; var note = document.createElement( 'p' ); note.textContent = 'Map preview paused. Select this block to map its location.'; placeholder.appendChild( heading ); placeholder.appendChild( location ); placeholder.appendChild( note ); var height = frame && frame.getClientRects()[0]; placeholder.style.minHeight = Math.max( 180, Math.min( 900, height && height.height || 200 ) ) + 'px';
+			if ( frame ) { frame.parentElement.replaceChild( placeholder, frame ); } else { ( unique( owner, '.elementor-custom-embed' ) || owner ).appendChild( placeholder ); }
+		} );
+		scope.querySelectorAll( '[data-widget_type="image.default"]' ).forEach( function ( owner ) {
+			var field = nativeValue( owner, 'image', 'image.url' ), image = unique( owner, 'img' ); if ( ! image && ! field ) { return; }
+			var value = field && field.current_value || image && ( image.getAttribute( 'data-src' ) || image.getAttribute( 'data-lazy-src' ) ), source = mediaUrl( value, document.baseURI || config.parentOrigin ); if ( ! source ) { return; }
+			if ( ! image ) { image = document.createElement( 'img' ); ( unique( owner, '.elementor-widget-container' ) || owner ).appendChild( image ); }
+			if ( image.getAttribute( 'src' ) !== source ) { image.setAttribute( 'src', source ); if ( image.getAttribute( 'srcset' ) ) { image.removeAttribute( 'srcset' ); } } if ( image.getAttribute( 'loading' ) !== 'eager' ) { image.setAttribute( 'loading', 'eager' ); }
+		} );
+	}
 	function locate( document, item, config ) {
 		var locator = item && item.locator; if ( ! locator || locator.reference_id !== config.referenceId ) { return null; }
 		var strategy = locator.strategy, id = String( locator.node_id || '' ), control = controlPath( locator ), owner, selector;
@@ -34,7 +52,7 @@
 			if ( ! safeId.test( id ) ) { return null; }
 			var scope = unique( document, '[data-elementor-id="' + config.referenceId + '"]' ); if ( ! scope ) { return null; }
 			owner = unique( scope, '[data-id="' + id + '"]' ); if ( ! owner ) { return null; }
-			selector = { 'heading:title': '.elementor-heading-title', 'text-editor:editor': '.elementor-widget-container', 'button:text': '.elementor-button-text', 'image:caption': '.widget-image-caption', 'image:image.url': '.elementor-widget-container img', 'image:image.alt': '.elementor-widget-container img' }[ locator.element_type + ':' + control ];
+			selector = { 'heading:title': '.elementor-heading-title', 'text-editor:editor': '.elementor-widget-container', 'button:text': '.elementor-button-text', 'image:caption': '.widget-image-caption', 'image:image.url': '.elementor-widget-container img', 'image:image.alt': '.elementor-widget-container img', 'google_maps:address': '.nrc-map-placeholder' }[ locator.element_type + ':' + control ];
 		} else if ( strategy === 'beaver' ) {
 			if ( ! safeId.test( id ) ) { return null; }
 			var beaver = unique( document, '.fl-builder-content-' + config.referenceId ); if ( ! beaver ) { return null; }
@@ -71,6 +89,7 @@
 			var target = targets.get( id ) || containerTargets.get( id ); if ( target ) { mark( target.node, 'nrc-selected', true ); if ( scroll && visible( target.node, win ) ) { target.node.scrollIntoView( { behavior: 'smooth', block: 'center' } ); } } return true;
 		}
 		function bind() {
+			prepareMedia( document, config, fields );
 			marked.forEach( function ( node ) { node.classList.remove( 'nrc-target', 'nrc-selected', 'nrc-assigned', 'nrc-protected' ); } ); marked.clear(); targets.clear(); containerTargets.clear();
 			var nodeFlags = new Map();
 			var statuses = fields.map( function ( item ) { var target = locate( document, item, config ), shown = !! ( target && visible( target.node, win ) ); if ( target ) { targets.set( item.id, target ); var flags = nodeFlags.get( target.node ) || { assigned: false, writable: false }; flags.assigned = flags.assigned || item.assigned; flags.writable = flags.writable || item.writable; nodeFlags.set( target.node, flags ); } return { field_id: item.id, target: item.target, visible: shown, precision: target ? target.precision : 'none', assigned: item.assigned, writable: item.writable, reason: ! target ? 'no_verified_locator' : ! shown ? 'not_visible_in_static_canvas' : '' }; } );
@@ -99,7 +118,7 @@
 		document.addEventListener( 'auxclick', function ( event ) { event.preventDefault(); event.stopImmediatePropagation(); }, true );
 		document.addEventListener( 'keydown', function ( event ) { if ( event.target && event.target.closest && event.target.closest( 'form,input,select,textarea,[contenteditable]' ) ) { event.preventDefault(); event.stopImmediatePropagation(); } }, true );
 		function init() {
-			ready = true; var style = document.createElement( 'style' ); style.textContent = consent.split( ',' ).map( function ( selector ) { return 'html.nrc-hide-consent ' + selector; } ).join( ',' ) + '{display:none!important;visibility:hidden!important;pointer-events:none!important}html.nrc-consent-present,html.nrc-consent-present body{overflow:auto!important}.nrc-target{cursor:crosshair!important}.nrc-target:hover{outline:2px dashed #8511D9!important;outline-offset:3px}.nrc-assigned{outline:2px solid #2E9E50!important;outline-offset:3px}.nrc-protected{outline-style:dotted!important}.nrc-selected{outline:3px solid #8511D9!important;outline-offset:4px}'; document.head.appendChild( style ); hideConsent();
+			ready = true; var style = document.createElement( 'style' ); style.textContent = consent.split( ',' ).map( function ( selector ) { return 'html.nrc-hide-consent ' + selector; } ).join( ',' ) + '{display:none!important;visibility:hidden!important;pointer-events:none!important}html.nrc-consent-present,html.nrc-consent-present body{overflow:auto!important}.nrc-target{cursor:crosshair!important}.nrc-target:hover{outline:2px dashed #8511D9!important;outline-offset:3px}.nrc-assigned{outline:2px solid #2E9E50!important;outline-offset:3px}.nrc-protected{outline-style:dotted!important}.nrc-selected{outline:3px solid #8511D9!important;outline-offset:4px}.nrc-map-placeholder{display:flex;flex-direction:column;align-items:center;justify-content:center;box-sizing:border-box;padding:24px;background:#f0ebf7;border:1px solid #d9c4ee;border-radius:8px;color:#242424;text-align:center;cursor:crosshair}.nrc-map-placeholder strong{font-size:20px}.nrc-map-placeholder p{margin:8px 0;font-size:14px}'; document.head.appendChild( style ); hideConsent(); prepareMedia( document, config, fields );
 			send( 'ready', { limitations: [ 'Site scripts, forms, embedded frames and network requests are disabled in this canvas. It shows the rendered initial state; dynamic components can differ from the live page.' ], viewport: { width: win.innerWidth, height: win.innerHeight } } );
 			if ( win.MutationObserver ) { new win.MutationObserver( function ( changes ) { var significant = changes.some( function ( change ) { if ( change.type !== 'attributes' || change.attributeName !== 'class' ) { return true; } var strip = function ( classes ) { return String( classes || '' ).split( /\s+/ ).filter( function ( name ) { return name && ! name.startsWith( 'nrc-' ); } ).sort().join( ' ' ); }; return strip( change.oldValue ) !== strip( change.target.getAttribute( 'class' ) ); } ); if ( significant ) { schedule(); } } ).observe( document.body, { childList: true, subtree: true, attributes: true, attributeOldValue: true, attributeFilter: [ 'class', 'id', 'style', 'hidden', 'aria-hidden', 'src' ] } ); }
 			if ( win.ResizeObserver ) { new win.ResizeObserver( schedule ).observe( document.body ); }
@@ -110,5 +129,5 @@
 		if ( document.readyState === 'loading' ) { document.addEventListener( 'DOMContentLoaded', init ); } else { init(); }
 		return { refresh: schedule, select: highlight };
 	}
-	return { validConfig: validConfig, validMessage: validMessage, normalizeItems: normalizeItems, locate: locate, visible: visible, mount: mount };
+	return { validConfig: validConfig, validMessage: validMessage, normalizeItems: normalizeItems, mediaUrl: mediaUrl, prepareMedia: prepareMedia, locate: locate, visible: visible, mount: mount };
 } ) );

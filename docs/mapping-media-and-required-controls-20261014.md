@@ -1,0 +1,9 @@
+# Map, image and required-field controls
+
+The Elementor example contains a `google_maps` widget. Its embedded frame is blocked in the isolated recipe canvas; accepting cookies cannot enable that frame. The plugin now exposes `settings.address` as **Google Maps · Location or address**, with a **Map location or address** content purpose. Its preview is a selectable static placeholder displaying the native address. Zoom, styles, credentials and dynamic controls stay protected. Translation stores the original plain-text address correctly and escapes only its rendered preview.
+
+The canvas restores declared image URLs and native lazy-image sources without running site scripts. Media values are passed from the verified full field inventory; ordinary field content remains omitted from the canvas metadata. The preview keeps its existing message-origin/session/digest checks and restrictions on embedded frames, forms and script/network execution.
+
+New mappings and changes to a different content purpose enable **Require a supplied value for this field**. Existing saved optional mappings and a deliberate opt-out when reselecting the same purpose remain optional. Required-field checkbox changes invalidate reviewed previews and update the unsaved state without replacing the inspector or reference iframe, preserving focus and scroll.
+
+Validation: 74 mounted mapper workflows, 100 canvas checks, 25 PHP canvas authentication/isolation checks, and 166 recipe-engine/Elementor assertions pass. Staging uses the same three scoped runtime files: the editor JS, canvas JS and Elementor recipe adapter. Existing saved recipe history, category 107, source pages 3846/3952, plugin settings and retained review content are compared with a private pre-deployment baseline. No backend or main-branch changes are included.
