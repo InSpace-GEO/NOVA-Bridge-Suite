@@ -153,7 +153,8 @@ class WCCBP_Content_Below_Products {
 
 		$value = wp_kses_post( wp_unslash( (string) $_POST[ self::META_KEY ] ) );
 
-		update_term_meta( $term_id, self::META_KEY, $value );
+		// Metadata setters remove slashes; preserve the once-unslashed editor content.
+		update_term_meta( $term_id, self::META_KEY, wp_slash( $value ) );
 	}
 
 	public static function output_category_content() {
@@ -211,7 +212,8 @@ class WCCBP_Content_Below_Products {
 			return;
 		}
 
-		update_term_meta( $term_id, self::META_KEY, wp_kses_post( wp_unslash( (string) $value ) ) );
+		// REST JSON values are already unslashed. Slash only for the metadata setter.
+		update_term_meta( $term_id, self::META_KEY, wp_slash( wp_kses_post( (string) $value ) ) );
 	}
 
 	public static function add_field_to_wc_response( $response, $item, $request ) {

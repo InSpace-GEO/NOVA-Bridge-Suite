@@ -8,6 +8,7 @@ final class Nova_Bridge_Suite_Document_Mapping {
     private const MAX_FIELDS = 2000;
     private const MAX_TARGETS = 1000;
     private const MAX_RELEVANCE_FIELDS = 64;
+    private const MAX_RELEVANCE_BYTES = 2097152;
     private static $excluded_taxonomies = [];
 
     private static function error( string $code, string $message, int $status = 409 ): WP_Error { return new WP_Error( 'nova_document_mapping_' . $code, $message, [ 'status' => $status ] ); }
@@ -47,6 +48,7 @@ final class Nova_Bridge_Suite_Document_Mapping {
     }
 
     private static function catalog(): array {
+        if ( function_exists( 'rest_get_server' ) && function_exists( 'did_action' ) && 0 === did_action( 'rest_api_init' ) ) { rest_get_server(); }
         self::$excluded_taxonomies = [];
         $discovered = class_exists( 'Nova_Bridge_Suite_Content_Context' ) ? Nova_Bridge_Suite_Content_Context::discover_resources() : []; $resources = [];
         foreach ( $discovered['resources'] ?? [] as $resource ) { if ( is_array( $resource ) && preg_match( '/^(post_type|taxonomy):[a-z0-9_-]{1,32}$/D', $resource['id'] ?? '' ) ) { $resources[ $resource['id'] ] = $resource; } }
@@ -103,24 +105,65 @@ final class Nova_Bridge_Suite_Document_Mapping {
         return 1 === preg_match( '/[^\s\x{00a0}\x{200b}\x{feff}]/u', $value );
     }
     private static function editorial_meta_name( string $key ): bool {
-        return self::safe_key( $key ) && ! preg_match( '/(?:^|[_-])(?:seo|rankmath|rank_math|yoast|aioseo|robots|canonical|redirect|name|slug|url|link|permalink|route|routing|thumbnail|image|media|icon|logo|color|colour|css|style|font|size|width|height|border|padding|margin|align|order|position|id|language|locale|display|visibility|verification)(?:$|[_-])/i', $key ) && ! in_array( strtolower( $key ), [ 'name', 'title', 'url', 'link', 'term_id' ], true );
+        return self::safe_key( $key ) && ! preg_match( '/^product_count(?:$|_)|^_(?:fusion(?:$|_)|wp_|edit_|oembed_|elementor_)|(?:^|[_-])(?:seo|rankmath|rank_math|yoast|aioseo|robots|canonical|redirect|name|slug|url|href|link|permalink|route|routing|thumbnail|image|media|icon|logo|color|colour|css|style|font|size|width|height|border|padding|margin|align|order|position|id|language|locale|display|visibility|verification|cache|transient)(?:$|[_-])/i', $key ) && ! in_array( strtolower( $key ), [ 'name', 'title', 'url', 'link', 'term_id', 'acf_fc_layout', 'meta', 'meta_all', 'meta_all_flat', 'acf', 'nova_content_context', 'nova_mapping', 'nova_document' ], true );
     }
+    private static function editorial_hint( string $hint ): bool { return 1 === preg_match( '/(?:body|copy|intro|description|wysiwyg|faq|content|(?<!con)text|story|blurb|summary|details|paragraph|heading|headline|question|answer|editorial|bio|banner|cta|buttons?|(?:^|[_\s-])h[1-6](?:$|[_\s-]))/i', $hint ); }
+    private static function editorial_child_name( string $key ): bool { return in_array( strtolower( $key ), [ 'name', 'title' ], true ) ? self::safe_key( $key ) : self::editorial_meta_name( $key ); }
     private static function editorial_text_schema( array $schema, int $depth = 0 ): bool {
-        if ( $depth > 12 || ! empty( $schema['readonly'] ) || isset( $schema['enum'] ) || ! empty( $schema['format'] ) ) { return false; }
-        if ( 'string' === ( $schema['type'] ?? '' ) ) { return true; }
-        if ( 'array' === ( $schema['type'] ?? '' ) && is_array( $schema['items'] ?? null ) ) { return self::editorial_text_schema( $schema['items'], $depth + 1 ); }
-        if ( 'object' === ( $schema['type'] ?? '' ) ) { foreach ( (array) ( $schema['properties'] ?? [] ) as $key => $child ) { if ( self::editorial_meta_name( (string) $key ) && is_array( $child ) && self::editorial_text_schema( $child, $depth + 1 ) ) { return true; } } }
+        if ( $depth > 12 || ! empty( $schema['readonly'] ) || isset( $schema['enum'] ) || ( isset( $schema['context'] ) && ! in_array( 'edit', (array) $schema['context'], true ) ) ) { return false; }
+        $types = (array) ( $schema['type'] ?? [] );
+        if ( in_array( 'string', $types, true ) ) { return in_array( $schema['format'] ?? '', [ '', 'text', 'html', 'rich-text' ], true ); }
+        if ( in_array( 'array', $types, true ) && is_array( $schema['items'] ?? null ) ) { return self::editorial_text_schema( $schema['items'], $depth + 1 ); }
+        if ( in_array( 'object', $types, true ) ) { foreach ( (array) ( $schema['properties'] ?? [] ) as $key => $child ) { if ( self::editorial_child_name( (string) $key ) && is_array( $child ) && self::editorial_text_schema( $child, $depth + 1 ) ) { return true; } } }
         return false;
+    }
+    private static function declared_editorial_schema( array $schema, string $hint = '', int $depth = 0 ): bool {
+        if ( ! self::editorial_text_schema( $schema, $depth ) ) { return false; }
+        if ( self::editorial_hint( $hint . ' ' . ( $schema['title'] ?? '' ) . ' ' . ( $schema['description'] ?? '' ) ) || in_array( $schema['format'] ?? '', [ 'html', 'rich-text' ], true ) ) { return true; }
+        foreach ( (array) ( $schema['properties'] ?? [] ) as $key => $child ) { if ( self::editorial_child_name( (string) $key ) && is_array( $child ) && self::declared_editorial_schema( $child, (string) $key, $depth + 1 ) ) { return true; } }
+        return is_array( $schema['items'] ?? null ) && self::declared_editorial_schema( $schema['items'], $hint, $depth + 1 );
+    }
+    private static function acf_editorial_field( array $field, int $depth = 0 ): bool {
+        if ( $depth > 12 || ! ( $depth ? self::editorial_child_name( (string) ( $field['name'] ?? '' ) ) : self::editorial_meta_name( (string) ( $field['name'] ?? '' ) ) ) || ! empty( $field['readonly'] ) || ! empty( $field['disabled'] ) ) { return false; }
+        $type = $field['type'] ?? '';
+        if ( in_array( $type, [ 'textarea', 'wysiwyg' ], true ) ) { return true; }
+        if ( 'text' === $type && self::editorial_hint( ( $field['name'] ?? '' ) . ' ' . ( $field['label'] ?? '' ) . ' ' . ( $field['instructions'] ?? '' ) ) ) { return true; }
+        foreach ( (array) ( $field['sub_fields'] ?? [] ) as $child ) { if ( is_array( $child ) && self::acf_editorial_field( $child, $depth + 1 ) ) { return true; } }
+        foreach ( (array) ( $field['layouts'] ?? [] ) as $layout ) { foreach ( (array) ( $layout['sub_fields'] ?? [] ) as $child ) { if ( is_array( $child ) && self::acf_editorial_field( $child, $depth + 1 ) ) { return true; } } }
+        return false;
+    }
+    private static function installed_acf_editorial( string $taxonomy, int $id = 0 ): bool {
+        if ( ! class_exists( 'Nova_Bridge_Suite_Content_Transport' ) || ! method_exists( 'Nova_Bridge_Suite_Content_Transport', 'acf_schema_for_screen' ) ) { return false; }
+        foreach ( Nova_Bridge_Suite_Content_Transport::acf_schema_for_screen( [ 'taxonomy' => $taxonomy, 'post_id' => $id ? $taxonomy . '_' . $id : 0 ] ) as $field ) { if ( self::acf_editorial_field( $field ) ) { return true; } } return false;
+    }
+    /** A legacy value is evidence, not write authority; human confirmation is still required by the mapper. */
+    private static function legacy_editorial_value( $value, string $hint, int &$budget, int $depth = 0 ): bool {
+        if ( $depth > 12 || $budget < 0 ) { return false; }
+        if ( is_array( $value ) ) { foreach ( array_slice( $value, 0, self::MAX_RELEVANCE_FIELDS, true ) as $key => $child ) { if ( is_string( $key ) && ! self::editorial_child_name( $key ) ) { continue; } if ( self::legacy_editorial_value( $child, $hint . ' ' . ( is_string( $key ) ? $key : '' ), $budget, $depth + 1 ) ) { return true; } } return false; }
+        if ( ! is_string( $value ) ) { return false; } $budget -= strlen( $value ); if ( $budget < 0 ) { return false; }
+        if ( preg_match( '/^\s*[\[{]/', $value ) ) { $decoded = json_decode( $value, true, 16 ); if ( JSON_ERROR_NONE === json_last_error() && is_array( $decoded ) ) { return self::legacy_editorial_value( $decoded, $hint, $budget, $depth + 1 ); } }
+        if ( ! self::meaningful_text( $value ) ) { return false; }
+        if ( self::editorial_hint( $hint ) || preg_match( '#<(?:p|div|h[1-6]|article|section|blockquote|ul|ol|table|details)\b#i', $value ) ) { return true; }
+        $plain = html_entity_decode( strip_tags( $value ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ); return strlen( $plain ) >= 60 && preg_match( '/\pL/u', $plain ) && count( preg_split( '/\s+/u', trim( $plain ) ) ) >= 8;
     }
     /** Auxiliary taxonomy archives enter onboarding only with actual editorial-page evidence. */
     private static function taxonomy_relevance( string $name, array $resource ): array {
         if ( 'product_cat' === $name ) { return [ 'status' => 'relevant', 'reason' => 'Product categories are a default content-page destination.' ]; }
-        $registered = function_exists( 'get_registered_meta_keys' ) ? array_merge( (array) get_registered_meta_keys( 'term' ), (array) get_registered_meta_keys( 'term', $name ) ) : []; $candidates = [];
+        $registered = function_exists( 'get_registered_meta_keys' ) ? array_merge( (array) get_registered_meta_keys( 'term' ), (array) get_registered_meta_keys( 'term', $name ) ) : []; $candidates = []; $additional = [];
+        foreach ( $registered as $key => $registration ) {
+            if ( ! is_string( $key ) || ! self::editorial_meta_name( $key ) || ! is_array( $registration ) ) { continue; } $schema = self::meta_schema( $registration ); if ( ! self::editorial_text_schema( $schema ) ) { continue; }
+            $candidates[$key] = true; if ( self::declared_editorial_schema( $schema, $key . ' ' . ( $registration['description'] ?? '' ) ) ) { return [ 'status' => 'relevant', 'reason' => 'The taxonomy declares an editable custom editorial content schema.' ]; }
+        }
+        foreach ( (array) ( $GLOBALS['wp_rest_additional_fields'][$name] ?? [] ) as $key => $registration ) {
+            if ( ! is_string( $key ) || ! self::editorial_meta_name( $key ) || ! is_array( $registration['schema'] ?? null ) || ! is_callable( $registration['get_callback'] ?? null ) || ! is_callable( $registration['update_callback'] ?? null ) || ! self::editorial_text_schema( $registration['schema'] ) ) { continue; }
+            if ( self::declared_editorial_schema( $registration['schema'], $key ) ) { return [ 'status' => 'relevant', 'reason' => 'The taxonomy declares an editable custom editorial REST field.' ]; } $additional[$key] = $registration;
+        }
+        if ( self::installed_acf_editorial( $name ) ) { return [ 'status' => 'relevant', 'reason' => 'The taxonomy declares an editable custom editorial ACF/SCF field.' ]; }
         foreach ( (array) ( $resource['fields'] ?? [] ) as $field ) {
             $path = $field['path'] ?? ''; if ( ! is_string( $path ) || empty( $field['writable'] ) || 'seo' === ( $field['source'] ?? '' ) ) { continue; }
             if ( preg_match( '#^/meta(?:_all)?/([^/]+)(?:/|$)#', $path, $match ) ) {
                 $key = str_replace( [ '~1', '~0' ], [ '/', '~' ], $match[1] );
-                if ( ! self::editorial_meta_name( $key ) || empty( $registered[ $key ]['single'] ) || ! self::editorial_text_schema( self::meta_schema( $registered[ $key ] ) ) ) { continue; }
+                if ( ! self::editorial_meta_name( $key ) || ! isset( $registered[$key] ) || ! self::editorial_text_schema( self::meta_schema( $registered[ $key ] ) ) ) { continue; }
                 $candidates[ $key ] = true;
                 $hint = $key . ' ' . ( $registered[ $key ]['description'] ?? '' ) . ' ' . ( $field['label'] ?? '' );
                 if ( preg_match( '/(?:body|copy|intro|description|wysiwyg|faq|content|text|story|blurb|summary|details|paragraph|heading|headline|question|answer|editorial|bio)/i', $hint ) || in_array( $field['type'] ?? '', [ 'rich_text', 'textarea', 'wysiwyg' ], true ) ) { return [ 'status' => 'relevant', 'reason' => 'The taxonomy declares an editable custom editorial content schema.' ]; }
@@ -128,31 +171,41 @@ final class Nova_Bridge_Suite_Document_Mapping {
                 $parts = self::parts( $path ); $key = $parts[1] ?? ''; if ( self::editorial_meta_name( $key ) && preg_match( '/(?:body|copy|intro|description|faq|content|text|story|summary|details|heading|question|answer|bio)/i', $key . ' ' . ( $field['label'] ?? '' ) ) ) { return [ 'status' => 'relevant', 'reason' => 'The taxonomy declares an editable custom editorial ACF field.' ]; }
             }
         }
-        global $wpdb;
+        global $wpdb; $database_unknown = false;
         if ( is_object( $wpdb ) && method_exists( $wpdb, 'get_var' ) && method_exists( $wpdb, 'prepare' ) && preg_match( '/^[a-zA-Z0-9_]+$/D', $wpdb->term_taxonomy ?? '' ) ) {
             $table = $wpdb->term_taxonomy;
             // Match visible text outside HTML tags; normalize nonbreaking spaces before matching.
             $description = "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(tt.description), '&nbsp;', ' '), '&#160;', ' '), '&#xa0;', ' '), %s, ' '), %s, ' '), %s, ' ')";
             $found = $wpdb->get_var( $wpdb->prepare( 'SELECT EXISTS(SELECT 1 FROM `' . $table . '` tt WHERE tt.taxonomy = %s AND ' . $description . ' REGEXP %s LIMIT 1)', $name, "\xc2\xa0", "\xe2\x80\x8b", "\xef\xbb\xbf", '(^|>)[[:space:]]*[^<[:space:]][^<]*($|<)' ) );
             if ( '1' === (string) $found ) { return [ 'status' => 'relevant', 'reason' => 'At least one native taxonomy page has filled description content.' ]; }
-            if ( '0' !== (string) $found ) { return [ 'status' => 'unknown', 'reason' => 'Native content-page relevance could not be checked completely; review this taxonomy.' ]; }
-            if ( $candidates && preg_match( '/^[a-zA-Z0-9_]+$/D', $wpdb->termmeta ?? '' ) ) {
-                $keys = array_slice( array_keys( $candidates ), 0, self::MAX_RELEVANCE_FIELDS ); $placeholders = implode( ',', array_fill( 0, count( $keys ), '%s' ) );
-                $found = $wpdb->get_var( $wpdb->prepare( 'SELECT EXISTS(SELECT 1 FROM `' . $table . '` tt JOIN `' . $wpdb->termmeta . '` tm ON tm.term_id = tt.term_id WHERE tt.taxonomy = %s AND tm.meta_key IN (' . $placeholders . ") AND TRIM(tm.meta_value) NOT IN ('', 'a:0:{}', 'b:0;', 'N;') LIMIT 1)", ...array_merge( [ $name ], $keys ) ) );
-                if ( '1' === (string) $found ) { return [ 'status' => 'relevant', 'reason' => 'A registered custom editorial field contains native taxonomy-page content.' ]; }
-                if ( '0' !== (string) $found || count( $candidates ) > self::MAX_RELEVANCE_FIELDS ) { return [ 'status' => 'unknown', 'reason' => 'Custom taxonomy-page content could not be checked completely; review this taxonomy.' ]; }
-            } elseif ( $candidates ) { return [ 'status' => 'unknown', 'reason' => 'The registered custom editorial content store is unavailable for inspection.' ]; }
-            return [ 'status' => 'unused', 'reason' => 'No filled content-page description or declared editorial content field was found.' ];
+            if ( '0' !== (string) $found ) { $database_unknown = true; }
         }
         if ( ! function_exists( 'get_terms' ) ) { return [ 'status' => 'unknown', 'reason' => 'Taxonomy content-page relevance is unavailable; review this taxonomy.' ]; }
         $terms = get_terms( [ 'taxonomy' => $name, 'hide_empty' => false, 'number' => self::MAX_TARGETS + 1, 'orderby' => 'term_id', 'order' => 'ASC' ] );
         if ( ! is_array( $terms ) || is_wp_error( $terms ) ) { return [ 'status' => 'unknown', 'reason' => 'Taxonomy content-page relevance could not be inspected.' ]; }
+        $budget = self::MAX_RELEVANCE_BYTES; $incomplete = $database_unknown || count( $terms ) > self::MAX_TARGETS || count( $candidates ) > self::MAX_RELEVANCE_FIELDS || count( $additional ) > self::MAX_RELEVANCE_FIELDS; $callback_reads = 0;
         foreach ( array_slice( $terms, 0, self::MAX_TARGETS ) as $term ) {
             if ( ! current_user_can( 'edit_term', $term->term_id ) ) { continue; }
             if ( self::meaningful_text( $term->description ?? '' ) ) { return [ 'status' => 'relevant', 'reason' => 'At least one native taxonomy page has filled description content.' ]; }
-            foreach ( array_slice( $candidates, 0, self::MAX_RELEVANCE_FIELDS, true ) as $key => $unused ) { if ( current_user_can( 'edit_term_meta', $term->term_id, $key ) && self::meaningful_text( get_term_meta( $term->term_id, $key, true ) ) ) { return [ 'status' => 'relevant', 'reason' => 'A registered custom editorial field contains native taxonomy-page content.' ]; } }
+            if ( self::installed_acf_editorial( $name, (int) $term->term_id ) ) { return [ 'status' => 'relevant', 'reason' => 'An existing taxonomy page has an applicable editable ACF/SCF content schema.' ]; }
+            if ( function_exists( 'get_term_meta' ) ) {
+                $stored = (array) get_term_meta( $term->term_id ); if ( count( $stored ) > self::MAX_RELEVANCE_FIELDS ) { $incomplete = true; }
+                foreach ( array_slice( $stored, 0, self::MAX_RELEVANCE_FIELDS, true ) as $key => $rows ) {
+                    if ( ! is_string( $key ) || ! self::editorial_meta_name( $key ) ) { continue; } $value = get_term_meta( $term->term_id, $key, true );
+                    if ( ( is_string( $value ) && 0 === strpos( $value, 'field_' ) ) || ( is_string( get_term_meta( $term->term_id, '_' . $key, true ) ) && 0 === strpos( get_term_meta( $term->term_id, '_' . $key, true ), 'field_' ) ) ) { continue; }
+                    if ( isset( $registered[$key] ) && ( ! isset( $candidates[$key] ) || ! current_user_can( 'edit_term_meta', $term->term_id, $key ) ) ) { continue; }
+                    if ( self::legacy_editorial_value( $value, $key . ' ' . ( $registered[$key]['description'] ?? '' ), $budget ) ) { return [ 'status' => 'relevant', 'reason' => 'An existing custom field contains editorial taxonomy-page content; undeclared fields still require human confirmation.' ]; }
+                }
+            }
+            foreach ( array_slice( $additional, 0, self::MAX_RELEVANCE_FIELDS, true ) as $key => $registration ) {
+                if ( ++$callback_reads > self::MAX_RELEVANCE_FIELDS || $budget < 0 ) { $incomplete = true; break; }
+                $object = [ 'id' => (int) $term->term_id, 'term_id' => (int) $term->term_id, 'taxonomy' => $name, 'name' => $term->name, 'description' => $term->description ?? '' ]; $request = class_exists( 'WP_REST_Request' ) ? new WP_REST_Request( 'GET' ) : null; if ( $request ) { $request->set_param( 'context', 'edit' ); $request->set_param( 'id', (int) $term->term_id ); $request->set_param( 'taxonomy', $name ); }
+                try { $value = call_user_func( $registration['get_callback'], $object, $key, $request, $name ); } catch ( Throwable $error ) { $incomplete = true; continue; }
+                if ( is_wp_error( $value ) ) { $incomplete = true; continue; } if ( self::legacy_editorial_value( $value, $key . ' ' . ( $registration['schema']['description'] ?? '' ), $budget ) ) { return [ 'status' => 'relevant', 'reason' => 'An editable REST custom field contains editorial taxonomy-page content.' ]; }
+            }
+            if ( $budget < 0 ) { $incomplete = true; break; }
         }
-        return count( $terms ) > self::MAX_TARGETS || count( $candidates ) > self::MAX_RELEVANCE_FIELDS ? [ 'status' => 'unknown', 'reason' => 'The bounded relevance sample is incomplete; review this taxonomy rather than treating it as unused.' ] : [ 'status' => 'unused', 'reason' => 'No filled content-page description or declared editorial content field was found.' ];
+        return $incomplete ? [ 'status' => 'unknown', 'reason' => 'The bounded relevance sample is incomplete; review this taxonomy rather than treating it as unused.' ] : [ 'status' => 'unused', 'reason' => 'No filled content-page description or declared editorial content field was found.' ];
     }
     /** Collection creation is deliberately required; an unrelated item callback is not proof. */
     private static function write_schema( array $handlers, array $editorial_keys ): array {

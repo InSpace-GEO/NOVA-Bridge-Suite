@@ -26,7 +26,7 @@ function get_term( $id, $taxonomy ) { $term = $GLOBALS['terms'][$id] ?? null; re
 function get_posts( $args ) { return array_values( array_filter( $GLOBALS['posts'], static function ( $post ) use ( $args ) { return $post->post_type === $args['post_type'] && in_array( $post->post_status, $args['post_status'], true ); } ) ); }
 function get_terms( $args ) { return array_values( array_filter( $GLOBALS['terms'], static function ( $term ) use ( $args ) { return $term->taxonomy === $args['taxonomy']; } ) ); }
 function get_post_meta( $id, $key, $single = false ) { return $GLOBALS['metadata'][$id][$key] ?? ''; }
-function get_term_meta( $id, $key, $single = false ) { return $GLOBALS['term_metadata'][$id][$key] ?? ''; }
+function get_term_meta( $id, $key = '', $single = false ) { if ( '' === $key ) { return array_map( static function ( $value ) { return [ $value ]; }, $GLOBALS['term_metadata'][$id] ?? [] ); } return $GLOBALS['term_metadata'][$id][$key] ?? ''; }
 function metadata_exists( $kind, $id, $key ) { return array_key_exists( $key, $GLOBALS['metadata'][$id] ?? [] ); }
 function get_registered_meta_keys( $kind, $subtype = '' ) { return $GLOBALS['registered'][$kind . ':' . $subtype] ?? []; }
 function get_field_object( $key, $id, $format = false, $load = false ) { return $GLOBALS['acf_definitions'][$key] ?? false; }

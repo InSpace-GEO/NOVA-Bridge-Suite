@@ -40,6 +40,12 @@ $term_recipe = [ 'format' => 'nova-layout-recipe/v1', 'builder' => 'core', 'mode
 $term_kept = Nova_Bridge_Suite_Recipe_Engine::compile( $term_recipe, [], 'core-term-keep' );
 check( ! is_wp_error( $term_kept ) && '<p>Category body.</p>' === $term_kept['writer_payload']['description'] && 'Category source' === $term_kept['writer_payload']['name'], 'Existing term fields gained an empty FAQ or lost their exact native content.' );
 $starter = Nova_Bridge_Suite_Recipe_Core::design( $core_resource, 0, 'mixed' );
+// Editing one mapped native field must not copy the example's other field to an unrelated term.
+$term_patch = $term_recipe; $term_patch['bindings'] = [ [ 'target' => '/document/title', 'source' => '/title', 'format' => 'text', 'required' => false ], [ 'target' => '/document/sections/0/body', 'source' => '/top', 'format' => 'html', 'required' => false ] ];
+$omitted = Nova_Bridge_Suite_Recipe_Engine::compile( $term_patch, [], 'term-optional-omission' );
+check( ! is_wp_error( $omitted ) && [] === $omitted['writer_payload'] && $omitted['native_document'] === $term['blueprint']['document'], 'Omitted optional taxonomy input overwrote native content or leaked example values into its patch.' );
+$cleared = Nova_Bridge_Suite_Recipe_Engine::compile( $term_patch, [ 'top' => '' ], 'term-explicit-top-clear' );
+check( ! is_wp_error( $cleared ) && [ 'description' => '' ] === $cleared['writer_payload'] && 'Category source' === $cleared['native_document']['title'], 'Clearing the top content also changed the title, or omitted input could not remain distinct from empty input.' );
 check( isset( $starter['blueprint']['document']['intro'], $starter['blueprint']['document']['sections'][0]['heading'], $starter['blueprint']['document']['faqs'][0]['question'] ), 'Source-free Core starters lost their existing explicit content examples.' );
 check( is_wp_error( Nova_Bridge_Suite_Recipe_Core::design( $core_resource, 99999, 'mixed' ) ), 'A missing source silently became a starter.' );
 check( $source_entity === serialize( $posts[11] ) && $writes === $core_writes && $options === $core_options, 'Core capture/review/translation changed the source or persisted a mapping.' );

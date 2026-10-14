@@ -27,7 +27,7 @@ if ( class_exists( 'Nova_Bridge_Suite_Content_Context' ) ) {
 	Nova_Bridge_Suite_Content_Context::bootstrap();
 }
 
-foreach ( [ 'content-transport', 'strategy', 'mapping-drafts', 'posting-settings', 'strategy-admin', 'mapping-preview', 'content-rules', 'content-rules-admin', 'document-mapping', 'endpoint-mappings', 'endpoint-mappings-admin', 'recipe-engine', 'recipe-elementor', 'recipe-builders', 'recipe-acf', 'recipe-core', 'recipe-visual', 'layout-recipes', 'layout-recipes-admin' ] as $nova_context_component ) {
+foreach ( [ 'content-transport', 'strategy', 'mapping-drafts', 'posting-settings', 'strategy-admin', 'mapping-preview', 'content-rules', 'content-rules-admin', 'document-mapping', 'endpoint-mappings', 'endpoint-mappings-admin', 'recipe-engine', 'recipe-elementor', 'recipe-builders', 'recipe-acf', 'recipe-term-fields', 'recipe-core', 'recipe-visual', 'layout-recipes', 'layout-recipes-admin', 'term-content' ] as $nova_context_component ) {
 	$nova_context_file = NOVA_BRIDGE_SUITE_API_MAPPING_CONTEXT_DIR . 'includes/class-nova-bridge-suite-' . $nova_context_component . '.php';
 	if ( file_exists( $nova_context_file ) ) {
 		require_once $nova_context_file;
@@ -38,6 +38,7 @@ Nova_Bridge_Suite_Recipe_ACF::register();
 Nova_Bridge_Suite_Recipe_Core::register();
 Nova_Bridge_Suite_Layout_Recipes::bootstrap();
 Nova_Bridge_Suite_Layout_Recipes_Admin::bootstrap();
+Nova_Bridge_Suite_Term_Content::bootstrap();
 // Publishing is part of mapping: load all collaborators before registering hooks.
 foreach ( [ 'posting-client', 'posting-protocol', 'receipt-json', 'writing-adapter', 'mapping-sync', 'taxonomy-counts', 'elementor-derived', 'mapped-writer', 'rule-writer', 'posting-jobs', 'posting-discovery', 'posting-worker', 'posting-delivery' ] as $nova_posting_component ) {
     require_once dirname( NOVA_BRIDGE_SUITE_API_MAPPING_CONTEXT_DIR ) . '/posting-service/includes/class-nova-bridge-suite-' . $nova_posting_component . '.php';

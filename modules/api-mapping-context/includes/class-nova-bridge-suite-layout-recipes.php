@@ -90,18 +90,26 @@ final class Nova_Bridge_Suite_Layout_Recipes {
         $prefix = $region['target'] . '/'; if ( 0 !== strpos( $path, $prefix ) ) { return false; } $part = explode( '/', substr( $path, strlen( $prefix ) ), 2 )[0]; return ctype_digit( $part ) && (int) $part >= $region['start'] && (int) $part < $region['start'] + $region['count'];
     }
     private static function relative_meta( array $description, array $region ): array {
+        if ( 0 === ( $region['count'] ?? null ) && ! array_key_exists( 'prototype_start', $region ) && ! array_key_exists( 'prototype_count', $region ) ) {
+            foreach ( $description['containers'] ?? [] as $container ) {
+                if ( ( $container['target'] ?? '' ) === ( $region['target'] ?? '' ) && is_array( $container['schema_prototype'] ?? null ) ) { return [ 'fields' => $container['schema_fields'] ?? [], 'containers' => $container['schema_containers'] ?? [] ]; }
+            }
+        }
         $region['start'] = $region['prototype_start'] ?? $region['start']; $region['count'] = $region['prototype_count'] ?? $region['count'];
         $out = [ 'fields' => [], 'containers' => [] ]; foreach ( $out as $key => $ignored ) { foreach ( $description[$key] ?? [] as $entry ) {
             if ( ! self::inside( $entry['target'], $region ) ) { continue; } $suffix = substr( $entry['target'], strlen( $region['target'] ) + 1 ); $parts = explode( '/', $suffix, 2 ); $entry['target'] = '/' . ( (int) $parts[0] - $region['start'] ) . ( isset( $parts[1] ) ? '/' . $parts[1] : '' ); $out[$key][] = $entry;
         } } return $out;
     }
-    private static function region_value( array $scope, array $description, array $request ) {
+    private static function region_value( array $scope, array $description, array $request, string $builder = '' ) {
         $target = $request['target'] ?? ''; $start = $request['start'] ?? 0; $count = $request['count'] ?? 1; $pattern_start = $request['prototype_start'] ?? $start; $pattern_count = $request['prototype_count'] ?? 1;
-        if ( ! is_string( $target ) || ! is_int( $start ) || ! is_int( $count ) || $start < 0 || $count < 1 ) { return self::error( 'region', 'Choose a native region and its example items.' ); }
+        if ( ! is_string( $target ) || ! is_int( $start ) || ! is_int( $count ) || $start < 0 || $count < 0 ) { return self::error( 'region', 'Choose a native region and its example items.' ); }
         $candidate = null; foreach ( $description['containers'] ?? [] as $container ) { if ( $container['target'] === $target ) { $candidate = $container; break; } }
         $list = Nova_Bridge_Suite_Recipe_Engine::get( $scope, $target, $found ); if ( ! $candidate || ! $found || ! Nova_Bridge_Suite_Recipe_Engine::list_array( $list ) || $start + $count > count( $list ) ) { return self::error( 'region', 'Choose a declared child region within the captured design.' ); }
-        if ( ! is_int( $pattern_start ) || ! is_int( $pattern_count ) || $pattern_start < $start || $pattern_count < 1 || $pattern_start + $pattern_count > $start + $count ) { return self::error( 'pattern', 'Choose a native example pattern inside the replaced range.' ); }
+        $declared_empty = 0 === $count && 'core' === $builder && 0 === $start && [] === $list && ! array_key_exists( 'prototype_start', $request ) && ! array_key_exists( 'prototype_count', $request ) && Nova_Bridge_Suite_Recipe_Engine::list_array( $candidate['schema_prototype'] ?? null ) && ! empty( $candidate['schema_prototype'] );
+        if ( 0 === $count && ! $declared_empty ) { return self::error( 'pattern', 'An empty custom collection needs its declared field schema; native builders still require example items.', 409 ); }
+        if ( ! $declared_empty && ( ! is_int( $pattern_start ) || ! is_int( $pattern_count ) || $pattern_start < $start || $pattern_count < 1 || $pattern_start + $pattern_count > $start + $count ) ) { return self::error( 'pattern', 'Choose a native example pattern inside the replaced range.' ); }
         $region = [ 'id' => 'region_' . substr( str_replace( '-', '', wp_generate_uuid4() ), 0, 16 ), 'label' => sanitize_text_field( $request['label'] ?? $candidate['label'] ), 'instructions' => '', 'target' => $target, 'start' => $start, 'count' => $count, 'prototype_start' => $pattern_start, 'prototype_count' => $pattern_count, 'source' => $request['source'] ?? '/sections', 'kind' => $request['kind'] ?? 'repeat', 'empty' => 'remove', 'max_items' => min( 500, max( 1, (int) ( $candidate['max_items'] ?? 500 ) ) ), 'prototype' => [ 'native' => array_slice( $list, $pattern_start, $pattern_count ), 'bindings' => [], 'regions' => [] ] ];
+        if ( $declared_empty ) { unset( $region['prototype_start'], $region['prototype_count'] ); $region['prototype']['native'] = $candidate['schema_prototype']; }
         if ( 'optional' === $region['kind'] && in_array( $region['source'], [ '/faqs', '/sections', '/images', '/children' ], true ) ) { $region['context'] = 'parent'; }
         $relative = self::relative_meta( $description, $region ); $seen = [];
         foreach ( $relative['fields'] as $field ) { if ( empty( $field['writable'] ) ) { continue; } $binding = self::binding( $field, true, $region['source'] ); if ( isset( $seen[$binding['source']] ) ) { $binding['source'] = '/fields/f_' . substr( hash( 'sha256', $field['target'] ), 0, 12 ); } $seen[$binding['source']] = true; $region['prototype']['bindings'][] = $binding; }
@@ -110,13 +118,13 @@ final class Nova_Bridge_Suite_Layout_Recipes {
             $region['variant_by'] = '/layout'; $region['variants'] = []; $region['default_variant'] = $candidate['layouts'][0]['name'];
             foreach ( $candidate['layouts'] as $layout ) { $native = Nova_Bridge_Suite_Recipe_ACF::layout_prototype( $layout ); $meta = Nova_Bridge_Suite_Recipe_ACF::layout_description( $layout ); $bindings = []; foreach ( $meta['fields'] as $field ) { if ( ! empty( $field['writable'] ) ) { $bindings[] = self::binding( $field, true, $region['source'] ); } } $region['variants'][$layout['name']] = [ 'native' => $native, 'bindings' => $bindings, 'regions' => [] ]; $variants_meta[$layout['name']] = $meta + [ 'sources' => self::sources( true ) ]; }
         }
-        return [ 'region' => $region ] + $relative + [ 'sources' => self::sources( true ), 'variants_meta' => $variants_meta, 'layouts' => array_map( static function ( $layout ) { return [ 'value' => $layout['name'], 'label' => $layout['label'] ]; }, $candidate['layouts'] ?? [] ) ];
+        return [ 'region' => $region ] + $relative + [ 'collection_limits' => [ 'required' => ! empty( $candidate['required'] ), 'min_items' => max( 0, (int) ( $candidate['min_items'] ?? 0 ) ), 'max_items' => $region['max_items'] ], 'sources' => self::sources( true ), 'variants_meta' => $variants_meta, 'layouts' => array_map( static function ( $layout ) { return [ 'value' => $layout['name'], 'label' => $layout['label'] ]; }, $candidate['layouts'] ?? [] ) ];
     }
     private static function preset( string $builder, string $mode, array $design ): array {
         $recipe = [ 'format' => Nova_Bridge_Suite_Recipe_Engine::FORMAT, 'builder' => $builder, 'mode' => $mode, 'blueprint' => $design['blueprint'], 'bindings' => [], 'regions' => [], 'instructions' => '' ];
         foreach ( $design['fields'] ?? [] as $field ) { if ( ! empty( $field['writable'] ) ) { $recipe['bindings'][] = self::binding( $field ); } }
         if ( 'static' !== $mode ) {
-            foreach ( $design['suggested_regions'] ?? [] as $hint ) { if ( isset( $hint['prototype'] ) ) { $recipe['regions'][] = $hint; continue; } $value = self::region_value( $design['blueprint'], $design, $hint ); if ( is_wp_error( $value ) ) { continue; } $recipe['regions'][] = $value['region']; }
+            foreach ( $design['suggested_regions'] ?? [] as $hint ) { if ( isset( $hint['prototype'] ) ) { $recipe['regions'][] = $hint; continue; } $value = self::region_value( $design['blueprint'], $design, $hint, $builder ); if ( is_wp_error( $value ) ) { continue; } $recipe['regions'][] = $value['region']; }
             $recipe['bindings'] = array_values( array_filter( $recipe['bindings'], static function ( $binding ) use ( $recipe ) { foreach ( $recipe['regions'] as $region ) { if ( self::inside( $binding['target'], $region ) ) { return false; } } return true; } ) );
         }
         foreach ( $design['suggested_bindings'] ?? [] as $hint ) { foreach ( $recipe['bindings'] as &$binding ) { if ( $binding['target'] === $hint['target'] ) { $binding = array_merge( $binding, array_intersect_key( $hint, array_flip( [ 'source', 'required', 'label', 'instructions' ] ) ) ); } } unset( $binding ); }
@@ -153,11 +161,24 @@ final class Nova_Bridge_Suite_Layout_Recipes {
         if ( 'auto' === $builder ) { if ( ! $id || ! class_exists( 'Nova_Bridge_Suite_Recipe_Visual' ) ) { return self::error( 'reference', 'Choose an existing page before detecting its builder.' ); } $builder = Nova_Bridge_Suite_Recipe_Visual::detected_builder( $resource, $id ); if ( is_wp_error( $builder ) ) { return $builder; } }
         elseif ( $id && 'core' === $builder && 'taxonomy' !== $resource['type'] && class_exists( 'Nova_Bridge_Suite_Recipe_Visual' ) ) { $detected = Nova_Bridge_Suite_Recipe_Visual::detected_builder( $resource, $id ); if ( is_wp_error( $detected ) || 'core' !== $detected ) { return self::error( 'builder', 'This example has a native builder or block design. Use its detected provider to map those elements instead of flattening the WordPress body field.', 409 ); } }
         if ( 'taxonomy' === $resource['type'] && ! in_array( $builder, [ 'core', 'acf' ], true ) ) { return self::error( 'builder', 'Taxonomy content uses WordPress content fields or its installed ACF schema.' ); }
+        $declared_term_fields = $body['declared_term_fields'] ?? [];
+        if ( ! is_array( $declared_term_fields ) || ( $declared_term_fields && Nova_Bridge_Suite_Recipe_Engine::list_array( $declared_term_fields ) ) || count( $declared_term_fields ) > 500 || ( $declared_term_fields && ( 'taxonomy' !== $resource['type'] || 'core' !== $builder ) ) ) { return self::error( 'fields', 'Declare local custom fields as a bounded field-name/schema object for this category destination.', 422 ); }
+        if ( array_key_exists( 'existing_blueprint', $body ) || array_key_exists( 'existing_seal', $body ) ) {
+            if ( 'core' !== $builder || 'taxonomy' !== $resource['type'] || ! is_array( $body['existing_blueprint'] ?? null ) || ! class_exists( 'Nova_Bridge_Suite_Recipe_Visual' ) ) { return self::error( 'fields', 'Capture the category design before confirming additional custom fields.', 409 ); }
+            $previous = self::certified( 'core', $body['existing_blueprint'], $body['existing_seal'] ?? '' ); if ( is_wp_error( $previous ) ) { return $previous; }
+            $previous = Nova_Bridge_Suite_Recipe_Visual::validate_source( $body, [ 'builder' => 'core', 'mode' => $mode, 'blueprint' => $body['existing_blueprint'] ], $resource );
+            if ( is_wp_error( $previous ) ) { return $previous; }
+            if ( ! is_array( $previous ) || ! $id || ( $previous['reference_id'] ?? 0 ) !== $id ) { return self::error( 'reference', 'Confirm custom fields against the same verified example category.', 409 ); }
+        }
         if ( 'acf' === $builder ) { $template = $id && 'taxonomy' !== $resource['type'] ? (string) get_page_template_slug( $id ) : ''; $design = Nova_Bridge_Suite_Recipe_ACF::design( $resource['post_type'] ?? '', $id, $template, $resource['taxonomy'] ?? '' ); }
-        elseif ( 'core' === $builder ) { $design = Nova_Bridge_Suite_Recipe_Core::design( $resource, $id, $mode ); }
+        elseif ( 'core' === $builder ) { $design = Nova_Bridge_Suite_Recipe_Core::design( $resource, $id, $mode, $declared_term_fields ); }
         else { $design = $id ? Nova_Bridge_Suite_Recipe_Builders::capture( $builder, $id ) : Nova_Bridge_Suite_Recipe_Builders::starter( $builder, $mode ); }
         if ( is_wp_error( $design ) ) { return $design; } $design = self::decorate_design( $builder, $mode, $design );
-        if ( 'acf' !== $builder && ! empty( $resource['post_type'] ) && Nova_Bridge_Suite_Recipe_ACF::available() ) { $custom = Nova_Bridge_Suite_Recipe_ACF::design( $resource['post_type'], $id, (string) ( $design['blueprint']['template'] ?? '' ) ); if ( ! is_wp_error( $custom ) ) { $design['custom_fields_design'] = self::decorate_design( 'acf', $mode, $custom ); } }
+        if ( 'acf' !== $builder && ( ! empty( $resource['post_type'] ) || 'taxonomy' === $resource['type'] ) ) {
+            $custom = Nova_Bridge_Suite_Recipe_ACF::companion_design( $resource['post_type'] ?? '', $id, (string) ( $design['blueprint']['template'] ?? '' ), $resource['taxonomy'] ?? '' );
+            if ( is_wp_error( $custom ) ) { return $custom; }
+            if ( is_array( $custom ) ) { $design['custom_fields_design'] = self::decorate_design( 'acf', $mode, $custom ); }
+        }
         if ( true === ( $body['manual_selection'] ?? false ) && $id ) {
             $design['recipe_preset']['bindings'] = []; $design['recipe_preset']['regions'] = []; $design['sample'] = new stdClass();
             if ( isset( $design['custom_fields_design'] ) ) { $design['custom_fields_design']['recipe_preset']['bindings'] = []; $design['custom_fields_design']['recipe_preset']['regions'] = []; $design['custom_fields_design']['sample'] = new stdClass(); }
@@ -179,7 +200,7 @@ final class Nova_Bridge_Suite_Layout_Recipes {
             $variant = $body['parent_variants'][$index] ?? ( $index === count( $chain ) - 1 ? ( $body['variant'] ?? null ) : null );
             if ( null !== $variant ) { if ( ! is_string( $variant ) || ! isset( $parent['variants'][$variant] ) ) { return self::error( 'variant', 'Choose a declared layout variant.' ); } $scope = $parent['variants'][$variant]['native']; if ( 'acf' === $builder ) { foreach ( $declared_layouts as $layout ) { if ( $layout['name'] === $variant ) { $description = Nova_Bridge_Suite_Recipe_ACF::layout_description( $layout ); break; } } } else { $description = self::prototype_description( $builder, $scope, $description ); } }
         }
-        return self::response( self::region_value( $scope, $description, $body ) );
+        return self::response( self::region_value( $scope, $description, $body, $builder ) );
     }
 
     private static function prototype_description( string $builder, array $native, array $fallback ): array {
@@ -190,12 +211,16 @@ final class Nova_Bridge_Suite_Layout_Recipes {
     private static function check_scope( array $native, array $description, array $bindings, array $regions, string $builder, int $depth = 0 ) {
         if ( $depth > 8 ) { return self::error( 'depth', 'Nested content regions exceed eight levels.' ); }
         $allowed = []; foreach ( $description['fields'] ?? [] as $field ) { if ( ! empty( $field['writable'] ) ) { $allowed[$field['target']] = $field; } }
-        foreach ( $bindings as $binding ) { if ( ! isset( $allowed[$binding['target'] ?? ''] ) || ( $allowed[$binding['target']]['format'] ?? 'text' ) !== ( $binding['format'] ?? '' ) ) { return self::error( 'field', 'Only declared writable content fields may receive generated values. Styles, identifiers and bindings remain protected.', 409 ); } }
+        foreach ( $bindings as $binding ) { $field = $allowed[$binding['target'] ?? ''] ?? null; $formats = $field['allowed_formats'] ?? [ $field['format'] ?? 'text' ]; if ( ! $field || ! in_array( $binding['format'] ?? '', $formats, true ) ) { return self::error( 'field', 'Only declared writable content fields may receive generated values. Styles, identifiers and bindings remain protected.', 409 ); } }
         foreach ( $regions as $region ) {
             $container = null; foreach ( $description['containers'] ?? [] as $candidate ) { if ( $candidate['target'] === ( $region['target'] ?? '' ) ) { $container = $candidate; break; } }
             $list = Nova_Bridge_Suite_Recipe_Engine::get( $native, $region['target'] ?? '', $found );
-            if ( ! $container || ! $found || ! Nova_Bridge_Suite_Recipe_Engine::list_array( $list ) || ! is_int( $region['start'] ?? null ) || ! is_int( $region['count'] ?? null ) || $region['start'] < 0 || $region['count'] < 1 || $region['start'] + $region['count'] > count( $list ) ) { return self::error( 'region', 'Variable regions must select declared native children from this design.', 409 ); }
-            $pattern_start = $region['prototype_start'] ?? $region['start']; $pattern_count = $region['prototype_count'] ?? $region['count']; if ( ! is_int( $pattern_start ) || ! is_int( $pattern_count ) || $pattern_start < $region['start'] || $pattern_count < 1 || $pattern_start + $pattern_count > $region['start'] + $region['count'] ) { return self::error( 'prototype', 'The example pattern must stay inside its replaced region.' ); } $prototype = array_slice( $list, $pattern_start, $pattern_count );
+            if ( ! $container || ! $found || ! Nova_Bridge_Suite_Recipe_Engine::list_array( $list ) || ! is_int( $region['start'] ?? null ) || ! is_int( $region['count'] ?? null ) || $region['start'] < 0 || $region['count'] < 0 || $region['start'] + $region['count'] > count( $list ) ) { return self::error( 'region', 'Variable regions must select declared native children from this design.', 409 ); }
+            $declared_empty = 0 === $region['count'] && 'core' === $builder && 0 === $region['start'] && [] === $list && ! array_key_exists( 'prototype_start', $region ) && ! array_key_exists( 'prototype_count', $region ) && Nova_Bridge_Suite_Recipe_Engine::list_array( $container['schema_prototype'] ?? null ) && ! empty( $container['schema_prototype'] );
+            if ( 0 === $region['count'] && ! $declared_empty ) { return self::error( 'prototype', 'An empty custom collection needs its exact declared schema.', 409 ); }
+            $pattern_start = $region['prototype_start'] ?? $region['start']; $pattern_count = $region['prototype_count'] ?? $region['count'];
+            if ( ! $declared_empty && ( ! is_int( $pattern_start ) || ! is_int( $pattern_count ) || $pattern_start < $region['start'] || $pattern_count < 1 || $pattern_start + $pattern_count > $region['start'] + $region['count'] ) ) { return self::error( 'prototype', 'The example pattern must stay inside its replaced region.' ); }
+            $prototype = $declared_empty ? $container['schema_prototype'] : array_slice( $list, $pattern_start, $pattern_count );
             if ( Nova_Bridge_Suite_Recipe_Engine::digest( $prototype ) !== Nova_Bridge_Suite_Recipe_Engine::digest( $region['prototype']['native'] ?? null ) ) { return self::error( 'prototype', 'The native example prototype changed outside its supported controls. Capture the design again.', 409 ); }
             $relative = self::relative_meta( $description, $region ); $checked = self::check_scope( $prototype, $relative, $region['prototype']['bindings'] ?? [], $region['prototype']['regions'] ?? [], $builder, $depth + 1 ); if ( is_wp_error( $checked ) ) { return $checked; }
             foreach ( $region['variants'] ?? [] as $name => $variant ) {

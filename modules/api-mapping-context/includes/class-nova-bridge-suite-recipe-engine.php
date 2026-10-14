@@ -195,7 +195,7 @@ final class Nova_Bridge_Suite_Recipe_Engine {
         if ( $depth > self::MAX_DEPTH ) { self::fail( 'Native region recursion exceeded eight levels.' ); }
         foreach ( $bindings as $binding ) {
             $value = self::get( $content, $binding['source'], $found );
-            if ( ! $found ) { if ( $binding['required'] ) { self::fail( 'Required content is missing at ' . $binding['source'] . '.' ); } $value = 'boolean' === $binding['format'] ? false : ( 'number' === $binding['format'] ? 0 : '' ); }
+            if ( ! $found ) { if ( $binding['required'] ) { self::fail( 'Required content is missing at ' . $binding['source'] . '.' ); } if ( method_exists( $adapter, 'preserve_missing_binding' ) && $adapter->preserve_missing_binding( $native, $binding, $context ) ) { continue; } $value = 'boolean' === $binding['format'] ? false : ( 'number' === $binding['format'] ? 0 : '' ); }
             $value = self::format_value( $value, $binding['format'], $state['warnings'] ); $native = self::checked( $adapter->bind( $native, $binding, $value, $context ) ); ++$state['bindings'];
         }
         usort( $regions, static function ( $a, $b ) { $depth = count( self::parts( $b['target'] ) ) <=> count( self::parts( $a['target'] ) ); return $depth ?: ( $a['target'] === $b['target'] ? $b['start'] <=> $a['start'] : strcmp( $a['target'], $b['target'] ) ); } );

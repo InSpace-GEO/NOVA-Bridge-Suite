@@ -69,6 +69,14 @@ final class Nova_Bridge_Suite_Recipe_ACF {
         if ( $taxonomy ) { $blueprint['taxonomy'] = $taxonomy; }
         return [ 'blueprint' => $blueprint ] + self::describe( $blueprint );
     }
+    /** Absence is optional; a present but invalid schema must never disappear silently. */
+    public static function companion_design( string $post_type, int $post_id = 0, string $template = '', string $taxonomy = '' ) {
+        if ( ! self::available() ) { return null; }
+        $example = self::catalog( $post_type, $post_id, $template, $taxonomy );
+        $creation = self::catalog( $post_type, 0, $template, $taxonomy );
+        if ( ! $example && ! $creation ) { return null; }
+        return self::design( $post_type, $post_id, $template, $taxonomy );
+    }
     private static function fill_prototypes( $value, array $field ) {
         if ( 'group' === $field['type'] ) { $out = []; foreach ( $field['sub_fields'] ?? [] as $child ) { $out[$child['name']] = self::fill_prototypes( is_array( $value ) ? ( $value[$child['name']] ?? null ) : null, $child ); } return $out; }
         if ( in_array( $field['type'], [ 'repeater', 'flexible_content' ], true ) && empty( $value ) ) { return self::blank_value( $field ); }
@@ -298,7 +306,7 @@ final class Nova_Bridge_Suite_Recipe_ACF {
         return $native;
     }
     /** Enforce declared cardinality/text bounds before native schema transport writes. */
-    private static function validate_constraints( array $fields, array $values, string $path = '/document', int $depth = 0 ) {
+    public static function validate_constraints( array $fields, array $values, string $path = '/document', int $depth = 0 ) {
         if ( $depth > 12 ) { return self::error( 'The installed custom-field structure exceeds its supported nesting depth.', 422 ); }
         foreach ( $fields as $field ) {
             $value = $values[$field['name']] ?? null; $next = $path . '/' . self::escape( $field['name'] ); $type = $field['type'];

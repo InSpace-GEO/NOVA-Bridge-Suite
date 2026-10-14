@@ -47,9 +47,10 @@
 			else if ( safeId.test( locator.dom_class || '' ) ) { owner = unique( document, '.' + locator.dom_class ); }
 			if ( ! owner ) { return null; }
 		} else if ( strategy === 'core' ) {
-			selector = { title: '.entry-title', content: '.entry-content', name: '.woocommerce-products-header__title', description: '.term-description' }[ control ];
+			selector = { title: '.entry-title', content: '.entry-content', name: '.woocommerce-products-header__title', description: '.term-description', bottom_content: '.wc-content-below-products' }[ control ];
 			if ( ! selector ) { return null; } owner = unique( document, selector ); if ( ! owner && control === 'content' ) { owner = unique( document, '.wp-block-post-content' ); } if ( ! owner && control === 'title' ) { owner = unique( document, '.wp-block-post-title' ); } if ( ! owner || owner.closest( 'nav,footer,form,[role="navigation"],[role="contentinfo"]' ) ) { return null; }
-			return { node: owner, owner: owner, precision: [ 'content', 'description' ].includes( control ) ? 'region' : 'field' };
+			if ( control === 'bottom_content' && ( config.referenceType !== 'term' || ! owner.closest( 'main,[role="main"],.woocommerce,.content,.site-content' ) ) ) { return null; }
+			return { node: owner, owner: owner, precision: [ 'content', 'description', 'bottom_content' ].includes( control ) ? 'region' : 'field' };
 		} else if ( strategy === 'native_anchor' ) {
 			if ( ! safeId.test( id ) ) { return null; } owner = unique( document, '[id="' + id + '"]' );
 			if ( ! owner || owner.closest( 'nav,header,footer,form,[role="navigation"],[role="banner"],[role="contentinfo"]' ) || ! owner.closest( 'main,[role="main"],.entry-content,.wp-block-post-content,[data-elementor-id="' + config.referenceId + '"]' ) ) { return null; }

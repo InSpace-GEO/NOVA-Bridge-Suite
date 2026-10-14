@@ -45,8 +45,8 @@ final class Nova_Bridge_Suite_Recipe_Visual {
         $post = get_post( $id );
         return $post && function_exists( 'has_blocks' ) && has_blocks( $post->post_content ) ? 'gutenberg' : 'core';
     }
-    private static function capture( array $resource, int $id, string $builder, string $mode ) {
-        if ( 'core' === $builder ) { return Nova_Bridge_Suite_Recipe_Core::design( $resource, $id, $mode ); }
+    private static function capture( array $resource, int $id, string $builder, string $mode, array $declared_fields = [] ) {
+        if ( 'core' === $builder ) { return Nova_Bridge_Suite_Recipe_Core::design( $resource, $id, $mode, $declared_fields ); }
         if ( 'acf' === $builder ) { return Nova_Bridge_Suite_Recipe_ACF::design( $resource['post_type'] ?? '', $id, 'taxonomy' === $resource['type'] ? '' : (string) get_page_template_slug( $id ), $resource['taxonomy'] ?? '' ); }
         return Nova_Bridge_Suite_Recipe_Builders::capture( $builder, $id );
     }
@@ -64,7 +64,7 @@ final class Nova_Bridge_Suite_Recipe_Visual {
         }
         $canonical = self::source( $resource, $source['reference_id'], $recipe['builder'], $recipe['blueprint'] ); if ( is_wp_error( $canonical ) ) { return $canonical; }
         if ( $fresh ) {
-            $current = self::capture( $resource, $source['reference_id'], $recipe['builder'], $recipe['mode'] );
+            $current = self::capture( $resource, $source['reference_id'], $recipe['builder'], $recipe['mode'], $recipe['blueprint']['term_fields']['local_declarations'] ?? [] );
             if ( is_wp_error( $current ) || Nova_Bridge_Suite_Recipe_Engine::digest( $current['blueprint'] ?? [] ) !== $source['native_digest'] ) {
                 return self::error( 'The example page or native field schema changed after capture. Capture it again and review your mappings before saving.' );
             }
@@ -86,6 +86,7 @@ final class Nova_Bridge_Suite_Recipe_Visual {
             if ( 'core' === $builder ) {
                 if ( '/document/title' === $field['target'] ) { $locator = [ 'strategy' => 'core', 'control_path' => [ 'taxonomy' === $resource['type'] ? 'name' : 'title' ], 'precision' => 'region' ]; }
                 elseif ( '/document/sections/0/body' === $field['target'] ) { $locator = [ 'strategy' => 'core', 'control_path' => [ 'taxonomy' === $resource['type'] ? 'description' : 'content' ], 'precision' => 'document' ]; }
+                elseif ( 'product_cat' === ( $resource['taxonomy'] ?? '' ) && 'content_below_products' === ( $field['custom_field_key'] ?? '' ) && ! empty( $field['writable'] ) ) { $locator = [ 'strategy' => 'core', 'control_path' => [ 'bottom_content' ], 'precision' => 'region' ]; }
                 else { $locator = [ 'strategy' => 'unbound', 'reason' => 'This field has no independent element on the source page.' ]; }
             }
             if ( 'acf' === $builder ) { $locator = [ 'strategy' => 'unbound', 'reason' => 'The theme decides where this custom field is rendered. Select its declared field from the inventory.' ]; }
