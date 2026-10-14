@@ -103,5 +103,6 @@ final class Nova_Bridge_Suite_Posting_Settings {
         echo '<p>Publishing uses the WordPress permissions of the administrator saving these settings. Changing the service or site pauses new mutations until you resume them.</p>';
         submit_button( 'Save NOVA connection' );
         echo '</form></details><details class="nova-mapping-advanced"><summary>Delivery status and technical details</summary><p>Ready notification URL: <code>' . esc_html( rest_url( 'nova-bridge/v1/posting/ready' ) ) . '</code></p><div id="nova-posting-status"></div></details>';
+        if ( class_exists( 'Nova_Bridge_Suite_Mapped_Content_Connector' ) ) { Nova_Bridge_Suite_Mapped_Content_Connector::render(); }
     }
 }

@@ -55,6 +55,14 @@ final class Nova_Bridge_Suite_Layout_Recipes {
         return self::error( 'conflict', 'Another administrator changed these templates. Reload before saving.', 409 );
     }
     public static function defaults(): array { $state = self::state(); return is_wp_error( $state ) ? [] : $state['defaults']; }
+    /** Internal delivery adapter: immutable saved authority, never a remote native recipe. */
+    public static function delivery_record( string $id, int $revision ) {
+        $record = self::record( $id, $revision ); if ( is_wp_error( $record ) ) { return $record; }
+        $checked = self::reviewed( $record ); return is_wp_error( $checked ) ? $checked : $record;
+    }
+    public static function delivery_compile( string $id, int $revision, array $content, string $operation ) {
+        $record = self::delivery_record( $id, $revision ); return is_wp_error( $record ) ? $record : self::compile( $record['recipe'], $content, 'delivery:' . $operation );
+    }
     private static function record( string $id, ?int $revision = null ) {
         if ( ! self::uuid( $id ) ) { return self::error( 'profile', 'Choose a saved template.', 404 ); } $state = self::state(); if ( is_wp_error( $state ) ) { return $state; }
         $history = $state['profiles'][$id] ?? []; $revision = $revision ?? ( $history ? max( array_keys( $history ) ) : 0 );
