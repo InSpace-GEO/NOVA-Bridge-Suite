@@ -61,11 +61,13 @@ final class Nova_Bridge_Suite_Mapped_Content_Writer {
     }
     /** A fresh filled item-specific snapshot; creation defaults never determine rewrite fields. */
     public static function capture_snapshot( string $site, string $id, string $resource, array $target, ?array $editable_paths = null ) {
-        if ( ! self::uuid( $site ) || ! self::uuid( $id ) || ! is_int( $target['reference_id'] ?? null ) || ( $target['reference_type'] ?? '' ) !== 'post' ) { return self::error( 'snapshot_target', 'Supply an exact existing post reference and snapshot request identity.', 400 ); }
+        if ( ! self::uuid( $site ) || ! self::uuid( $id ) || ! is_int( $target['reference_id'] ?? null ) || ! in_array( $target['reference_type'] ?? '', [ 'post', 'term' ], true ) ) { return self::error( 'snapshot_target', 'Supply an exact existing native reference and snapshot request identity.', 400 ); }
         $key = self::key( 'snapshot', $site, $id ); $old = get_option( $key, null );
         if ( is_array( $old ) ) { return $old['resource_id'] === $resource && $old['requested_target'] === $target && $old['requested_paths'] === $editable_paths ? $old['export'] : self::error( 'snapshot_conflict', 'This snapshot request already belongs to another native item.' ); }
-        $mapping = Nova_Bridge_Suite_Document_Mapping::read( $resource, 'post', $target['reference_id'] ); if ( is_wp_error( $mapping ) ) { return $mapping; }
-        if ( ! in_array( $mapping['provider']['id'], [ 'core', 'elementor' ], true ) ) { return self::error( 'rewrite_provider', 'This complete snapshot provider has no certified surgical delivery writer yet.' ); }
+        $mapping = 'term' === $target['reference_type'] ? Nova_Bridge_Suite_Mapped_Content_Term_Writer::read( $resource, $target['reference_id'] ) : Nova_Bridge_Suite_Document_Mapping::read( $resource, 'post', $target['reference_id'] ); if ( is_wp_error( $mapping ) ) { return $mapping; }
+        if ( ! in_array( $mapping['provider']['id'], [ 'core', 'elementor', 'term_content' ], true ) ) { return self::error( 'rewrite_provider', 'This complete snapshot provider has no certified surgical delivery writer yet.' ); }
+        $native_url = Nova_Bridge_Suite_Mapped_Content_Target::native_url( $resource, $target['reference_type'], $target['reference_id'] ); if ( is_wp_error( $native_url ) ) { return $native_url; }
+        if ( isset( $target['url'] ) ) { $supplied = Nova_Bridge_Suite_Mapped_Content_Target::normalize_url( $target['url'] ); $native = Nova_Bridge_Suite_Mapped_Content_Target::normalize_url( $native_url ); if ( is_wp_error( $supplied ) || is_wp_error( $native ) || $supplied['identity'] !== $native['identity'] ) { return self::error( 'snapshot_url', 'The resolved URL no longer identifies this exact native item.' ); } }
         $editable = []; $protected = []; $properties = []; $context = [];
         foreach ( $mapping['fields'] as $path => $field ) {
             if ( ! empty( $field['protected'] ) || empty( $field['writable'] ) || is_array( $field['value'] ) ) { $protected[] = $path; continue; }
@@ -77,7 +79,7 @@ final class Nova_Bridge_Suite_Mapped_Content_Writer {
         if ( null !== $editable_paths && ( ! Nova_Bridge_Suite_Recipe_Engine::list_array( $editable_paths ) || array_diff( $editable_paths, array_keys( $editable ) ) || count( array_unique( $editable_paths, SORT_REGULAR ) ) !== count( $editable_paths ) ) ) { return self::error( 'snapshot_paths', 'Requested paths must be unique approved native editorial fields.', 422 ); }
         if ( ! $editable ) { return self::error( 'snapshot_empty', 'This item exposes no supported editable editorial fields.' ); }
         $ref = [ 'id' => $id, 'baseline_digest' => self::digest( $mapping['baseline'] ) ];
-        $wire_target = $target + [ 'url' => $mapping['preview_url'] ];
+        $wire_target = $target + [ 'url' => $native_url ];
         $export = [ 'format' => self::CONTRACT, 'mapping_id' => $id, 'revision' => 1, 'site_id' => $site, 'resource_id' => $resource, 'operation' => 'rewrite', 'schema' => [ 'type' => 'object', 'additionalProperties' => false, 'properties' => $properties ], 'content' => $editable, 'instructions' => 'Rewrite only supplied editable fields. Omitted fields stay unchanged. Preserve native structure, URLs, design settings and protected fields.', 'local_reference' => [ 'kind' => 'document', 'id' => $id ], 'target' => $wire_target, 'baseline' => $mapping['baseline'] ];
         $saved = self::retain( $key, [ 'resource_id' => $resource, 'requested_target' => $target, 'requested_paths' => $editable_paths, 'target' => $wire_target, 'mapping' => $mapping, 'editable' => array_keys( $editable ), 'reference' => $ref, 'export' => $export ] ); return is_wp_error( $saved ) ? $saved : $export;
     }
@@ -88,10 +90,14 @@ final class Nova_Bridge_Suite_Mapped_Content_Writer {
     private static function unlock( string $key ): void { global $wpdb; $wpdb->get_var( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', 'nova_mapped_' . substr( hash( 'sha256', $key ), 0, 48 ) ) ); }
     private static function create_plan( string $site, array $delivery ) {
         $ref = $delivery['mapping_ref'] ?? []; $key = self::key( 'mapping', $site, ( $ref['id'] ?? '' ) . ':' . ( $ref['revision'] ?? 0 ) ); $authority = get_option( $key, null );
-        if ( ! is_array( $authority ) || $authority['reference'] !== $ref || 'taxonomy:product_cat' !== ( $ref['resource_id'] ?? '' ) || ( $delivery['resource_id'] ?? '' ) !== $ref['resource_id'] ) { return self::error( 'mapping_authority', 'This exact category mapping revision was not synchronized by this site.' ); }
+        if ( ! is_array( $authority ) || $authority['reference'] !== $ref || ( $delivery['resource_id'] ?? '' ) !== $ref['resource_id'] ) { return self::error( 'mapping_authority', 'This exact mapping revision was not synchronized by this site.' ); }
         $current = Nova_Bridge_Suite_Layout_Recipes::defaults()[$ref['resource_id']] ?? []; if ( ( $current['id'] ?? '' ) !== $ref['id'] || ( $current['revision'] ?? 0 ) !== $ref['revision'] ) { return self::error( 'stale_recipe', 'The destination default changed after content was prepared. Refresh its mapping.' ); }
-        $target = $delivery['target'] ?? []; $slug = $target['slug'] ?? '';
-        if ( ! is_string( $slug ) || '' === $slug || strlen( $slug ) > 180 || sanitize_title( $slug ) !== $slug || ! is_int( $target['parent'] ?? null ) || $target['parent'] < 0 || array_diff( array_keys( $target ), [ 'slug', 'parent' ] ) ) { return self::error( 'create_target', 'Supply a canonical category slug and parent.', 400 ); }
+        $target = $delivery['target'] ?? [];
+        if ( isset( $target['target_url'] ) ) { $target = Nova_Bridge_Suite_Mapped_Content_Target::creation( $ref['resource_id'], $target['target_url'], $target['language'] ?? null ); if ( is_wp_error( $target ) ) { return $target; } }
+        if ( 0 === strpos( $ref['resource_id'], 'post_type:' ) ) { $record = Nova_Bridge_Suite_Layout_Recipes::delivery_record( $ref['id'], $ref['revision'] ); return is_wp_error( $record ) ? $record : Nova_Bridge_Suite_Mapped_Content_Post_Writer::plan( $record, array_replace( $delivery, [ 'target' => $target ] ) ); }
+        if ( 'taxonomy:product_cat' !== $ref['resource_id'] ) { return self::error( 'create_provider', 'This taxonomy has no certified mapped creation lifecycle yet.' ); }
+        $slug = $target['slug'] ?? '';
+        if ( ! is_string( $slug ) || '' === $slug || strlen( $slug ) > 180 || sanitize_title( $slug ) !== $slug || ! is_int( $target['parent'] ?? null ) || $target['parent'] < 0 || array_diff( array_keys( $target ), [ 'slug', 'parent', 'target_url', 'language', 'native_language' ] ) ) { return self::error( 'create_target', 'Supply a canonical category slug and parent.', 400 ); }
         $taxonomy = get_taxonomy( 'product_cat' );
         if ( ! $taxonomy || ! current_user_can( $taxonomy->cap->manage_terms ) || ! current_user_can( $taxonomy->cap->edit_terms ) || ! current_user_can( 'manage_options' ) ) { return self::error( 'permission', 'The configured WordPress actor cannot create product categories.', 403 ); }
         if ( $target['parent'] && ( ! get_term( $target['parent'], 'product_cat' ) || ! current_user_can( 'edit_term', $target['parent'] ) ) ) { return self::error( 'parent', 'The configured product category parent is unavailable.', 403 ); }
@@ -105,6 +111,7 @@ final class Nova_Bridge_Suite_Mapped_Content_Writer {
         if ( ! is_array( $saved ) || $saved['reference'] !== $ref || $saved['resource_id'] !== ( $delivery['resource_id'] ?? '' ) || ! is_array( $delivery['target'] ?? null ) || self::wire_digest( $saved['target'] ) !== self::wire_digest( $delivery['target'] ) ) { return self::error( 'snapshot_authority', 'The delivery does not match this site’s retained item snapshot.' ); }
         $mapping = $saved['mapping']; $body = $delivery['content'];
         if ( ! $body || Nova_Bridge_Suite_Recipe_Engine::list_array( $body ) || array_diff( array_keys( $body ), $saved['editable'] ) ) { return self::error( 'protected_field', 'Supply only approved, concrete editable snapshot paths.', 422 ); }
+        if ( 'term_content' === $mapping['provider']['id'] ) { return Nova_Bridge_Suite_Mapped_Content_Term_Writer::prepare( $mapping, $body ); }
         $after = $mapping['structure']; $fields = []; $native = []; $meta = []; $acf = []; $changed_paths = [];
         foreach ( $body as $path => $value ) {
             $mapping['fields'][$path]['value'] = $value; $field = $mapping['fields'][$path];
@@ -126,6 +133,7 @@ final class Nova_Bridge_Suite_Mapped_Content_Writer {
         return [ 'mode' => 'rewrite', 'target' => $saved['target'], 'resource_id' => $saved['resource_id'], 'baseline' => $mapping['baseline'], 'before_structure' => $mapping['structure'], 'after_structure' => $after, 'elementor_fields' => $fields, 'native_fields' => $native, 'metadata' => $transport, 'changed_paths' => $changed_paths ];
     }
     private static function verify_rewrite( array $plan ) {
+        if ( 'term' === ( $plan['native_kind'] ?? '' ) ) { return Nova_Bridge_Suite_Mapped_Content_Term_Writer::verify( $plan ); }
         $now = Nova_Bridge_Suite_Document_Mapping::read( $plan['resource_id'], 'post', $plan['target']['reference_id'] ); if ( is_wp_error( $now ) ) { return $now; }
         $actual = $now['structure']; $expected = $plan['after_structure'];
         // Registered metadata can persist typed values as strings. Compare declared
@@ -139,6 +147,8 @@ final class Nova_Bridge_Suite_Mapped_Content_Writer {
         $term = get_term( $id, $plan['taxonomy'] );
         if ( ! $term || is_wp_error( $term ) || $term->slug !== $plan['target']['slug'] || (int) $term->parent !== $plan['target']['parent'] || get_term_meta( $id, '_nova_mapped_operation', true ) !== $operation || get_term_meta( $id, '_nova_mapped_operation_digest', true ) !== $digest || ! current_user_can( 'edit_term', $id ) ) { return self::error( 'category_witness', 'The retained category no longer matches its original delivery witness.' ); }
         $read = Nova_Bridge_Suite_Term_Content::read( $plan['taxonomy'], $id, $plan['profile_context'] ); if ( is_wp_error( $read ) ) { return $read; }
+        $language = Nova_Bridge_Suite_Mapped_Content_Target::verify_created_language( 'taxonomy:' . $plan['taxonomy'], 'term', $id, $plan['target'] ); if ( is_wp_error( $language ) ) { return $language; }
+        if ( isset( $plan['target']['target_url'] ) ) { $url = Nova_Bridge_Suite_Mapped_Content_Target::normalize_url( get_term_link( $id, $plan['taxonomy'] ) ); if ( is_wp_error( $url ) || $url['identity'] !== $plan['target']['target_url'] ) { return self::error( 'category_url_readback', 'The witnessed category does not have its planned URL. No duplicate will be created.' ); } }
         foreach ( $plan['payload'] as $key => $value ) {
             if ( ! array_key_exists( $key, $read ) ) { return self::error( 'category_readback', 'A retained category field was not saved.' ); }
             if ( in_array( $key, [ 'name', 'description' ], true ) ) {
@@ -153,7 +163,7 @@ final class Nova_Bridge_Suite_Mapped_Content_Writer {
         return true;
     }
     private static function receipt( array $delivery, array $plan, int $id ): array {
-        $term = 'create' === $plan['mode']; $url = $term ? get_term_link( $id, $plan['taxonomy'] ) : get_permalink( $id );
+        $term = 'term' === ( $plan['native_kind'] ?? '' ) || isset( $plan['taxonomy'] ); $resource = $plan['resource_id'] ?? ( 'taxonomy:' . $plan['taxonomy'] ); $url = Nova_Bridge_Suite_Mapped_Content_Target::native_url( $resource, $term ? 'term' : 'post', $id );
         return [ 'status' => 'applied', 'remote_id' => (string) $id, 'remote_url' => is_string( $url ) ? $url : '', 'changed_paths' => $plan['changed_paths'] ?? array_keys( $plan['payload'] ) ];
     }
     public static function has_native_attempt( string $site, string $id ): bool { return is_array( get_option( self::key( 'operation', $site, $id ), null ) ); }
@@ -167,13 +177,16 @@ final class Nova_Bridge_Suite_Mapped_Content_Writer {
         $schema_content = 'rewrite' === $mapping['operation'] ? array_replace( $mapping['content'], $wire['content'] ) : $wire['content'];
         $schema_check = rest_validate_value_from_schema( $schema_content, $mapping['schema'], 'mapped_content' ); if ( is_wp_error( $schema_check ) ) { return $schema_check; }
         $publication = $wire['publication'] ?? [];
-        if ( 'create' === $mapping['operation'] && ( $publication['status'] ?? 'publish' ) !== 'publish' ) { return self::error( 'category_status', 'Categories have no draft status. Explicitly publish the controlled category test.', 422 ); }
+        if ( ! is_array( $publication ) || array_diff( array_keys( $publication ), [ 'target_url', 'status', 'language', 'title', 'slug', 'parent' ] ) || ( isset( $publication['target_url'] ) && ! is_string( $publication['target_url'] ) ) || ( isset( $publication['language'] ) && ! is_string( $publication['language'] ) ) ) { return self::error( 'publication', 'Supply a concrete publication URL and optional native language.', 422 ); }
+        if ( 'create' === $mapping['operation'] && ( $publication['status'] ?? 'publish' ) !== 'publish' ) { return self::error( 'publication_status', 'Mapped creation currently supports explicit publication only.', 422 ); }
         if ( 'rewrite' === $mapping['operation'] && $publication ) { return self::error( 'rewrite_routing', 'An existing-item rewrite cannot change publication or routing identity.', 422 ); }
-        $delivery = [ 'contract' => self::CONTRACT, 'site_id' => $site, 'operation_id' => $wire['delivery_id'], 'mode' => $mapping['operation'], 'resource_id' => $mapping['resource_id'], 'content' => $wire['content'] ?? null, 'target' => 'create' === $mapping['operation'] ? [ 'slug' => $publication['slug'] ?? '', 'parent' => $publication['parent'] ?? 0 ] : $mapping['target'], 'wire_digest' => self::digest( array_intersect_key( $wire, array_flip( [ 'delivery_id', 'mapping_id', 'mapping_revision', 'mapping_digest', 'content', 'publication' ] ) ) ) ];
+        $creation_target = isset( $publication['target_url'] ) ? array_intersect_key( $publication, array_flip( [ 'target_url', 'language' ] ) ) : [ 'slug' => $publication['slug'] ?? '', 'parent' => $publication['parent'] ?? 0 ];
+        if ( isset( $publication['language'] ) && ! isset( $publication['target_url'] ) ) { return self::error( 'publication_language', 'Language-specific creation requires a planned target URL.', 422 ); }
+        $delivery = [ 'contract' => self::CONTRACT, 'site_id' => $site, 'operation_id' => $wire['delivery_id'], 'mode' => $mapping['operation'], 'resource_id' => $mapping['resource_id'], 'content' => $wire['content'] ?? null, 'publication' => $publication, 'target' => 'create' === $mapping['operation'] ? $creation_target : $mapping['target'], 'wire_digest' => self::wire_digest( array_intersect_key( $wire, array_flip( [ 'delivery_id', 'mapping_id', 'mapping_revision', 'mapping_digest', 'content', 'publication' ] ) ) ) ];
         $delivery[ 'create' === $mapping['operation'] ? 'mapping_ref' : 'snapshot_ref' ] = $authority['reference'];
         if ( ( $delivery['contract'] ?? '' ) !== self::CONTRACT || ( $delivery['site_id'] ?? '' ) !== $site || ! self::uuid( $delivery['operation_id'] ?? null ) || ! in_array( $delivery['mode'] ?? '', [ 'create', 'rewrite' ], true ) || ! is_array( $delivery['content'] ?? null ) || ! current_user_can( 'manage_options' ) ) { return self::error( 'delivery', 'Supply an authenticated site-scoped mapped-content delivery.', 403 ); }
         $key = self::key( 'operation', $site, $delivery['operation_id'] ); $lock = self::lock( $key ); if ( is_wp_error( $lock ) ) { return $lock; }
-        $target_key = self::key( 'target', $site, $delivery['resource_id'] . ':' . ( 'create' === $delivery['mode'] ? ( $delivery['target']['slug'] ?? '' ) : (string) ( $delivery['target']['reference_id'] ?? 0 ) ) );
+        $target_key = self::key( 'target', $site, $delivery['resource_id'] . ':' . ( 'create' === $delivery['mode'] ? ( $delivery['target']['target_url'] ?? $delivery['target']['slug'] ?? '' ) : (string) ( $delivery['target']['reference_id'] ?? 0 ) ) );
         $target_lock = self::lock( $target_key ); if ( is_wp_error( $target_lock ) ) { self::unlock( $key ); return $target_lock; }
         try {
             $digest = self::digest( $delivery ); $old = get_option( $key, null );
@@ -181,6 +194,7 @@ final class Nova_Bridge_Suite_Mapped_Content_Writer {
                 if ( ( $old['delivery_digest'] ?? '' ) !== $digest ) { return self::error( 'operation_conflict', 'This operation already belongs to different content. No duplicate was created.' ); }
                 if ( 'complete' === $old['phase'] ) { return $old['receipt']; }
                 if ( 'rewrite' === $old['plan']['mode'] && ! is_wp_error( self::verify_rewrite( $old['plan'] ) ) ) { $old['receipt'] = self::receipt( $delivery, $old['plan'], $old['plan']['target']['reference_id'] ); $old['phase'] = 'complete'; $saved = self::checkpoint( $key, $old ); return is_wp_error( $saved ) ? $saved : $old['receipt']; }
+                if ( 'create' === $old['plan']['mode'] && 'post' === ( $old['plan']['native_kind'] ?? '' ) ) { $resumed = Nova_Bridge_Suite_Mapped_Content_Target::with_creation_language( $old['plan']['target'], static function () use ( $key, &$old, $delivery ) { return Nova_Bridge_Suite_Mapped_Content_Post_Writer::apply( $old['plan'], $delivery['operation_id'], $old, static function ( array $value ) use ( $key, &$old ) { $old = $value; return self::checkpoint( $key, $value ); } ); } ); if ( is_wp_error( $resumed ) ) { return $resumed; } $old['native_id'] = $resumed; $old['receipt'] = self::receipt( $delivery, $old['plan'], $resumed ); $old['phase'] = 'complete'; $saved = self::checkpoint( $key, $old ); return is_wp_error( $saved ) ? $saved : $old['receipt']; }
                 if ( 'create' === $old['plan']['mode'] && ! empty( $old['native_id'] ) && ! is_wp_error( self::verify_category( $old['plan'], (int) $old['native_id'], $delivery['operation_id'], $digest ) ) ) { $old['receipt'] = self::receipt( $delivery, $old['plan'], (int) $old['native_id'] ); $old['phase'] = 'complete'; $saved = self::checkpoint( $key, $old ); return is_wp_error( $saved ) ? $saved : $old['receipt']; }
                 return self::error( 'uncertain', 'A previous native attempt requires inspection. It was not overwritten or duplicated.' );
             }
@@ -188,6 +202,9 @@ final class Nova_Bridge_Suite_Mapped_Content_Writer {
             $journal = [ 'delivery_digest' => $digest, 'phase' => 'writing', 'plan' => $plan, 'created_at' => gmdate( 'c' ) ];
             $retained = self::retain( $key, $journal ); if ( is_wp_error( $retained ) ) { return $retained; }
             if ( 'create' === $plan['mode'] ) {
+                $id = Nova_Bridge_Suite_Mapped_Content_Target::with_creation_language( $plan['target'], static function () use ( $plan, $delivery, $digest, $key, &$journal ) {
+                if ( 'post' === ( $plan['native_kind'] ?? '' ) ) { $id = Nova_Bridge_Suite_Mapped_Content_Post_Writer::apply( $plan, $delivery['operation_id'], $journal, static function ( array $value ) use ( $key, &$journal ) { $journal = $value; return self::checkpoint( $key, $value ); } ); if ( is_wp_error( $id ) ) { return $id; } }
+                else {
                 $witness = static function ( $id, $tt, $taxonomy ) use ( $plan, $delivery, $digest, $key, &$journal ) {
                     if ( $taxonomy !== $plan['taxonomy'] ) { return; } $term = get_term( $id, $taxonomy ); if ( ! $term || $term->slug !== $plan['target']['slug'] ) { return; }
                     update_term_meta( $id, '_nova_mapped_operation', $delivery['operation_id'] ); update_term_meta( $id, '_nova_mapped_operation_digest', $digest ); $journal['native_id'] = (int) $id; self::checkpoint( $key, $journal );
@@ -197,13 +214,20 @@ final class Nova_Bridge_Suite_Mapped_Content_Writer {
                 if ( is_wp_error( $created ) ) { return $created; } $id = (int) $created['term_id'];
                 if ( get_term_meta( $id, '_nova_mapped_operation', true ) !== $delivery['operation_id'] || get_term_meta( $id, '_nova_mapped_operation_digest', true ) !== $digest ) { return self::error( 'create_witness', 'The new category could not be linked to its durable operation. Inspect it before retrying.' ); }
                 $result = Nova_Bridge_Suite_Term_Content::apply( $plan['taxonomy'], $id, $plan['payload'], $plan['profile_context'] ); if ( is_wp_error( $result ) ) { return $result; }
+                $verified = self::verify_category( $plan, $id, $delivery['operation_id'], $digest ); if ( is_wp_error( $verified ) ) { return $verified; }
+                }
+                return $id;
+                } ); if ( is_wp_error( $id ) ) { return $id; }
             } else {
                 $id = $plan['target']['reference_id'];
+                if ( 'term' === ( $plan['native_kind'] ?? '' ) ) { $written = Nova_Bridge_Suite_Mapped_Content_Term_Writer::apply( $plan ); if ( is_wp_error( $written ) ) { return $written; } }
+                else {
                 $fresh = Nova_Bridge_Suite_Document_Mapping::read( $plan['resource_id'], 'post', $id ); if ( is_wp_error( $fresh ) || $fresh['baseline'] !== $plan['baseline'] ) { return self::error( 'stale_snapshot', 'The source changed before the write. Request a fresh snapshot.' ); }
                 if ( $plan['elementor_fields'] ) { $service = new \SEOR_Elementor_Bridge\Elementor_Service(); $written = $service->update_page( $id, [ 'fields' => $plan['elementor_fields'] ] ); if ( is_wp_error( $written ) ) { return $written; } }
                 if ( $plan['native_fields'] ) { $written = wp_update_post( wp_slash( [ 'ID' => $id ] + $plan['native_fields'] ), true ); if ( is_wp_error( $written ) ) { return $written; } }
                 if ( $plan['metadata'] ) { $written = Nova_Bridge_Suite_Content_Transport::write_fields( get_post( $id ), $plan['metadata'] ); if ( is_wp_error( $written ) ) { return $written; } }
                 $verified = self::verify_rewrite( $plan ); if ( is_wp_error( $verified ) ) { return $verified; }
+                }
             }
             $journal['phase'] = 'complete'; $journal['native_id'] = $id; $journal['receipt'] = self::receipt( $delivery, $plan, $id ); $saved = self::checkpoint( $key, $journal ); return is_wp_error( $saved ) ? $saved : $journal['receipt'];
         } catch ( Throwable $error ) { return self::error( 'uncertain', 'Mapped delivery stopped before verification. Inspect its retained operation before retrying.', 500 ); }

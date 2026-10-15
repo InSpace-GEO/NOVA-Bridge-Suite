@@ -63,6 +63,10 @@ final class Nova_Bridge_Suite_Layout_Recipes {
     public static function delivery_compile( string $id, int $revision, array $content, string $operation ) {
         $record = self::delivery_record( $id, $revision ); return is_wp_error( $record ) ? $record : self::compile( $record['recipe'], $content, 'delivery:' . $operation );
     }
+    /** Exact same deterministic recipe seed used by the journaled draft lifecycle. */
+    public static function delivery_draft_content( string $id, int $revision, array $content, string $operation ) {
+        $record = self::delivery_record( $id, $revision ); return is_wp_error( $record ) ? $record : self::compile( $record['recipe'], $content, 'draft:' . $operation );
+    }
     private static function record( string $id, ?int $revision = null ) {
         if ( ! self::uuid( $id ) ) { return self::error( 'profile', 'Choose a saved template.', 404 ); } $state = self::state(); if ( is_wp_error( $state ) ) { return $state; }
         $history = $state['profiles'][$id] ?? []; $revision = $revision ?? ( $history ? max( array_keys( $history ) ) : 0 );
