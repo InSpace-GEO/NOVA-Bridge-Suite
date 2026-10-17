@@ -269,6 +269,10 @@ class Nova_Bridge_Suite_Posting_Jobs {
     }
 
     public function uncertain_target( array $job ) {
+        if ( ( $job['payload']['native_writer'] ?? '' ) === 'static_recipe_v1' ) {
+            $id = $this->db->get_var( $this->db->prepare( "SELECT id FROM {$this->table} WHERE id<>%d AND site_id=%s AND phase='applying' AND (content_id=%s OR (JSON_UNQUOTE(JSON_EXTRACT(payload,'$.native_writer'))='static_recipe_v1' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.plan.target.target_url'))=%s)) LIMIT 1", $job['id'], $job['site_id'], $job['content_id'], $job['payload']['plan']['target']['target_url'] ) );
+            return ! empty( $this->db->last_error ) ? $this->error() : (bool) $id;
+        }
         $id = $this->db->get_var( $this->db->prepare( "SELECT id FROM {$this->table} WHERE id<>%d AND site_id=%s AND phase='applying' AND (content_id=%s OR (target_id>0 AND target_id=%d)) LIMIT 1", $job['id'], $job['site_id'], $job['content_id'], $job['target_id'] ) );
         return ! empty( $this->db->last_error ) ? $this->error() : (bool) $id;
     }

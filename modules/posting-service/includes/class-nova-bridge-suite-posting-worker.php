@@ -26,6 +26,10 @@ final class Nova_Bridge_Suite_Posting_Worker {
 
     /** An explicit unmapped-site opt-in is a separate route, never failed remote-map fallback. */
     public static function configuration_for_snapshot( array $snapshot, string $site_id ) {
+        if ( class_exists( 'Nova_Bridge_Suite_Static_Recipe_Adapter' ) ) {
+            $static = Nova_Bridge_Suite_Static_Recipe_Adapter::configuration_for_snapshot( $snapshot, $site_id );
+            if ( null !== $static ) { return $static; }
+        }
         if ( array_key_exists( 'configuration', $snapshot ) && null === $snapshot['configuration'] && class_exists( 'Nova_Bridge_Suite_Content_Rules' ) ) {
             return Nova_Bridge_Suite_Content_Rules::configuration_for_snapshot( $snapshot, $site_id );
         }
@@ -33,6 +37,7 @@ final class Nova_Bridge_Suite_Posting_Worker {
     }
 
     public static function frozen_policy( $client, array $snapshot, array $configuration ) {
+        if ( ( $configuration['mode'] ?? '' ) === 'static_recipe_v1' ) { return Nova_Bridge_Suite_Static_Recipe_Adapter::policy( $snapshot, $configuration ); }
         if ( ( $configuration['mode'] ?? '' ) === 'local_rules' ) { return Nova_Bridge_Suite_Rule_Writer::policy( $snapshot, $configuration ); }
         return Nova_Bridge_Suite_Mapping_Sync::frozen_policy( $client, $snapshot, $configuration );
     }
@@ -114,7 +119,7 @@ final class Nova_Bridge_Suite_Posting_Worker {
             return $this->save_payload( $job, [], 'committed', [ 'state' => 'complete' ] );
         }
         $proof = $job['payload']['native_absence_proof'] ?? [];
-        if ( true !== ( $proof['no_native_commit'] ?? false ) || ! empty( $job['payload']['result']['post_id'] ) ) {
+        if ( true !== ( $proof['no_native_commit'] ?? false ) || ! empty( $job['payload']['result']['post_id'] ) || ! empty( $job['payload']['result']['term_id'] ) ) {
             return $this->block( $job, 'attempt_changed_without_native_absence' );
         }
         if ( isset( $job['payload']['plan'] ) ) {
@@ -135,6 +140,10 @@ final class Nova_Bridge_Suite_Posting_Worker {
     /** Public to allow deterministic process-loss tests at journal/native boundaries. */
     public function process( array $job ) {
         $this->writer = $this->initial_writer;
+        if ( $this->default_dispatch && ( $job['payload']['native_writer'] ?? '' ) === 'static_recipe_v1' ) {
+            if ( ( $job['payload']['configuration']['mode'] ?? '' ) !== 'static_recipe_v1' || ( isset( $job['payload']['plan'] ) && ( $job['payload']['plan']['format'] ?? '' ) !== Nova_Bridge_Suite_Static_Term_Writer::FORMAT ) ) { return $this->block( $job, 'native_writer_identity' ); }
+            $this->writer = 'Nova_Bridge_Suite_Static_Term_Writer';
+        }
         if ( $this->default_dispatch && ( $job['payload']['native_writer'] ?? '' ) === 'local_rules' ) {
             if ( ( $job['payload']['configuration']['mode'] ?? '' ) !== 'local_rules' || ( isset( $job['payload']['plan'] ) && ( $job['payload']['plan']['format'] ?? '' ) !== Nova_Bridge_Suite_Rule_Writer::FORMAT ) ) { return $this->block( $job, 'native_writer_identity' ); }
             $this->writer = 'Nova_Bridge_Suite_Rule_Writer';
@@ -178,19 +187,22 @@ final class Nova_Bridge_Suite_Posting_Worker {
                 $configuration = $retained_local ? $job['payload']['configuration'] : call_user_func( $this->configuration, $snapshot, $job['site_id'] );
                 if ( is_wp_error( $configuration ) ) { return $this->native_failure( $job, $snapshot, $configuration->get_error_code(), [ 'no_native_commit' => true, 'boundary' => 'before_apply' ] ); }
                 $local_rules = ( $configuration['mode'] ?? '' ) === 'local_rules';
+                $static_term = ( $configuration['mode'] ?? '' ) === 'static_recipe_v1';
                 if ( $local_rules && ( ! array_key_exists( 'configuration', $snapshot ) || null !== $snapshot['configuration'] ) ) { return $this->block( $job, 'local_rules_remote_configuration' ); }
                 if ( $local_rules && $this->default_dispatch ) { $this->writer = 'Nova_Bridge_Suite_Rule_Writer'; }
+                if ( $static_term && $this->default_dispatch ) { $this->writer = 'Nova_Bridge_Suite_Static_Term_Writer'; }
                 $selected = $retained_local && isset( $job['payload']['selected_policy'] ) ? $job['payload']['selected_policy'] : call_user_func( $this->policy, $this->client, $snapshot, $configuration );
                 if ( is_wp_error( $selected ) ) { return $this->native_failure( $job, $snapshot, $selected->get_error_code(), [ 'no_native_commit' => true, 'boundary' => 'before_apply' ] ); }
                 $reference = $selected['reference'] ?? []; $routing = $selected['routing'] ?? [];
                 $operation = $routing['operation'] ?? null; $target = $reference['reference_id'] ?? 0;
-                $source_free = $local_rules && 'create' === $operation && 0 === $target;
-                if ( ( ! $source_free && ( ! in_array( $operation, [ 'update', 'clone' ], true ) || $target < 1 ) ) || 'post' !== ( $reference['reference_type'] ?? null ) || ! is_int( $target ) ) { return $this->native_failure( $job, $snapshot, 'routing_unavailable', [ 'no_native_commit' => true ] ); }
+                $source_free = ( $local_rules || $static_term ) && 'create' === $operation && 0 === $target;
+                $reference_type = $static_term ? 'term' : 'post';
+                if ( ( ! $source_free && ( ! in_array( $operation, [ 'update', 'clone' ], true ) || $target < 1 ) ) || $reference_type !== ( $reference['reference_type'] ?? null ) || ! is_int( $target ) || ( $static_term && ! $source_free ) ) { return $this->native_failure( $job, $snapshot, 'routing_unavailable', [ 'no_native_commit' => true ] ); }
                 $publication = $routing['publication'] ?? 'preserve';
-                if ( ! in_array( $publication, [ 'preserve', 'publish', 'draft' ], true ) ) { return $this->native_failure( $job, $snapshot, 'publication_policy_unavailable', [ 'no_native_commit' => true ] ); }
+                if ( ! in_array( $publication, [ 'preserve', 'publish', 'draft' ], true ) || ( $static_term && 'publish' !== $publication ) ) { return $this->native_failure( $job, $snapshot, 'publication_policy_unavailable', [ 'no_native_commit' => true ] ); }
                 $desired = 'preserve' === $publication ? ( 'clone' === $operation ? 'draft' : get_post_status( $target ) ) : $publication;
                 $context = [ 'site_id' => $job['site_id'], 'delivery_id' => $snapshot['id'], 'content_id' => $snapshot['content_item_id'], 'content_item_id' => $snapshot['content_item_id'], 'content_item_version_id' => $snapshot['content_item_version_id'], 'url_id' => $snapshot['url_id'], 'version' => $snapshot['version_number'], 'operation_id' => $job['operation_id'], 'business_result_id' => $job['operation_id'], 'target_post_id' => $target, 'operation' => $operation, 'desired_status' => $desired, 'actor_user_id' => (int) ( $this->connection['actor_user_id'] ?? 0 ), 'attempt_id' => $fetched['attempt_id'], 'source_sha256' => $snapshot['source_sha256'], 'snapshot_sha256' => hash( 'sha256', $fetched['snapshot_raw'] ), 'delivery_etag' => $fetched['delivery_etag'], 'language' => $snapshot['language'] ];
-                $job = $this->save_payload( $job, [ 'configuration' => $configuration, 'selected_policy' => $selected, 'context' => $context, 'native_writer' => $local_rules ? 'local_rules' : 'fixed_mapping' ], 'received' );
+                $job = $this->save_payload( $job, [ 'configuration' => $configuration, 'selected_policy' => $selected, 'context' => $context, 'native_writer' => $static_term ? 'static_recipe_v1' : ( $local_rules ? 'local_rules' : 'fixed_mapping' ) ], 'received' );
                 if ( is_wp_error( $job ) ) { return $job; }
                 $plan = call_user_func( [ $this->writer, 'plan' ], $snapshot, $configuration, $context );
                 if ( is_wp_error( $plan ) ) { return $this->native_failure( $job, $snapshot, $plan->get_error_code(), [ 'no_native_commit' => true, 'boundary' => 'before_apply' ] ); }
@@ -199,9 +211,11 @@ final class Nova_Bridge_Suite_Posting_Worker {
                 if ( is_wp_error( $job ) ) { return $job; }
             }
             if ( ! in_array( $job['phase'], [ 'planned', 'applying', 'committed' ], true ) ) { return $this->block( $job, 'journal_phase_invalid' ); }
-            $target_lock = ( $job['payload']['native_writer'] ?? '' ) === 'local_rules'
+            $static_term = ( $job['payload']['native_writer'] ?? '' ) === 'static_recipe_v1';
+            $native_id_key = $static_term ? 'term_id' : 'post_id';
+            $target_lock = $static_term ? 'term-url:' . $job['site_id'] . ':' . hash( 'sha256', $job['payload']['plan']['target']['target_url'] ) : ( ( $job['payload']['native_writer'] ?? '' ) === 'local_rules'
                 ? 'rule-url:' . $job['site_id'] . ':' . $snapshot['url_id']
-                : 'target:' . $job['site_id'] . ':' . $job['target_id'];
+                : 'target:' . $job['site_id'] . ':' . $job['target_id'] );
             if ( is_wp_error( $this->jobs->lock( $target_lock ) ) ) { $target_lock = null; return $this->retry( $job, 'target_busy' ); }
             $uncertain = $this->jobs->uncertain_target( $job );
             if ( is_wp_error( $uncertain ) ) { return $this->retry( $job, 'journal_unavailable' ); }
@@ -221,12 +235,12 @@ final class Nova_Bridge_Suite_Posting_Worker {
                 if ( 'nova_writer_ambiguous_commit' === $result->get_error_code() ) { return $this->retry( $job, 'native_commit_reconciliation' ); }
                 $proof = call_user_func( [ $this->writer, 'recover' ], $job['payload']['plan'], $job['operation_id'] );
                 if ( is_array( $proof ) && 'not_committed' === ( $proof['state'] ?? null ) && true === ( $proof['no_native_commit'] ?? false ) ) { return $this->native_failure( $job, $snapshot, $proof['failure_code'] ?? $result->get_error_code(), $proof ); }
-                return is_array( $proof ) && ! empty( $proof['post_id'] ) ? $this->retry( $job, 'native_commit_reconciliation' ) : $this->block( $job, $result->get_error_code() );
+                return is_array( $proof ) && ! empty( $proof[$native_id_key] ) ? $this->retry( $job, 'native_commit_reconciliation' ) : $this->block( $job, $result->get_error_code() );
             }
             if ( is_array( $result ) && 'not_committed' === ( $result['state'] ?? null ) && true === ( $result['no_native_commit'] ?? false ) && false === ( $result['safe_to_apply'] ?? null ) ) { return $this->native_failure( $job, $snapshot, $result['failure_code'] ?? 'native_target_unavailable', $result ); }
-            if ( ! is_array( $result ) || empty( $result['post_id'] ) ) { return $this->block( $job, 'mutation_result_unverified' ); }
+            if ( ! is_array( $result ) || empty( $result[$native_id_key] ) ) { return $this->block( $job, 'mutation_result_unverified' ); }
             if ( 'committed' !== $job['phase'] ) {
-                $job = $this->save_payload( $job, [ 'result' => $result ], 'committed', [ 'target_id' => (int) $result['post_id'] ] );
+                $job = $this->save_payload( $job, [ 'result' => $result ], 'committed', [ 'target_id' => (int) $result[$native_id_key] ] );
                 if ( is_wp_error( $job ) ) { return $job; }
             }
             if ( is_callable( [ $this->writer, 'finish' ] ) ) {
@@ -237,12 +251,13 @@ final class Nova_Bridge_Suite_Posting_Worker {
             }
             $verified = call_user_func( [ $this->writer, 'verify' ], $job['payload']['plan'], $result );
             if ( is_wp_error( $verified ) ) { return $this->retry( $job, $verified->get_error_code() ); }
-            if ( ! is_array( $verified ) || (int) ( $verified['post_id'] ?? 0 ) !== (int) $result['post_id'] || ! in_array( $verified['cms_post_status'] ?? null, [ 'draft', 'publish', 'future', 'private', 'pending' ], true ) ) { return $this->block( $job, 'verification_result_invalid' ); }
+            if ( ! is_array( $verified ) || (int) ( $verified[$native_id_key] ?? 0 ) !== (int) $result[$native_id_key] || ! in_array( $verified['cms_post_status'] ?? null, [ 'draft', 'publish', 'future', 'private', 'pending' ], true ) ) { return $this->block( $job, 'verification_result_invalid' ); }
             if ( 'publish' !== $verified['cms_post_status'] ) {
                 // Stored drafts/scheduled posts stay waiting_in_draft in NOVA until actual publication.
                 return $this->save_payload( $job, [ 'result' => $verified ], 'committed', [ 'state' => 'ready', 'next_attempt' => time() + 300, 'attempts' => 0, 'last_error' => 'awaiting_publication' ] );
             }
-            return $this->queue_event( $job, $snapshot, 'publication_succeeded', [ 'published_at' => Nova_Bridge_Suite_Posting_Protocol::now(), 'publication_ref' => 'wordpress:post:' . $verified['post_id'] . ';operation:' . $job['operation_id'] ], 'complete' );
+            $publication_ref = $static_term ? $verified['publication_ref'] : 'wordpress:post:' . $verified['post_id'] . ';operation:' . $job['operation_id'];
+            return $this->queue_event( $job, $snapshot, 'publication_succeeded', [ 'published_at' => Nova_Bridge_Suite_Posting_Protocol::now(), 'publication_ref' => $publication_ref ], 'complete' );
         } catch ( Throwable $error ) {
             return $this->retry( $job, 'worker_interrupted' );
         } finally {
