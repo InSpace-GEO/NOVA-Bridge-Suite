@@ -578,7 +578,13 @@ function nova_bridge_suite_get_targeted_rest_module_keys( string $route ): ?arra
 
     $module_keys = null;
 
-    if ( nova_bridge_suite_rest_route_matches( $route, 'nova-bridge/v1/content-endpoints' )
+    if ( nova_bridge_suite_rest_route_matches( $route, 'nova-bridge/v1/posting' ) ) {
+        // Delivery and manual resume need the site's providers before init and
+        // rest_api_init fire. Use the registry so new modules need no route edit;
+        // load_selected_modules still enforces settings and conflict exclusions.
+        nova_bridge_suite_load_settings_runtime();
+        $module_keys = array_merge( [ '__core_bridge', '__post_resolver' ], array_keys( nova_bridge_suite_module_definitions() ) );
+    } elseif ( nova_bridge_suite_rest_route_matches( $route, 'nova-bridge/v1/content-endpoints' )
         || nova_bridge_suite_rest_route_matches( $route, 'nova-bridge/v1/strategy' )
         || nova_bridge_suite_rest_route_matches( $route, 'nova-bridge/v1/mapping' )
     ) {

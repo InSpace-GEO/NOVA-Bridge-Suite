@@ -55,7 +55,8 @@ final class Nova_Bridge_Suite_Static_Term_Writer {
         if ( is_wp_error( $url ) || $url['identity'] !== $plan['target']['target_url'] ) { return self::error( 'category_url', 'The saved category does not have its approved URL.' ); }
         $language = Nova_Bridge_Suite_Mapped_Content_Target::verify_created_language( 'taxonomy:product_cat', 'term', $id, $plan['target'] ); if ( is_wp_error( $language ) ) { return $language; }
         $read = Nova_Bridge_Suite_Term_Content::read( 'product_cat', $id, $plan['profile_context'] ); if ( is_wp_error( $read ) ) { return $read; }
-        foreach ( $plan['payload'] as $field => $value ) {
+        $payload = class_exists( 'Nova_Bridge_Suite_Recipe_Term_Fields' ) ? Nova_Bridge_Suite_Recipe_Term_Fields::delivery_payload( $plan['configuration']['record']['recipe']['blueprint'], $plan['payload'] ) : $plan['payload'];
+        foreach ( $payload as $field => $value ) {
             if ( in_array( $field, [ 'name', 'description' ], true ) ) {
                 $input = 'name' === $field ? sanitize_text_field( $value ) : wp_kses_post( $value ); $value = sanitize_term_field( $field, wp_slash( $input ), $id, 'product_cat', 'db' );
                 if ( is_wp_error( $value ) || ! is_string( $value ) ) { return self::error( 'category_sanitizer', 'The installed category sanitizer cannot verify the written value.' ); } $value = wp_unslash( $value );

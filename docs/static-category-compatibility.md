@@ -67,3 +67,27 @@ delivery. The backend deployment configuration leaves the normal publisher off;
 its exposed publishing cycle has no client/domain/item selector. Testing the
 remaining source-event/receipt loop requires a safely scoped publisher test.
 No existing backend or cloud environment was changed for this acceptance.
+# Delivery provider availability
+
+Posting REST requests (ready, manual discovery retry and job resume) initialize all
+enabled NOVA modules from the module registry before WordPress `init` and
+`rest_api_init`. Disabled modules and standalone-plugin conflicts remain excluded.
+WordPress-active third-party plugins register their fields through the normal hooks;
+they do not need a hard-coded NOVA loader entry.
+
+During worker processing only, a saved custom category field with no remaining REST
+or metadata registration is omitted. Available fields are written and verified; a
+successful partial field set emits the normal `publication_succeeded` receipt. This
+also applies when a provider disappears between planning and applying a retained
+plan. No missing-field setter is called and existing storage is left untouched.
+Each skipped field is logged once per worker pass as `nova_posting_field_skipped`
+with job, site, content, delivery and operation identifiers, field name and transport;
+content and credentials are not logged. There is no automatic retry for omitted fields.
+
+Saved mapping seals, tenant/destination checks, permissions, changed registrations,
+value types and native write/readback failures remain enforced. A registered field
+whose setter is broken or whose schema changed is not treated as absent. Explicitly
+approved local metadata declarations remain writable without a plugin registration.
+Mapping editor validation stays strict, and delivery does not alter saved mappings.
+This is a temporary tolerance for registered taxonomy custom fields, not an expansion
+of the static adapter's supported roles or ACF/page-builder support.

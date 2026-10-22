@@ -34,7 +34,9 @@ class Nova_Bridge_Suite_Layout_Recipes {
     static function defaults() { return [ 'taxonomy:product_cat' => array_intersect_key( self::$record, array_flip( [ 'id', 'revision' ] ) ) ]; }
     static function delivery_record( $id, $revision ) { return self::$record['id'] === $id && self::$record['revision'] === $revision ? self::$record : new WP_Error( 'fixture_recipe_missing' ); }
     static function delivery_compile( $id, $revision, $content, $operation ) {
-        $payload = []; foreach ( self::$record['recipe']['bindings'] as $binding ) { $role = explode( '_', str_replace( 'nova_role_', '', $binding['id'] ) )[0]; $field = 'title' === $role ? 'name' : ( 'top' === $role ? 'description' : 'content_below_products' ); $value = Nova_Bridge_Suite_Recipe_Engine::get( $content, $binding['source'] ); if ( null !== $value ) { $payload[$field] = $value; } } return [ 'writer_payload' => $payload ];
+        $payload = []; foreach ( self::$record['recipe']['bindings'] as $binding ) { $role = explode( '_', str_replace( 'nova_role_', '', $binding['id'] ) )[0]; $field = 'title' === $role ? 'name' : ( 'top' === $role ? 'description' : 'content_below_products' ); $value = Nova_Bridge_Suite_Recipe_Engine::get( $content, $binding['source'] ); if ( null !== $value ) { $payload[$field] = $value; } }
+        if ( ! empty( $GLOBALS['fixture_missing_bottom'] ) ) { unset( $payload['content_below_products'] ); }
+        return [ 'writer_payload' => $payload ];
     }
 }
 class Nova_Bridge_Suite_Mapped_Content_Target {
@@ -92,4 +94,10 @@ $options = []; $client = new Static_Setup_Client( $f['connection'] ); $client->l
 require dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-posting-jobs.php';
 class Static_Query_DB { public $prefix = 'wp_'; public $last_error = ''; public $query; function prepare( $sql, ...$args ) { return [ $sql, $args ]; } function get_var( $query ) { $this->query = $query; return 19; } }
 $db = new Static_Query_DB(); $journal = new Nova_Bridge_Suite_Posting_Jobs( $db ); $j = $f['job']; $j['payload']['native_writer'] = 'static_recipe_v1'; $j['payload']['plan']['target']['target_url'] = $f['snapshot']['url']; delivery_check( $journal->uncertain_target( $j ) && strpos( $db->query[0], '$.plan.target.target_url' ) !== false && in_array( $f['snapshot']['url'], $db->query[1], true ), 'Different content IDs cannot bypass an uncertain native attempt for the same category URL.' );
+// The real compiler's omission behavior is covered by delivery-missing-fields-unit.php.
+// At the worker boundary, a reduced payload must still complete the success receipt.
+[ $f, $store, $server, $worker ] = static_fixture(); $GLOBALS['fixture_missing_bottom'] = true;
+$result = $worker->process( $f['job'] ); $GLOBALS['fixture_missing_bottom'] = false;
+delivery_check( $result['state'] === 'complete' && $insertions === 1 && ! isset( $result['payload']['plan']['payload']['content_below_products'] ), 'A compiled payload with an omitted missing field creates exactly one category.' );
+delivery_check( json_decode( $server->posts[1], true )['kind'] === 'publication_succeeded' && get_term( $result['target_id'] )->description === '<p>Separate top.</p>', 'Available fields are verified and publication succeeds despite the omitted field.' );
 echo 'PASS ' . $checks . " static category compatibility checks.\n";

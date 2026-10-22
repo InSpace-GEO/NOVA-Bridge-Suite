@@ -153,6 +153,20 @@ final class Nova_Bridge_Suite_Posting_Worker {
 
     /** Public to allow deterministic process-loss tests at journal/native boundaries. */
     public function process( array $job ) {
+        if ( ! class_exists( 'Nova_Bridge_Suite_Recipe_Term_Fields' ) ) { return $this->process_job( $job ); }
+        return Nova_Bridge_Suite_Recipe_Term_Fields::for_delivery(
+            function () use ( $job ) { return $this->process_job( $job ); },
+            static function ( array $field ) use ( $job ) {
+                error_log( 'nova_posting_field_skipped ' . json_encode( [
+                    'job_id' => $job['id'] ?? null, 'site_id' => $job['site_id'] ?? null,
+                    'content_id' => $job['content_id'] ?? null, 'version' => $job['version'] ?? null,
+                    'delivery_id' => $job['payload']['discovery']['id'] ?? null,
+                    'operation_id' => $job['operation_id'] ?? null,
+                ] + $field ) );
+            }
+        );
+    }
+    private function process_job( array $job ) {
         $this->writer = $this->initial_writer;
         if ( $this->default_dispatch && ( $job['payload']['native_writer'] ?? '' ) === 'static_recipe_v1' ) {
             if ( ( $job['payload']['configuration']['mode'] ?? '' ) !== 'static_recipe_v1' || ( isset( $job['payload']['plan'] ) && ( $job['payload']['plan']['format'] ?? '' ) !== Nova_Bridge_Suite_Static_Term_Writer::FORMAT ) ) { return $this->block( $job, 'native_writer_identity' ); }

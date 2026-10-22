@@ -5,6 +5,47 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 final class Nova_Bridge_Suite_Recipe_Term_Fields {
     private const MAX_DEPTH = 10;
     private const MAX_FIELDS = 1500;
+    private static $delivery = false;
+    private static $skipped = [];
+    private static $on_skip = null;
+
+    /** Delivery-only tolerance. Editor validation and saved mapping seals stay strict. */
+    public static function for_delivery( callable $callback, ?callable $on_skip = null ) {
+        $previous = [ self::$delivery, self::$skipped, self::$on_skip ];
+        self::$delivery = true; self::$skipped = []; self::$on_skip = $on_skip;
+        try { return $callback(); }
+        finally { [ self::$delivery, self::$skipped, self::$on_skip ] = $previous; }
+    }
+    private static function missing_on_delivery( string $taxonomy, array $declaration ): bool {
+        if ( ! self::$delivery || ! empty( $declaration['local'] ) ) { return false; }
+        $key = $declaration['key'] ?? '';
+        if ( ! is_string( $key ) || '' === $key || ! function_exists( 'get_registered_meta_keys' ) ) { return false; }
+        // A registered but incompatible/read-only/unauthorized field is not missing.
+        return ! array_key_exists( $key, get_registered_meta_keys( 'term' ) )
+            && ! array_key_exists( $key, get_registered_meta_keys( 'term', $taxonomy ) )
+            && ! array_key_exists( $key, $GLOBALS['wp_rest_additional_fields'][$taxonomy] ?? [] );
+    }
+    private static function skipped( string $taxonomy, array $declaration ): void {
+        $identity = $taxonomy . ':' . $declaration['transport'] . ':' . $declaration['key'];
+        if ( isset( self::$skipped[$identity] ) ) { return; }
+        $entry = [ 'taxonomy' => $taxonomy, 'field' => $declaration['key'], 'transport' => $declaration['transport'], 'reason' => 'field_not_registered' ];
+        self::$skipped[$identity] = $entry;
+        if ( self::$on_skip ) { try { call_user_func( self::$on_skip, $entry ); } catch ( Throwable $ignored ) { /* Diagnostics cannot change delivery. */ } }
+    }
+    /** Omit only missing fields authorized by the exact saved blueprint, including retained plans. */
+    public static function delivery_payload( array $blueprint, array $payload ): array {
+        foreach ( $blueprint['term_fields']['declarations'] ?? [] as $declaration ) {
+            $taxonomy = $blueprint['term_fields']['taxonomy'];
+            if ( ! self::missing_on_delivery( $taxonomy, $declaration ) ) { continue; }
+            $key = $declaration['rest_key']; $transport = $declaration['transport'];
+            $present = 'rest' === $transport ? array_key_exists( $key, $payload ) : array_key_exists( $key, $payload[$transport] ?? [] );
+            if ( ! $present ) { continue; }
+            if ( 'rest' === $transport ) { unset( $payload[$key] ); }
+            else { unset( $payload[$transport][$key] ); if ( ! $payload[$transport] ) { unset( $payload[$transport] ); } }
+            self::skipped( $taxonomy, $declaration );
+        }
+        return $payload;
+    }
     private const EXCLUDED = [ 'id', 'term_id', 'term_taxonomy_id', 'taxonomy', 'slug', 'parent', 'count', 'link', 'name', 'description', 'meta', 'meta_all', 'meta_all_flat', 'acf', 'display_type', 'thumbnail_id', 'order', 'menu_order', 'product_count', 'nova_content_context', 'nova_mapping', 'nova_document' ];
     private static function error( string $message, int $status = 422 ): WP_Error { return new WP_Error( 'nova_recipe_term_fields', $message, [ 'status' => $status ] ); }
     private static function escape( string $key ): string { return str_replace( [ '~', '/' ], [ '~0', '~1' ], $key ); }
@@ -263,7 +304,10 @@ final class Nova_Bridge_Suite_Recipe_Term_Fields {
         $catalog = self::registry( $bundle['taxonomy'], $bundle['reference_id'], false, $local );
         if ( $bundle['reference_id'] ) { $term = get_term( $bundle['reference_id'], $bundle['taxonomy'] ); if ( ! $term || is_wp_error( $term ) || $term->taxonomy !== $bundle['taxonomy'] ) { return self::error( 'The custom-field example category no longer exists.', 409 ); } }
         // Capture may report a getter/value failure as unavailable; compare all captured declarations, never silently accept replacements.
-        foreach ( $bundle['declarations'] as $id => $declaration ) { if ( ! isset( $catalog['declarations'][$id] ) || Nova_Bridge_Suite_Recipe_Engine::digest( $declaration ) !== Nova_Bridge_Suite_Recipe_Engine::digest( $catalog['declarations'][$id] ) ) { return self::error( 'A custom category field schema, transport or permission changed. Capture a renewed mapping.', 409 ); } }
+        foreach ( $bundle['declarations'] as $id => $declaration ) {
+            if ( self::missing_on_delivery( $bundle['taxonomy'], $declaration ) ) { continue; }
+            if ( ! isset( $catalog['declarations'][$id] ) || Nova_Bridge_Suite_Recipe_Engine::digest( $declaration ) !== Nova_Bridge_Suite_Recipe_Engine::digest( $catalog['declarations'][$id] ) ) { return self::error( 'A custom category field schema, transport or permission changed. Capture a renewed mapping.', 409 ); }
+        }
         if ( Nova_Bridge_Suite_Recipe_Engine::digest( $bundle['declarations'] ) !== $bundle['schema_hash'] || array_diff( array_keys( $bundle['values'] ), array_keys( $bundle['declarations'] ) ) || array_diff( array_keys( $bundle['declarations'] ), array_keys( $bundle['values'] ) ) ) { return self::error( 'The sealed custom-field schema or value inventory was changed.', 409 ); }
         if ( ! is_array( $bundle['original_values'] ?? null ) || array_diff( array_keys( $bundle['declarations'] ), array_keys( $bundle['original_values'] ) ) || array_diff( array_keys( $bundle['original_values'] ), array_keys( $bundle['declarations'] ) ) ) { return self::error( 'The original typed category fields are missing from the sealed blueprint.', 409 ); }
         foreach ( $bundle['original_values'] as $id => $value ) { $checked = self::typed( $value, $bundle['declarations'][$id]['schema'], false ); if ( is_wp_error( $checked ) ) { return $checked; } }
@@ -308,7 +352,9 @@ final class Nova_Bridge_Suite_Recipe_Term_Fields {
         $checked = self::validate_blueprint( $blueprint ); if ( is_wp_error( $checked ) ) { return $checked; } $bundle = $blueprint['term_fields']; $payload = [];
         foreach ( $bundle['declarations'] as $id => $declaration ) {
             $path = '/term_fields/values/' . $id; $selected = false; foreach ( $targets as $target ) { if ( $target === $path || 0 === strpos( $target, $path . '/' ) ) { $selected = true; break; } }
-            if ( ! $selected ) { continue; } $value = $bundle['original_values'][$id];
+            if ( ! $selected ) { continue; }
+            if ( self::missing_on_delivery( $bundle['taxonomy'], $declaration ) ) { self::skipped( $bundle['taxonomy'], $declaration ); continue; }
+            $value = $bundle['original_values'][$id];
             // Capture makes absent optional properties selectable; only selected paths become actual CMS values.
             foreach ( $targets as $target ) { if ( $target !== $path && 0 !== strpos( $target, $path . '/' ) ) { continue; } $replacement = Nova_Bridge_Suite_Recipe_Engine::get( $blueprint, $target, $found ); if ( ! $found ) { return self::error( 'A selected custom-field path is no longer present in the native blueprint.' ); } self::assign( $value, array_slice( Nova_Bridge_Suite_Recipe_Engine::parts( $target ), 3 ), $replacement ); }
             if ( in_array( $declaration['transport'], [ 'meta', 'meta_all' ], true ) && function_exists( 'sanitize_meta' ) ) {

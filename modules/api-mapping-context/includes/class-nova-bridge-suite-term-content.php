@@ -79,6 +79,8 @@ final class Nova_Bridge_Suite_Term_Content {
     }
     private static function preflight( array $resource, int $id, array $payload, array $context ) {
         $raw = Nova_Bridge_Suite_Recipe_Engine::json( $payload ); if ( strlen( $raw ) > self::MAX_BYTES ) { return self::error( 'The term content request exceeds 2 MiB.', 413 ); }
+        $profile = self::profile( $resource, $context ); if ( is_wp_error( $profile ) ) { return $profile; }
+        if ( $profile ) { $payload = Nova_Bridge_Suite_Recipe_Term_Fields::delivery_payload( $profile['recipe']['blueprint'], $payload ); }
         $capture = self::capture( $resource, $id, $context ); if ( is_wp_error( $capture ) ) { return $capture; } $native = [ 'term_fields' => $capture['term_fields'] ];
         foreach ( [ 'meta', 'meta_all' ] as $transport ) { if ( array_key_exists( $transport, $payload ) && ( ! is_array( $payload[$transport] ) || ( $payload[$transport] && Nova_Bridge_Suite_Recipe_Engine::list_array( $payload[$transport] ) ) ) ) { return self::error( 'Custom metadata must be a field-name object.' ); } }
         $declarations = Nova_Bridge_Suite_Recipe_Term_Fields::declarations_for_payload( $native, $payload ); if ( is_wp_error( $declarations ) ) { return $declarations; }
