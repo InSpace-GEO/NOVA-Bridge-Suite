@@ -95,13 +95,13 @@ function wake_run( $request ) {
 
 [ $store, $server, $request ] = wake_fixture();
 $answer = Nova_Bridge_Suite_Posting_Delivery::ready( $request );
-delivery_check( 202 === $answer->status && 1 === $store->state['wake_sequence'] && ! $store->row && [] === $server->calls, 'Ack persists wake before discovery, HTTP receipt or native write.' );
+delivery_check( 202 === $answer->status && 1 === $store->state['wake_sequence'] && ! $store->row && [] === $server->calls && 0 === Contract_Test_Writer::$apply, '202 accepts a wake before discovery, receipt or native write; it does not confirm publication.' );
 // Simulate PHP dying before its shutdown hook: persisted storage survives; request statics do not.
 $queued = new ReflectionProperty( Nova_Bridge_Suite_Posting_Delivery::class, 'run_queued' );
 if ( PHP_VERSION_ID < 80100 ) { $queued->setAccessible( true ); }
 $queued->setValue( null, false );
 wake_run( $request );
-delivery_check( 'complete' === $store->row['state'] && 1 === Contract_Test_Writer::$apply, 'Next server reminder recovers a lost shutdown and publishes once.' );
+delivery_check( 'complete' === $store->row['state'] && 1 === Contract_Test_Writer::$apply, 'An explicitly supplied second notification recovers a lost shutdown and publishes once.' );
 $posts = $server->posts; wake_run( $request );
 delivery_check( $posts === $server->posts && 1 === Contract_Test_Writer::$apply, 'Repeated same-content notification cannot replay a completed CMS write or produce new receipts.' );
 
@@ -110,13 +110,13 @@ $server->on_discovery = static function () use ( $request ) { Nova_Bridge_Suite_
 wake_run( $request );
 delivery_check( 2 === $store->state['wake_sequence'] && 1 === $store->state['consumed_sequence'] && 1 === $store->claims && 1 === Contract_Test_Writer::$apply, 'A concurrent wake survives discovery save; recursive runner entry cannot create a second write.' );
 wake_run( $request );
-delivery_check( $store->state['wake_sequence'] === $store->state['consumed_sequence'] && 1 === Contract_Test_Writer::$apply, 'Later reminder consumes outstanding wake without repeating publication.' );
+delivery_check( $store->state['wake_sequence'] === $store->state['consumed_sequence'] && 1 === Contract_Test_Writer::$apply, 'An explicitly supplied later notification consumes outstanding wake without repeating publication.' );
 
 [ $store, $server, $request ] = wake_fixture(); $server->lose = 'publication_succeeded';
 wake_run( $request ); $pending = $store->row['payload']['event_bytes']; $attempts = $store->row['attempts']; $due = $store->row['next_attempt'];
 delivery_check( 'event_pending' === $store->row['phase'] && 'ready' === $store->row['state'] && $due > time(), 'Lost final receipt acknowledgement retains exact bytes and local back-off.' );
 wake_run( $request );
-delivery_check( $attempts === $store->row['attempts'] && $due === $store->row['next_attempt'], 'A reminder before the retry is due does not reset back-off or consume attempts.' );
+delivery_check( $attempts === $store->row['attempts'] && $due === $store->row['next_attempt'], 'A notification before the retry is due does not reset back-off or consume attempts.' );
 $store->row['next_attempt'] = time() - 1; wake_run( $request );
 delivery_check( 'complete' === $store->row['state'] && 1 === Contract_Test_Writer::$apply && 2 === count( array_filter( $server->posts, static function ( $bytes ) use ( $pending ) { return $bytes === $pending; } ) ), 'A later wake replays the final receipt byte-for-byte without another write.' );
 
@@ -131,7 +131,7 @@ delivery_check( 'complete' === $store->row['state'] && 1 === Contract_Test_Write
 [ $store, $server, $request ] = wake_fixture( [ 'paused' => true ] ); wake_run( $request );
 delivery_check( 'accepted' === $store->row['phase'] && 0 === $store->claims && 0 === Contract_Test_Writer::$apply, 'Paused wake discovers work but never starts a new native write.' );
 Nova_Bridge_Suite_Posting_Settings::$connection['paused'] = false; wake_run( $request );
-delivery_check( 'complete' === $store->row['state'] && 1 === Contract_Test_Writer::$apply, 'Unpaused reminder processes the retained job.' );
+delivery_check( 'complete' === $store->row['state'] && 1 === Contract_Test_Writer::$apply, 'A notification after unpausing processes the retained job.' );
 
 [ $store, $server, $request ] = wake_fixture(); Contract_Test_Writer::$status = 'draft'; wake_run( $request );
 delivery_check( 'awaiting_publication' === $store->row['last_error'] && 0 === $store->row['attempts'] && 1 === count( $server->posts ), 'Stored draft remains pending without reporting publication or exhausting retries.' );
@@ -141,7 +141,7 @@ delivery_check( 'complete' === $store->row['state'] && 1 === Contract_Test_Write
 [ $store, $server, $request ] = wake_fixture(); $server->read_status = 401; wake_run( $request );
 delivery_check( 'blocked' === $store->row['state'] && $store->state['suspended'], 'Authentication failure suspends discovery and retains the blocked job.' );
 $server->read_status = 200; $claims = $store->claims; wake_run( $request );
-delivery_check( $claims === $store->claims && 'blocked' === $store->row['state'], 'Reminder cannot reset auth suspension or resume a manually blocked job.' );
+delivery_check( $claims === $store->claims && 'blocked' === $store->row['state'], 'Notification cannot reset auth suspension or resume a manually blocked job.' );
 Nova_Bridge_Suite_Posting_Delivery::retry_discovery( $request ); Nova_Bridge_Suite_Posting_Delivery::run_queued();
 delivery_check( ! $store->state['suspended'] && 'blocked' === $store->row['state'], 'Explicit access recheck invokes discovery but preserves manual block policy.' );
 Nova_Bridge_Suite_Posting_Delivery::resume( $request ); Nova_Bridge_Suite_Posting_Delivery::run_queued();
@@ -151,12 +151,12 @@ delivery_check( 'complete' === $store->row['state'] && 1 === Contract_Test_Write
 $due = $store->state['next_attempt']; $pages = $server->pages; $server->discovery_status = 200; wake_run( $request );
 delivery_check( $due > time() && $due === $store->state['next_attempt'] && $pages === $server->pages, 'Repeated wake cannot bypass discovery back-off.' );
 $store->state['next_attempt'] = time() - 1; wake_run( $request );
-delivery_check( 'complete' === $store->row['state'] && 1 === Contract_Test_Writer::$apply, 'Later due reminder recovers failed discovery.' );
+delivery_check( 'complete' === $store->row['state'] && 1 === Contract_Test_Writer::$apply, 'An explicitly supplied notification after back-off recovers failed discovery.' );
 
 [ $store, $server, $request ] = wake_fixture();
 $store->row = $GLOBALS['wake_fixture']['job']; $store->row['lease_until'] = time() + 300;
 wake_run( $request );
 delivery_check( 0 === $store->claims && 0 === Contract_Test_Writer::$apply, 'Another live lease prevents a concurrent notification from processing its job.' );
 $store->row['lease_until'] = time() - 1; wake_run( $request );
-delivery_check( 'complete' === $store->row['state'] && 1 === Contract_Test_Writer::$apply, 'A later reminder can recover an expired processing lease.' );
+delivery_check( 'complete' === $store->row['state'] && 1 === Contract_Test_Writer::$apply, 'An explicitly supplied later notification can recover an expired processing lease.' );
 echo 'PASS ' . $checks . " webhook-driven worker checks.\n";

@@ -116,7 +116,7 @@ Nova_Bridge_Suite_Posting_Delivery::ready( $request ); Nova_Bridge_Suite_Posting
 Nova_Bridge_Suite_Posting_Delivery::run_queued(); Nova_Bridge_Suite_Posting_Delivery::run_queued();
 intake_check( 3 === Nova_Bridge_Suite_Posting_Jobs::$wakes && 2 === Nova_Bridge_Suite_Posting_Worker::$runs, 'Duplicate signed wakes persist independently but coalesce into one request-local batch.' );
 Nova_Bridge_Suite_Posting_Delivery::ready( $request ); Nova_Bridge_Suite_Posting_Delivery::run_queued();
-intake_check( 3 === Nova_Bridge_Suite_Posting_Worker::$runs, 'A later reminder with the same content and version runs another batch.' );
+intake_check( 3 === Nova_Bridge_Suite_Posting_Worker::$runs, 'An explicitly supplied duplicate notification with the same content and version runs another batch.' );
 Nova_Bridge_Suite_Posting_Jobs::$fail_wake = true;
 intake_check( is_wp_error( Nova_Bridge_Suite_Posting_Delivery::ready( $request ) ), 'Failed durable wake storage is not acknowledged.' );
 Nova_Bridge_Suite_Posting_Delivery::run_queued();

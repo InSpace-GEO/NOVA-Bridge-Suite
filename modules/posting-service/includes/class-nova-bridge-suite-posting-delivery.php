@@ -37,7 +37,7 @@ final class Nova_Bridge_Suite_Posting_Delivery {
         } finally { $store->unlock( 'webhook-bootstrap' ); }
     }
 
-    /** Coalesce wakes within this request; the service owns durable reminders between requests. */
+    /** Coalesce wakes within this request; later work needs a new wake or explicit catch-up. */
     private static function queue_run(): void { self::$run_queued = true; }
 
     public static function run_queued(): void {
@@ -47,7 +47,7 @@ final class Nova_Bridge_Suite_Posting_Delivery {
         $previous = ignore_user_abort( true );
         try {
             // WordPress has emitted its response before shutdown. Finish it before slow CMS work
-            // where supported; a host that cannot flush may time out and receive another reminder.
+            // where supported. A successful response does not guarantee the batch will finish.
             if ( function_exists( 'fastcgi_finish_request' ) ) { fastcgi_finish_request(); }
             elseif ( function_exists( 'litespeed_finish_request' ) ) { litespeed_finish_request(); }
             self::drain();
