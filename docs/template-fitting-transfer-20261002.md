@@ -10,7 +10,7 @@ We are not asking for changes to NOVA generation or nova-db. The colleague's exp
 2. Synchronize the description to posting-service. Keep the WordPress write addresses and update/clone routing in an approved local profile associated with the remote template revision.
 3. NOVA produces its normal source content. Posting-service selects the template and adapts the content to its fields and rules.
 4. The plugin pulls a delivery containing the final fitted values, their stable destination identities and the selected template revision. It resolves those identities to the approved native fields and executes the write.
-5. The plugin reports complete receipt and, separately, verified native publication. Recovery uses the retained delivery and operation evidence rather than repeating generation or creating another page.
+5. The plugin reports complete receipt and, separately, verified native application through the existing `publication_succeeded` event. This initial scope includes drafts and scheduled posts, so success does not attest public visibility. Recovery uses the retained delivery and operation evidence rather than repeating generation or creating another page.
 
 The mapping editor should start with the destination: “this is a short button label” or “this is rich text.” Clients should not have to select a stock source such as `top_content` for every destination. Source selection may be an explicit preference if the adaptation contract supports it; it is not the central mapping requirement.
 

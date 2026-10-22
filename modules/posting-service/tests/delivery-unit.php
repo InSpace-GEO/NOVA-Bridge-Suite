@@ -35,14 +35,14 @@ class Contract_Test_Store {
     public function uncertain_target( $job ) { return $this->uncertain; }
 }
 class Contract_Test_Writer {
-    public static $apply = 0; public static $recover = 0; public static $finish = 0; public static $crash = false; public static $plan_error = false; public static $apply_error = null; public static $recover_value = null; public static $status = 'publish'; public static $context;
-    public static function reset() { self::$apply = self::$recover = self::$finish = 0; self::$crash = self::$plan_error = false; self::$apply_error = self::$recover_value = null; self::$status = 'publish'; }
+    public static $apply = 0; public static $recover = 0; public static $finish = 0; public static $crash = false; public static $plan_error = false; public static $apply_error = null; public static $verify_error = null; public static $recover_value = null; public static $status = 'publish'; public static $context;
+    public static function reset() { self::$apply = self::$recover = self::$finish = 0; self::$crash = self::$plan_error = false; self::$apply_error = self::$verify_error = self::$recover_value = null; self::$status = 'publish'; }
     public static function plan( $snapshot, $config, $context ) { self::$context = $context; return self::$plan_error ? new WP_Error( 'fixture_plan_failed' ) : [ 'context' => $context ]; }
     public static function result( $plan ) { return [ 'post_id' => $plan['context']['target_post_id'], 'cms_post_status' => self::$status ]; }
     public static function apply( $plan, $operation ) { ++self::$apply; if ( self::$crash ) { throw new RuntimeException( 'Process lost after commit' ); } return self::$apply_error ?? self::result( $plan ); }
     public static function recover( $plan, $operation ) { ++self::$recover; return self::$recover_value ?? self::result( $plan ); }
     public static function finish( $plan, $result ) { ++self::$finish; return $result; }
-    public static function verify( $plan, $result ) { return self::result( $plan ); }
+    public static function verify( $plan, $result ) { return self::$verify_error ?? self::result( $plan ); }
 }
 class Contract_Test_Server {
     public $fixture; public $calls = []; public $posts = []; public $accepted = []; public $lose = ''; public $throw_after = ''; public $read_status = 200; public $post_status = 0; public $raw; public $etag; public $attempt; public $wrong_ack = false;
@@ -134,19 +134,21 @@ $result = $worker->process( $job ); Contract_Test_Writer::$crash = false; $serve
 $result = $worker->process( delivery_resume( $result ) );
 delivery_check( 'blocked' === $result['state'] && 1 === Contract_Test_Writer::$apply && 0 === Contract_Test_Writer::$recover, 'Changed attempt cannot replay uncertain native write.' );
 
-foreach ( [ 'draft', 'future', 'pending', 'private' ] as $waiting_status ) {
-    [ $job, $store, $server, $worker ] = delivery_fixture(); Contract_Test_Writer::$status = $waiting_status;
-    $job['attempts'] = 19;
+foreach ( [ 'draft', 'future', 'pending', 'private', 'publish' ] as $saved_status ) {
+    [ $job, $store, $server, $worker ] = delivery_fixture(); Contract_Test_Writer::$status = $saved_status;
     $result = $worker->process( $job );
-    delivery_check( 'awaiting_publication' === $result['last_error'] && 'committed' === $result['phase'] && count( $server->posts ) === 1, $waiting_status . ' produces receipt only and awaits actual publication.' );
-    delivery_check( 0 === $result['attempts'], 'Successful publication waiting resets the consecutive retry budget.' );
-    $server->read_status = 503; $next = delivery_resume( $result ); $next['attempts'] = 1;
-    $result = $worker->process( $next );
-    delivery_check( 'ready' === $result['state'] && 'committed' === $result['phase'], 'One transient failure after long publication waiting remains retryable.' );
-    $server->read_status = 200;
-    Contract_Test_Writer::$status = 'publish'; $result = $worker->process( delivery_resume( $result ) );
-    delivery_check( 'complete' === $result['state'] && 1 === Contract_Test_Writer::$apply && count( $server->posts ) === 2, 'Later publication is verified and reported without another content write.' );
+    $events = array_map( static function ( $bytes ) { return json_decode( $bytes, true ); }, $server->posts );
+    delivery_check( 'complete' === $result['state'] && 'committed' === $result['phase'] && 1 === Contract_Test_Writer::$apply, $saved_status . ' completes after one verified native save.' );
+    delivery_check( $saved_status === $result['payload']['result']['cms_post_status'] && [ 'received_complete', 'publication_succeeded' ] === array_column( $events, 'kind' ), 'Success attests application while retaining the actual native status.' );
+    delivery_check( ! empty( $events[1]['published_at'] ) && false !== strpos( $events[1]['publication_ref'], ';operation:' . $job['operation_id'] ), 'Existing success contract retains the verification timestamp and native operation reference.' );
 }
+[ $job, $store, $server, $worker ] = delivery_fixture(); Contract_Test_Writer::$status = 'draft'; Contract_Test_Writer::$verify_error = new WP_Error( 'fixture_verification_failed' );
+$result = $worker->process( $job );
+delivery_check( 'ready' === $result['state'] && 'committed' === $result['phase'] && 1 === count( $server->posts ) && 1 === Contract_Test_Writer::$apply, 'A saved draft cannot report success when native verification fails.' );
+// Model a retained job from the previous publication-waiting behavior.
+Contract_Test_Writer::$verify_error = null; $result['last_error'] = 'awaiting_publication'; $result['next_attempt'] = time() - 1;
+$result = $worker->process( delivery_resume( $result ) );
+delivery_check( 'complete' === $result['state'] && 1 === Contract_Test_Writer::$apply && 2 === count( $server->posts ) && 'draft' === $result['payload']['result']['cms_post_status'], 'Explicit catch-up verifies an old awaiting-publication draft without repeating its native save.' );
 
 [ $job, $store, $server, $worker ] = delivery_fixture(); Contract_Test_Writer::$plan_error = true;
 $result = $worker->process( $job );

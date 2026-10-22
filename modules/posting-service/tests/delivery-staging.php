@@ -4,7 +4,7 @@ if ( ! defined( 'WP_CLI' ) || ! WP_CLI || '1' !== getenv( 'NOVA_DELIVERY_STAGING
 require_once __DIR__ . '/mapped-writer-fixture.php';
 require_once __DIR__ . '/contract-fixture.php';
 final class Nova_Delivery_Staging_Writer {
-    public static $apply_calls = 0; public static $recover_calls = 0; public static $crash_after_commit = false;
+    public static $apply_calls = 0; public static $recover_calls = 0; public static $crash_after_commit = false; public static $before_verify = null;
     public static function plan( $content, $config, $context ) { return Nova_Bridge_Suite_Mapped_Writer::plan( $content, $config, $context ); }
     public static function apply( $plan, $operation ) {
         ++self::$apply_calls; $result = Nova_Bridge_Suite_Mapped_Writer::apply( $plan, $operation );
@@ -13,7 +13,10 @@ final class Nova_Delivery_Staging_Writer {
     }
     public static function recover( $plan, $operation ) { ++self::$recover_calls; return Nova_Bridge_Suite_Mapped_Writer::recover( $plan, $operation ); }
     public static function finish( $plan, $result ) { return Nova_Bridge_Suite_Mapped_Writer::finish( $plan, $result ); }
-    public static function verify( $plan, $result ) { return Nova_Bridge_Suite_Mapped_Writer::verify( $plan, $result ); }
+    public static function verify( $plan, $result ) {
+        if ( self::$before_verify ) { $callback = self::$before_verify; self::$before_verify = null; $callback(); }
+        return Nova_Bridge_Suite_Mapped_Writer::verify( $plan, $result );
+    }
 }
 global $wpdb;
 $original_user = get_current_user_id(); $temporary_post = 0; $tables = []; $database = null; $http_filter = null; $failure = null; $checks = 0;
@@ -107,13 +110,13 @@ try {
     $owned = $jobs->save($owned,[]); $assert( !is_wp_error($owned), 'Same-second CAS save retains ownership.' );
     $result = $worker->process($owned); $state_is($result,'ready');
     $assert( 'event_pending' === $result['phase'] && 0 === Nova_Delivery_Staging_Writer::$apply_calls, 'Lost received acknowledgement retains bytes before any native write.' );
-    $received_bytes = $result['payload']['event_bytes']; $retry($result['id']); $result = $worker->process($claim()); $state_is($result,'ready');
-    $assert( 'committed' === $result['phase'] && 'awaiting_publication' === $result['last_error'] && 1 === Nova_Delivery_Staging_Writer::$apply_calls, 'Real native draft waits for actual publication.' );
-    $assert( [$received_bytes,$received_bytes] === $sent[$id1]['received_complete'] && empty($sent[$id1]['publication_succeeded']), 'Received event repeats exact bytes while draft never reports published.' );
+    $received_bytes = $result['payload']['event_bytes']; $retry($result['id']); $result = $worker->process($claim()); $state_is($result,'complete');
+    $assert( 'committed' === $result['phase'] && 'draft' === $result['payload']['result']['cms_post_status'] && 1 === Nova_Delivery_Staging_Writer::$apply_calls, 'Verified real native draft completes without waiting for public visibility.' );
+    $assert( [$received_bytes,$received_bytes] === $sent[$id1]['received_complete'] && 1 === count($sent[$id1]['publication_succeeded']), 'Received event repeats exact bytes before one successful-application receipt.' );
     $assert( 'First contracted fixture heading' === get_post_field('post_title',$temporary_post) && 'draft' === get_post_status($temporary_post), 'Exact content reached own native draft.' ); $preserved();
     $published = wp_update_post( [ 'ID'=>$temporary_post, 'post_status'=>'publish' ], true ); $assert( !is_wp_error($published), 'Own draft manually published through WordPress.' );
-    $retry($result['id']); $result = $worker->process($claim()); $state_is($result,'complete');
-    $assert( 1 === Nova_Delivery_Staging_Writer::$apply_calls && 1 === count($sent[$id1]['publication_succeeded']), 'Manual publication verified without repeating content write.' );
+    $discover();
+    $assert( null === $jobs->claim($connection['site_id']) && 1 === Nova_Delivery_Staging_Writer::$apply_calls && 1 === count($sent[$id1]['publication_succeeded']), 'Manual publication and repeated discovery do not re-open the completed draft delivery.' );
     $assert( 'pending' === $result['payload']['events']['publication_succeeded']['accepted']['status'], '202 remains backend-pending evidence.' );
 
     $second = $make(2,'Published fixture heading after draft'); $id2 = $add($second); $lost[$id2]['publication_succeeded'] = true; $discover();
@@ -136,10 +139,9 @@ try {
     $assert( $before_apply === Nova_Delivery_Staging_Writer::$apply_calls && empty($sent[$tamper_id]) && $before_post === get_post($temporary_post)->to_array(), 'Changed raw bytes produce no event or native mutation.' );
 
     $edited = $make(5,'Draft whose content must not be silently re-certified','draft'); $edited_id = $add($edited); $discover();
-    $result = $worker->process($claim()); $state_is($result,'ready'); $assert( 'awaiting_publication' === $result['last_error'], 'Second own draft awaits publication.' );
-    wp_update_post( [ 'ID'=>$temporary_post, 'post_status'=>'publish', 'post_content'=>'Fixture human edit after native commit' ], true );
-    $before_apply = Nova_Delivery_Staging_Writer::$apply_calls; $retry($result['id']); $result = $worker->process($claim());
-    $assert( is_array($result) && 'nova_writer_recovery_drift' === $result['last_error'] && empty($sent[$edited_id]['publication_succeeded']) && $before_apply === Nova_Delivery_Staging_Writer::$apply_calls && 'Fixture human edit after native commit' === get_post_field('post_content',$temporary_post), 'Publication with changed content is not certified or overwritten.' );
+    Nova_Delivery_Staging_Writer::$before_verify = static function () use ( $temporary_post ) { wp_update_post( [ 'ID'=>$temporary_post, 'post_status'=>'publish', 'post_content'=>'Fixture human edit after native commit' ], true ); };
+    $before_apply = Nova_Delivery_Staging_Writer::$apply_calls; $result = $worker->process($claim()); $state_is($result,'ready');
+    $assert( 'nova_writer_recovery_drift' === $result['last_error'] && empty($sent[$edited_id]['publication_succeeded']) && $before_apply + 1 === Nova_Delivery_Staging_Writer::$apply_calls && 'Fixture human edit after native commit' === get_post_field('post_content',$temporary_post), 'Content changed before native verification is not certified or overwritten.' );
     // Prevent this intentionally unresolved fixture from competing in the lease-only check.
     $database->query( $database->prepare( "UPDATE {$jobs_table} SET state='blocked' WHERE id=%d", $result['id'] ) );
     $lease = $make(6,'Lease-only fixture'); $add($lease); $discover(); $old = $claim();

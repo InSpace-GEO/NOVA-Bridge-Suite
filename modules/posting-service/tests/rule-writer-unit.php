@@ -178,11 +178,9 @@ function worker_fixture( $p, $bound = true, $remote = false ) {
 }
 reset_native(); [ $fixture, $store, $client ] = worker_fixture( $p ); $worker = new Nova_Bridge_Suite_Posting_Worker( $fixture['connection'], $store, $client );
 $created_job = result( $worker->process( $fixture['job'] ) );
-check( $created_job['phase'] === 'committed' && $created_job['last_error'] === 'awaiting_publication' && $inserts === 1 && $native_saves === 1 && array_column( $client->events, 'kind' ) === [ 'received_complete' ], 'Explicit local binding creates one draft without reporting publication.' );
+check( $created_job['state'] === 'complete' && $created_job['phase'] === 'committed' && $inserts === 1 && $native_saves === 1 && array_column( $client->events, 'kind' ) === [ 'received_complete', 'publication_succeeded' ], 'Explicit local binding creates and verifies one draft before reporting successful application.' );
 check( $created_job['payload']['native_writer'] === 'local_rules' && $created_job['target_id'] === 10 && $store->locks === [], 'Default dispatch retains writer identity and releases URL-scoped locks.' );
-$posts[10]->post_status = 'publish'; $created_job['state'] = 'running';
-$published = result( $worker->process( $created_job ) );
-check( $published['state'] === 'complete' && $native_saves === 1 && array_column( $client->events, 'kind' ) === [ 'received_complete', 'publication_succeeded' ], 'Genuine native publication completes the original event workflow without another save.' );
+check( $posts[10]->post_status === 'draft' && $created_job['payload']['result']['cms_post_status'] === 'draft', 'Success receipt preserves the requested draft status and does not claim public visibility.' );
 
 reset_native(); [ $fixture, $store, $client ] = worker_fixture( $p, false ); $worker = new Nova_Bridge_Suite_Posting_Worker( $fixture['connection'], $store, $client ); result( $worker->process( $fixture['job'] ) );
 check( $inserts === 0 && end( $client->events )['kind'] === 'publication_failed', 'An unmapped site without explicit local opt-in cannot create a page.' );
@@ -200,7 +198,7 @@ $uncertain = result( $worker->process( $fixture['job'] ) ); check( $uncertain['p
 $connection = $fixture['connection']; $connection['paused'] = true; $worker = new Nova_Bridge_Suite_Posting_Worker( $connection, $store, $client ); $uncertain['state'] = 'running'; $paused_job = result( $worker->process( $uncertain ) );
 check( $paused_job['last_error'] === 'paused' && $inserts === 1 && $native_saves === 0, 'Paused recovery can inspect a reservation but does not perform its unfinished native save.' );
 $worker = new Nova_Bridge_Suite_Posting_Worker( $fixture['connection'], $store, $client ); $paused_job['state'] = 'running'; $resumed = result( $worker->process( $paused_job ) );
-check( $resumed['phase'] === 'committed' && $resumed['last_error'] === 'awaiting_publication' && $inserts === 1 && $native_saves === 1, 'Unpaused recovery saves the original reserved page once.' );
+check( $resumed['state'] === 'complete' && $resumed['phase'] === 'committed' && $inserts === 1 && $native_saves === 1 && array_column( $client->events, 'kind' ) === [ 'received_complete', 'publication_succeeded' ], 'Unpaused recovery saves and verifies the original reserved page once.' );
 
 reset_native(); [ $fixture, $store, $client ] = worker_fixture( $p ); $s = $fixture['snapshot']; $s['configuration'] = null; $s['content']['content'] = null; $client->fixture = $fixture = nova_contract_fixture( [ 'content' => $s ] ); $worker = new Nova_Bridge_Suite_Posting_Worker( $fixture['connection'], $store, $client );
 $failed_job = result( $worker->process( $fixture['job'] ) );

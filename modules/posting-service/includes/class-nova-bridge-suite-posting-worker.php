@@ -252,10 +252,10 @@ final class Nova_Bridge_Suite_Posting_Worker {
             $verified = call_user_func( [ $this->writer, 'verify' ], $job['payload']['plan'], $result );
             if ( is_wp_error( $verified ) ) { return $this->retry( $job, $verified->get_error_code() ); }
             if ( ! is_array( $verified ) || (int) ( $verified[$native_id_key] ?? 0 ) !== (int) $result[$native_id_key] || ! in_array( $verified['cms_post_status'] ?? null, [ 'draft', 'publish', 'future', 'private', 'pending' ], true ) ) { return $this->block( $job, 'verification_result_invalid' ); }
-            if ( 'publish' !== $verified['cms_post_status'] ) {
-                // Stored drafts/scheduled posts stay waiting_in_draft in NOVA until actual publication.
-                return $this->save_payload( $job, [ 'result' => $verified ], 'committed', [ 'state' => 'ready', 'next_attempt' => time() + 300, 'attempts' => 0, 'last_error' => 'awaiting_publication' ] );
-            }
+            // In the initial webhook scope, success attests the verified native save,
+            // including a draft or scheduled post. It does not attest public visibility.
+            $job = $this->save_payload( $job, [ 'result' => $verified ], 'committed' );
+            if ( is_wp_error( $job ) ) { return $job; }
             $publication_ref = $static_term ? $verified['publication_ref'] : 'wordpress:post:' . $verified['post_id'] . ';operation:' . $job['operation_id'];
             return $this->queue_event( $job, $snapshot, 'publication_succeeded', [ 'published_at' => Nova_Bridge_Suite_Posting_Protocol::now(), 'publication_ref' => $publication_ref ], 'complete' );
         } catch ( Throwable $error ) {

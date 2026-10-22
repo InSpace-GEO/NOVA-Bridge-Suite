@@ -134,9 +134,17 @@ Nova_Bridge_Suite_Posting_Settings::$connection['paused'] = false; wake_run( $re
 delivery_check( 'complete' === $store->row['state'] && 1 === Contract_Test_Writer::$apply, 'A notification after unpausing processes the retained job.' );
 
 [ $store, $server, $request ] = wake_fixture(); Contract_Test_Writer::$status = 'draft'; wake_run( $request );
-delivery_check( 'awaiting_publication' === $store->row['last_error'] && 0 === $store->row['attempts'] && 1 === count( $server->posts ), 'Stored draft remains pending without reporting publication or exhausting retries.' );
-Nova_Bridge_Suite_Posting_Settings::$connection['paused'] = true; Contract_Test_Writer::$status = 'publish'; $store->row['next_attempt'] = time() - 1; wake_run( $request );
-delivery_check( 'complete' === $store->row['state'] && 1 === Contract_Test_Writer::$apply && 2 === count( $server->posts ), 'Later verified publication can send its receipt while new writes are paused.' );
+delivery_check( 'complete' === $store->row['state'] && 'draft' === $store->row['payload']['result']['cms_post_status'] && 2 === count( $server->posts ), 'A verified draft immediately completes through the existing success receipt.' );
+$posts = $server->posts; Contract_Test_Writer::$status = 'publish'; wake_run( $request );
+delivery_check( $posts === $server->posts && 1 === Contract_Test_Writer::$apply, 'A later status change and duplicate wake cannot repeat a completed draft save or receipt.' );
+
+[ $store, $server, $request ] = wake_fixture(); Contract_Test_Writer::$status = 'future'; Contract_Test_Writer::$verify_error = new WP_Error( 'fixture_verification_failed' );
+Nova_Bridge_Suite_Posting_Delivery::initialize(); Nova_Bridge_Suite_Posting_Delivery::run_queued();
+delivery_check( 'committed' === $store->row['phase'] && 1 === count( $server->posts ), 'Unverified scheduled save retains recovery evidence without a success receipt.' );
+Contract_Test_Writer::$verify_error = null; $store->row['last_error'] = 'awaiting_publication'; $store->row['next_attempt'] = time() - 1;
+Nova_Bridge_Suite_Posting_Settings::$connection['token'] = 'rotated-synthetic-test-token'; Nova_Bridge_Suite_Posting_Settings::$connection['paused'] = true;
+Nova_Bridge_Suite_Posting_Delivery::initialize(); Nova_Bridge_Suite_Posting_Delivery::run_queued();
+delivery_check( 'complete' === $store->row['state'] && 1 === Contract_Test_Writer::$apply && 2 === count( $server->posts ) && 'future' === $store->row['payload']['result']['cms_post_status'], 'Explicit reconnect after back-off completes a legacy awaiting-publication job while new writes are paused.' );
 
 [ $store, $server, $request ] = wake_fixture(); $server->read_status = 401; wake_run( $request );
 delivery_check( 'blocked' === $store->row['state'] && $store->state['suspended'], 'Authentication failure suspends discovery and retains the blocked job.' );

@@ -10,7 +10,7 @@ The checked-in schema subset is `modules/posting-service/contracts/delivery-v1.j
 - `GET /v1/sites/{site_id}/deliveries/{delivery_id}` retrieves the complete immutable snapshot. The plugin hashes its exact raw bytes, verifies the strong ETag and schema/identity, and retains the current `X-Nova-Attempt-Id`. `source_sha256` identifies the source separately. Conditional 304 snapshot reuse is not the current worker path.
 - The frozen configuration must match an approved local profile for the exact site UUID, template UUID and integer revision. That profile retains native addresses, update/clone routing, protection and human instructions. The worker does not fetch historical pins, assignments or URL-binding revisions.
 - A durable `received_complete` connector event is prepared before posting to `/deliveries/{delivery_id}/events`. Native planning, mutation and verification use persisted state, target locks and operation markers. An uncertain commit is reconciled before another write. Explicit clone retries must not create duplicate pages.
-- A verified native `publish` state permits a separate `publication_succeeded` event. Draft, pending, private and scheduled posts remain waiting for actual publication. Proven failures before native commit can report `publication_failed`. Event IDs and exact prepared bytes survive lost acknowledgements. HTTP **202** with status **pending** confirms acceptance, not backend application.
+- A verified native save permits a separate `publication_succeeded` event, including draft, pending, private and scheduled posts. In this initial scope, the existing `published_at` field records verification time; the receipt does not prove public visibility. Proven failures before native commit can report `publication_failed`. Event IDs and exact prepared bytes survive lost acknowledgements. HTTP **202** with status **pending** confirms acceptance, not backend application.
 
 Mapping setup uses `/templates`, `/template-defaults` and `/pages/{url_id}/setting`; replacements use the reviewed revision in `If-Match`. Its twelve stock source names are available for offline preparation. Human rules remain editable locally because the API has no instruction property. Custom generated repeats are unsupported; existing native scalar leaves remain subject to writer checks. These limits are explicit test boundaries, not claims that generation obeys local notes.
 
@@ -30,6 +30,8 @@ php modules/posting-service/tests/discovery-unit.php
 php modules/posting-service/tests/posting-jobs-unit.php
 php modules/posting-service/tests/delivery-unit.php
 php modules/posting-service/tests/delivery-intake-unit.php
+php modules/posting-service/tests/webhook-worker-unit.php
+php modules/posting-service/tests/mapped-schedule-unit.php
 php modules/posting-service/tests/mapped-writer-unit.php
 php modules/posting-service/tests/mapped-writer-contract-unit.php
 php modules/posting-service/tests/posting-settings-unit.php
@@ -62,7 +64,7 @@ wp --path=/path/to/staging-wordpress --skip-plugins=installed-nova-slug eval-fil
 The loader is separately prepared test infrastructure, not a shipped plugin entry point. It must dispatch `mapping-drafts-staging.php` from `modules/api-mapping-context/tests/`; the other listed files are under `modules/posting-service/tests/`. A missing explicit opt-in should stop the guarded canary before fixtures are created.
 
 - **Mapping sync:** real inventory, REST, draft/options persistence and writer approval; current template/page-setting/defaults requests through the real HTTP client; nonce/412 rejection; exact local-profile lookup and preservation of human rules. No generated content is written.
-- **Delivery:** real temporary native pages and journal tables with simulated delivery/event HTTP, draft-to-publication handling, lost acknowledgements and interrupted execution. This exercises the worker's seams, not NOVA's processing of accepted events.
+- **Delivery:** real temporary native pages and journal tables with simulated delivery/event HTTP, verified draft-save receipts, lost acknowledgements and interrupted execution. This exercises the worker's seams, not NOVA's processing of accepted events.
 - **Native/ACF and Elementor writers:** real supported scalar targets, protection, explicit clones, readback, drift and commit recovery. Provider/version checks remain enforced. Existing rows are not structurally generated.
 - **Taxonomy counts:** real core count behavior; simulated publication transitions are rolled back. **Mapping drafts:** local storage, conflicts, reconciliation and no publication.
 
@@ -70,7 +72,7 @@ Each canary owns and cleans its temporary fixtures. Verify final cleanup output 
 
 ## Controlled test with real NOVA
 
-Real-service acceptance needs an accessible deployment compatible with the pinned contract, a provisioned site UUID/token, a webhook secret if notifications are tested, trusted NOVA URL IDs and an approved template revision. Start with one known staging page and no unrelated queued work. Verify template selection, discovery, the exact snapshot and attempt, `received_complete`, native content and eventual publication. Capture the exact connector event IDs and obtain backend evidence that those events were applied.
+Real-service acceptance needs an accessible deployment compatible with the pinned contract, a provisioned site UUID/token, a webhook secret if notifications are tested, trusted NOVA URL IDs and an approved template revision. Start with one known staging page and no unrelated queued work. Verify template selection, discovery, the exact snapshot and attempt, `received_complete`, native content/status and the successful-application receipt. Capture the exact connector event IDs and obtain backend evidence that those events were applied.
 
 Then exercise lost event acknowledgement, duplicate discovery, pause/recovery, changed-attempt handling and a controlled explicit clone. Compare HTTP method/path/status and safe identity/state traces; keep credentials out of logs. The expected event response is 202/pending, including replay acceptance—not the old 201/200 publication-result receipt contract.
 

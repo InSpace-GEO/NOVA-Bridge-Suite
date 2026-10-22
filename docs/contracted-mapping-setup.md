@@ -70,7 +70,7 @@ The current delivery snapshot supplies its configuration UUID, integer revision 
 
 The selected native page, update/clone operation, publication choice and protected targets come from that retained local profile. An update delivery must match the approved page's current permalink, including the query part of a draft/plain permalink. Clone routing requires the same WordPress origin and the writer's additional checks. A template selection on NOVA is not permission to target another native page.
 
-Current delivery intake, snapshot retrieval and connector-event reporting are covered by the worker and protocol tests. HTTP 202 acceptance of an event does not prove backend result application. A native draft or scheduled post is not reported as successfully published before actual publication. Generic REST context injection remains disabled; optional predefined mappings for the plugin's own CPTs are a separate concern.
+Current delivery intake, snapshot retrieval and connector-event reporting are covered by the worker and protocol tests. HTTP 202 acceptance of an event does not prove backend result application. In the initial webhook scope, `publication_succeeded` attests a verified native save, including draft or scheduled posts, with `published_at` recording verification time. It does not attest public visibility. Generic REST context injection remains disabled; optional predefined mappings for the plugin's own CPTs are a separate concern.
 
 The native writer supports only its verified target/provider combinations. Unsupported image/list destinations, terms, structural drift or unverified provider versions stop approval or delivery. Mapping an enum source does not certify that every native field can consume that value.
 

@@ -12,8 +12,14 @@ final class Nova_Bridge_Suite_Mapped_Content_Connector {
     public static function bootstrap(): void {
         add_action( 'rest_api_init', [ __CLASS__, 'routes' ], 1008 );
         add_action( 'admin_init', [ __CLASS__, 'register' ] );
+        add_filter( 'cron_schedules', [ __CLASS__, 'schedules' ] );
         add_action( 'init', [ __CLASS__, 'schedule' ] );
         add_action( self::CRON_HOOK, [ __CLASS__, 'scheduled_poll' ] );
+    }
+    /** Own the recurrence used by this separate opt-in connector, not the delivery worker. */
+    public static function schedules( array $schedules ): array {
+        $schedules['nova_posting_minute'] = [ 'interval' => 60, 'display' => 'NOVA mapped content every minute' ];
+        return $schedules;
     }
     public static function connection(): array {
         $saved = get_option( self::OPTION, [] ); $saved = is_array( $saved ) ? $saved : [];
