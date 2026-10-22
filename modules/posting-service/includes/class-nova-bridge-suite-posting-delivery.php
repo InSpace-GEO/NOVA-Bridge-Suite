@@ -9,6 +9,8 @@ final class Nova_Bridge_Suite_Posting_Delivery {
     public const SCHEMA_OPTION = 'nova_bridge_posting_schema_version';
     public const SCHEMA_VERSION = 3;
     public const BOOTSTRAP_OPTION = 'nova_bridge_posting_webhook_bootstrap';
+    public const LAST_RUN_OPTION = 'nova_bridge_posting_last_run';
+    private const SAFE_ERRORS = [ 'authentication_required', 'site_ineligible', 'remote_identity_conflict', 'native_commit_reconciliation', 'worker_interrupted', 'target_busy', 'journal_unavailable', 'paused', 'retry_after_out_of_bounds', 'verification_result_invalid', 'mutation_result_unverified', 'other_mutation_unreconciled', 'journal_phase_invalid', 'journal_size', 'nova_posting_transport', 'nova_posting_storage', 'nova_posting_journal', 'nova_posting_journal_size', 'nova_writer_recovery_drift', 'discovery_site', 'discovery_storage', 'discovery_unavailable', 'site_disabled', 'runner_exception' ];
     private static $schema_attempted = null;
     private static $run_queued = false;
     private static $running = false;
@@ -45,16 +47,73 @@ final class Nova_Bridge_Suite_Posting_Delivery {
         self::$run_queued = false;
         self::$running = true;
         $previous = ignore_user_abort( true );
+        $started = microtime( true );
+        $record = [ 'run_id' => uniqid( '', true ), 'site_id' => null, 'started_at' => time(), 'duration_ms' => null, 'state' => 'running', 'completed' => false, 'successful' => null, 'response_completion_method' => 'unsupported', 'response_completion_returned' => false, 'response_completion_result' => null, 'response_completion_elapsed_ms' => null, 'jobs_claimed' => 0, 'last_job' => null, 'last_error' => '', 'discovery_http_status' => null ];
+        try { $record['site_id'] = self::safe_uuid( Nova_Bridge_Suite_Posting_Settings::connection()['site_id'] ?? null ); } catch ( Throwable $ignored ) { /* Correlation is best effort. */ }
+        self::save_run( $record, true );
         try {
             // WordPress has emitted its response before shutdown. Finish it before slow CMS work
             // where supported. A successful response does not guarantee the batch will finish.
-            if ( function_exists( 'fastcgi_finish_request' ) ) { fastcgi_finish_request(); }
-            elseif ( function_exists( 'litespeed_finish_request' ) ) { litespeed_finish_request(); }
-            self::drain();
+            if ( function_exists( 'fastcgi_finish_request' ) ) { $record['response_completion_method'] = 'fastcgi'; }
+            elseif ( function_exists( 'litespeed_finish_request' ) ) { $record['response_completion_method'] = 'litespeed'; }
+            self::save_run( $record );
+            if ( 'unsupported' !== $record['response_completion_method'] ) {
+                $finished = 'fastcgi' === $record['response_completion_method'] ? fastcgi_finish_request() : litespeed_finish_request();
+                $record['response_completion_returned'] = true;
+                $record['response_completion_result'] = is_bool( $finished ) ? $finished : null;
+                $record['response_completion_elapsed_ms'] = (int) round( ( microtime( true ) - $started ) * 1000 );
+                self::save_run( $record );
+            }
+            self::drain( static function ( array $summary ) use ( &$record ) {
+                if ( isset( $summary['jobs_claimed'] ) ) { $record['jobs_claimed'] = max( 0, min( 3, (int) $summary['jobs_claimed'] ) ); }
+                if ( isset( $summary['last_job'] ) && is_array( $summary['last_job'] ) ) { $record['last_job'] = self::safe_job( $summary['last_job'] ); }
+                if ( ! empty( $summary['last_error'] ) ) { $record['last_error'] = self::safe_error( $summary['last_error'] ); }
+                if ( isset( $summary['discovery_http_status'] ) && $summary['discovery_http_status'] >= 100 && $summary['discovery_http_status'] <= 599 ) { $record['discovery_http_status'] = (int) $summary['discovery_http_status']; }
+                self::save_run( $record );
+            } );
+            $record['state'] = 'finished'; $record['completed'] = true; $record['successful'] = '' === $record['last_error'];
+        } catch ( Throwable $error ) {
+            $record['state'] = 'interrupted'; $record['successful'] = false; $record['last_error'] = 'runner_exception';
+            throw $error;
         } finally {
+            $record['duration_ms'] = (int) round( ( microtime( true ) - $started ) * 1000 );
+            self::save_run( $record );
             ignore_user_abort( (bool) $previous );
             self::$running = false;
         }
+    }
+
+    /** Best-effort snapshot: avoid replacing a newer observed run; option reads/writes are not atomic. */
+    private static function save_run( array $record, bool $start = false ): void {
+        try {
+            $current = get_option( self::LAST_RUN_OPTION, [] );
+            if ( $start || ( is_array( $current ) && ( $current['run_id'] ?? null ) === $record['run_id'] ) ) { update_option( self::LAST_RUN_OPTION, $record, false ); }
+        } catch ( Throwable $ignored ) { /* An unavailable diagnostic store cannot stop a delivery. */ }
+    }
+
+    private static function safe_error( $code ): string {
+        if ( '' === $code ) { return ''; }
+        if ( ! is_string( $code ) ) { return 'unclassified_error'; }
+        if ( in_array( $code, self::SAFE_ERRORS, true ) ) { return $code; }
+        $base = substr( $code, 0, -12 );
+        return substr( $code, -12 ) === '_retry_limit' && in_array( $base, self::SAFE_ERRORS, true ) ? $code : 'unclassified_error';
+    }
+
+    private static function safe_job( array $job ): array {
+        $state = in_array( $job['state'] ?? null, [ 'ready', 'running', 'blocked', 'complete' ], true ) ? $job['state'] : 'unknown';
+        $phase = in_array( $job['phase'] ?? null, [ 'accepted', 'attempt_check', 'validated', 'event_pending', 'received', 'configured', 'planned', 'applying', 'committed' ], true ) ? $job['phase'] : 'unknown';
+        return [ 'id' => max( 0, (int) ( $job['id'] ?? 0 ) ), 'content_id' => is_string( $job['content_id'] ?? null ) && preg_match( '/^[0-9]{1,64}$/D', $job['content_id'] ) ? $job['content_id'] : null, 'version' => max( 0, (int) ( $job['version'] ?? 0 ) ), 'delivery_id' => self::safe_uuid( $job['delivery_id'] ?? null ), 'attempt_id' => self::safe_uuid( $job['attempt_id'] ?? null ), 'state' => $state, 'phase' => $phase, 'attempts' => max( 0, (int) ( $job['attempts'] ?? 0 ) ), 'next_attempt' => max( 0, (int) ( $job['next_attempt'] ?? 0 ) ), 'error_code' => self::safe_error( $job['last_error'] ?? '' ), 'recovery_action' => self::recovery_action( $state ) ];
+    }
+
+    private static function safe_uuid( $value ): ?string {
+        return is_string( $value ) && preg_match( '/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/Di', $value ) ? strtolower( $value ) : null;
+    }
+
+    private static function recovery_action( string $state ): string {
+        if ( 'blocked' === $state ) { return 'explicit_resume'; }
+        if ( 'ready' === $state ) { return 'new_wake_or_manual_catch_up_after_due'; }
+        if ( 'running' === $state ) { return 'check_run_and_lease_before_catch_up'; }
+        return 'none';
     }
 
     /** Upgrade only an enabled connection; disabled installs perform no schema work. */
@@ -73,8 +132,8 @@ final class Nova_Bridge_Suite_Posting_Delivery {
         } finally { $store->unlock( 'schema' ); }
     }
 
-    public static function drain(): void {
-        ( new Nova_Bridge_Suite_Posting_Worker( Nova_Bridge_Suite_Posting_Settings::connection() ) )->run();
+    public static function drain( ?callable $observe = null ): void {
+        ( new Nova_Bridge_Suite_Posting_Worker( Nova_Bridge_Suite_Posting_Settings::connection() ) )->run( $observe );
     }
 
     public static function register_routes(): void {
@@ -147,7 +206,9 @@ final class Nova_Bridge_Suite_Posting_Delivery {
         if ( is_wp_error( $jobs ) ) { return $jobs; }
         $discovery = self::SCHEMA_VERSION === (int) get_option( self::SCHEMA_OPTION, 0 ) ? $store->discovery_state( $connection['site_id'] ?? '' ) : [];
         $public_state = is_wp_error( $discovery ) ? [ 'last_error' => 'discovery_storage' ] : array_intersect_key( $discovery, array_flip( [ 'cycle_started', 'last_completed', 'next_attempt', 'failures', 'last_error', 'suspended', 'auth_status' ] ) );
-        return self::response( [ 'enabled' => ! empty( $connection['enabled'] ), 'paused' => ! empty( $connection['paused'] ), 'next_scheduled' => null, 'jobs' => $jobs, 'discovery' => $public_state ] );
+        foreach ( $jobs as &$job ) { $job['recovery_action'] = self::recovery_action( (string) ( $job['state'] ?? '' ) ); }
+        unset( $job );
+        return self::response( [ 'enabled' => ! empty( $connection['enabled'] ), 'paused' => ! empty( $connection['paused'] ), 'next_scheduled' => null, 'jobs' => $jobs, 'discovery' => $public_state, 'last_run' => get_option( self::LAST_RUN_OPTION, null ) ] );
     }
 
     public static function resume( $request ) {

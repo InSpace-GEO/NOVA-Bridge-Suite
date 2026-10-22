@@ -32,6 +32,13 @@ php modules/posting-service/tests/delivery-unit.php
 php modules/posting-service/tests/delivery-intake-unit.php
 php modules/posting-service/tests/webhook-worker-unit.php
 php modules/posting-service/tests/mapped-schedule-unit.php
+php modules/posting-service/tests/run-diagnostics-unit.php unsupported
+php modules/posting-service/tests/run-diagnostics-unit.php fastcgi
+php modules/posting-service/tests/run-diagnostics-unit.php fastcgi-false
+php modules/posting-service/tests/run-diagnostics-unit.php fastcgi-void
+php modules/posting-service/tests/run-diagnostics-unit.php fastcgi-throw
+php modules/posting-service/tests/run-diagnostics-unit.php litespeed
+php modules/posting-service/tests/run-diagnostics-unit.php abort
 php modules/posting-service/tests/mapped-writer-unit.php
 php modules/posting-service/tests/mapped-writer-contract-unit.php
 php modules/posting-service/tests/posting-settings-unit.php
@@ -43,6 +50,19 @@ node --check modules/api-mapping-context/assets/mapping-drafts.js
 `mapping-contract-unit.php` also runs `mapping-sync-unit.php`; run the latter alone when investigating setup synchronization. Execute the two writer suites separately. Check every command's exit code rather than relying on the final command in a shell batch.
 
 Coverage includes strict wire schemas and raw-byte identity, current-attempt handling, conditional setup requests, uncertain template-create recovery, retained local instructions, immutable native-profile revisions, durable discovery checkpoints, authentication/pause behavior, event replay, native drift and interrupted transactions. The serializer has independent numeric/Unicode fixtures. Status tests use the actual UI controller with an offline DOM/REST fixture; intake tests verify signed wake-only notifications and administrator permissions. Mock acceptance establishes the tested client behavior, not deployed-service compatibility or application of an event.
+
+## Webhook run diagnostics
+
+The existing administrator-only `/posting/jobs` status exposes `last_run`, stored in the single non-autoload `nova_bridge_posting_last_run` option. No endpoint, table, scheduler or retry policy is added. Records select only validated site/delivery/attempt UUIDs, decimal content identity, version, local job ID, bounded counters/statuses and a fixed error-code catalogue; unfamiliar errors become `unclassified_error`. Payloads, connection values, native content, URLs and error messages are excluded. Existing per-job `last_error` and `next_attempt` remain in the normal job summaries, with a `recovery_action` explaining explicit resume or a new wake/manual catch-up after the due time.
+
+- `started_at` is a Unix timestamp. `duration_ms` is populated when the runner exits through its finalizer. A record left `running`, with `completed: false` and `successful: null`, does not prove it is still executing: PHP may have stopped before finalization. Confirm the job journal and lease before manual catch-up.
+- `completed: true` says the bounded batch returned. `successful: true` says it reported no processing errors; a zero-claim batch may still have delayed, paused, leased or undiscovered work. A thrown runner error records `interrupted`; ordinary job retry/block outcomes remain visible through safe errors and recovery actions.
+- `response_completion_method` is `fastcgi`, `litespeed` or `unsupported`. `response_completion_returned` records whether that host function returned; `response_completion_result` is its literal boolean result, or `null` when unknown. `response_completion_elapsed_ms` measures time from this shutdown runner starting to the host function returning, not time from the HTTP request reaching WordPress.
+- `jobs_claimed` counts actual successful claims, up to the existing three-job batch limit. The last job snapshot is saved before processing and again after the result, so a stopped run retains its most recently observed phase. `discovery_http_status` is the discovery failure's HTTP status, when known; it is not a native-write or connector-receipt status.
+
+Persistence is best effort and does not affect processing. The writer avoids overwriting a newer run ID it observes, but WordPress option reads/writes are not atomic and may be cached: overlapping runs can replace each other's diagnostics. The snapshot is not a complete history or a substitute for the durable job journal. Failed diagnostic writes can leave an older record.
+
+Staging acceptance still needs an external timing measurement: prove the sender receives the complete `202` response within its two-second timeout on this host, and independently verify native application and the final connector receipt. A host function existing, returning `true`, or returning quickly cannot prove client receipt. The offline variants exercise those distinctions, thrown workers, abrupt exits, redaction, claim counts, recovery hints and administrator-only status; they do not establish host behavior.
 
 ## Isolated WordPress canaries
 

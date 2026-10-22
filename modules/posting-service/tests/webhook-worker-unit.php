@@ -33,7 +33,7 @@ class Nova_Bridge_Suite_Mapping_Sync {
 class Nova_Bridge_Suite_Mapped_Writer extends Contract_Test_Writer {}
 class Wake_Store extends Contract_Test_Store {
     public $state = [ 'cursor' => null, 'cycle_started' => 0, 'last_completed' => 0, 'next_attempt' => 0, 'consumed_sequence' => 0, 'wake_sequence' => 0, 'failures' => 0, 'last_error' => '', 'connection_key' => '', 'suspended' => false, 'auth_status' => 0 ];
-    public $row; public $claims = 0; public $pruned = 0;
+    public $row; public $claims = 0; public $pruned = 0; public $claim_error = false;
     public function lock( $key ) { if ( isset( $this->locks[$key] ) ) { return new WP_Error( 'fixture_busy' ); } return parent::lock( $key ); }
     public function request_discovery( $site ) { ++$this->state['wake_sequence']; return true; }
     public function discovery_state( $site ) { return $this->state; }
@@ -43,6 +43,7 @@ class Wake_Store extends Contract_Test_Store {
         return $this->row;
     }
     public function claim( $site, $paused ) {
+        if ( $this->claim_error ) { return new WP_Error( 'nova_posting_storage' ); }
         $job = $this->row;
         if ( ! $job || ! in_array( $job['state'], [ 'ready', 'running' ], true ) || $job['next_attempt'] > time() || $job['lease_until'] >= time() ) { return null; }
         if ( $paused && ! in_array( $job['phase'], [ 'applying', 'committed', 'event_pending' ], true ) ) { return null; }
@@ -102,6 +103,9 @@ if ( PHP_VERSION_ID < 80100 ) { $queued->setAccessible( true ); }
 $queued->setValue( null, false );
 wake_run( $request );
 delivery_check( 'complete' === $store->row['state'] && 1 === Contract_Test_Writer::$apply, 'An explicitly supplied second notification recovers a lost shutdown and publishes once.' );
+$diagnostic = get_option( Nova_Bridge_Suite_Posting_Delivery::LAST_RUN_OPTION );
+delivery_check( $diagnostic['completed'] && true === $diagnostic['successful'] && 1 === $diagnostic['jobs_claimed'] && 'complete' === $diagnostic['last_job']['state'] && 'none' === $diagnostic['last_job']['recovery_action'], 'Real worker diagnostics count the successful claim and completed native work.' );
+delivery_check( $GLOBALS['wake_fixture']['snapshot']['site_id'] === $diagnostic['site_id'] && $GLOBALS['wake_fixture']['item']['id'] === $diagnostic['last_job']['delivery_id'] && $server->attempt === $diagnostic['last_job']['attempt_id'], 'Real journal IDs correlate the safe run snapshot with the authenticated site, delivery and attempt.' );
 $posts = $server->posts; wake_run( $request );
 delivery_check( $posts === $server->posts && 1 === Contract_Test_Writer::$apply, 'Repeated same-content notification cannot replay a completed CMS write or produce new receipts.' );
 
@@ -115,6 +119,8 @@ delivery_check( $store->state['wake_sequence'] === $store->state['consumed_seque
 [ $store, $server, $request ] = wake_fixture(); $server->lose = 'publication_succeeded';
 wake_run( $request ); $pending = $store->row['payload']['event_bytes']; $attempts = $store->row['attempts']; $due = $store->row['next_attempt'];
 delivery_check( 'event_pending' === $store->row['phase'] && 'ready' === $store->row['state'] && $due > time(), 'Lost final receipt acknowledgement retains exact bytes and local back-off.' );
+$diagnostic = get_option( Nova_Bridge_Suite_Posting_Delivery::LAST_RUN_OPTION );
+delivery_check( $diagnostic['completed'] && false === $diagnostic['successful'] && 1 === $diagnostic['jobs_claimed'] && 'nova_posting_transport' === $diagnostic['last_error'] && $due === $diagnostic['last_job']['next_attempt'] && 'new_wake_or_manual_catch_up_after_due' === $diagnostic['last_job']['recovery_action'], 'Retry diagnostics preserve safe error code, exact due time and need for another wake or manual catch-up.' );
 wake_run( $request );
 delivery_check( $attempts === $store->row['attempts'] && $due === $store->row['next_attempt'], 'A notification before the retry is due does not reset back-off or consume attempts.' );
 $store->row['next_attempt'] = time() - 1; wake_run( $request );
@@ -148,6 +154,8 @@ delivery_check( 'complete' === $store->row['state'] && 1 === Contract_Test_Write
 
 [ $store, $server, $request ] = wake_fixture(); $server->read_status = 401; wake_run( $request );
 delivery_check( 'blocked' === $store->row['state'] && $store->state['suspended'], 'Authentication failure suspends discovery and retains the blocked job.' );
+$diagnostic = get_option( Nova_Bridge_Suite_Posting_Delivery::LAST_RUN_OPTION );
+delivery_check( false === $diagnostic['successful'] && 'authentication_required' === $diagnostic['last_job']['error_code'] && 'explicit_resume' === $diagnostic['last_job']['recovery_action'], 'Blocked diagnostics expose an explicit recovery requirement without storing response bodies.' );
 $server->read_status = 200; $claims = $store->claims; wake_run( $request );
 delivery_check( $claims === $store->claims && 'blocked' === $store->row['state'], 'Notification cannot reset auth suspension or resume a manually blocked job.' );
 Nova_Bridge_Suite_Posting_Delivery::retry_discovery( $request ); Nova_Bridge_Suite_Posting_Delivery::run_queued();
@@ -165,6 +173,14 @@ delivery_check( 'complete' === $store->row['state'] && 1 === Contract_Test_Write
 $store->row = $GLOBALS['wake_fixture']['job']; $store->row['lease_until'] = time() + 300;
 wake_run( $request );
 delivery_check( 0 === $store->claims && 0 === Contract_Test_Writer::$apply, 'Another live lease prevents a concurrent notification from processing its job.' );
+delivery_check( 0 === get_option( Nova_Bridge_Suite_Posting_Delivery::LAST_RUN_OPTION )['jobs_claimed'] && null === get_option( Nova_Bridge_Suite_Posting_Delivery::LAST_RUN_OPTION )['last_job'], 'An unclaimed live lease is not counted as processed work.' );
 $store->row['lease_until'] = time() - 1; wake_run( $request );
 delivery_check( 'complete' === $store->row['state'] && 1 === Contract_Test_Writer::$apply, 'An explicitly supplied later notification can recover an expired processing lease.' );
+
+[ $store, $server, $request ] = wake_fixture(); $store->claim_error = true; wake_run( $request );
+$diagnostic = get_option( Nova_Bridge_Suite_Posting_Delivery::LAST_RUN_OPTION );
+delivery_check( 0 === $diagnostic['jobs_claimed'] && 'nova_posting_storage' === $diagnostic['last_error'] && false === $diagnostic['successful'] && 0 === Contract_Test_Writer::$apply, 'A failed claim is diagnosed without being counted or authorizing a native write.' );
+[ $store, $server, $request ] = wake_fixture();
+( new Nova_Bridge_Suite_Posting_Worker( Nova_Bridge_Suite_Posting_Settings::connection() ) )->run( static function () { throw new RuntimeException( 'Fixture diagnostic sink failure' ); } );
+delivery_check( 'complete' === $store->row['state'] && 1 === Contract_Test_Writer::$apply, 'An observer failure cannot alter worker execution or native write count.' );
 echo 'PASS ' . $checks . " webhook-driven worker checks.\n";

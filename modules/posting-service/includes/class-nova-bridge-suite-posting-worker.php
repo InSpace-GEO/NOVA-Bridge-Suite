@@ -42,20 +42,34 @@ final class Nova_Bridge_Suite_Posting_Worker {
         return Nova_Bridge_Suite_Mapping_Sync::frozen_policy( $client, $snapshot, $configuration );
     }
 
-    public function run(): void {
+    /** The optional observer is diagnostic only and cannot interrupt delivery work. */
+    public function run( ?callable $observe = null ): void {
         if ( empty( $this->connection['enabled'] ) ) { return; }
         $discovery = ( new Nova_Bridge_Suite_Posting_Discovery( $this->connection, $this->jobs, $this->client ) )->run();
         $status = is_wp_error( $discovery ) ? (int) ( $discovery->get_error_data()['status'] ?? 0 ) : 0;
+        if ( is_wp_error( $discovery ) ) { self::observe( $observe, [ 'last_error' => $discovery->get_error_code(), 'discovery_http_status' => $status ] ); }
         if ( 401 === $status ) { return; }
         $this->recovery_only = ! empty( $this->connection['paused'] ) || 403 === $status;
         $started = microtime( true );
         for ( $i = 0; $i < 3 && microtime( true ) - $started < 20; ++$i ) {
             $job = $this->jobs->claim( $this->connection['site_id'], $this->recovery_only );
-            if ( ! $job || is_wp_error( $job ) ) { break; }
+            if ( is_wp_error( $job ) ) { self::observe( $observe, [ 'last_error' => $job->get_error_code() ] ); break; }
+            if ( ! $job ) { break; }
+            self::observe( $observe, [ 'jobs_claimed' => $i + 1, 'last_job' => self::job_diagnostic( $job ) ] );
             $result = $this->process( $job );
+            if ( is_wp_error( $result ) ) { self::observe( $observe, [ 'last_error' => $result->get_error_code() ] ); }
+            elseif ( is_array( $result ) ) { self::observe( $observe, [ 'last_job' => self::job_diagnostic( $result ), 'last_error' => $result['last_error'] ?? '' ] ); }
             if ( is_array( $result ) && in_array( $result['last_error'] ?? '', [ 'authentication_required', 'site_ineligible' ], true ) ) { break; }
         }
         $this->jobs->prune();
+    }
+
+    private static function observe( ?callable $observe, array $summary ): void {
+        if ( null !== $observe ) { try { $observe( $summary ); } catch ( Throwable $ignored ) { /* Diagnostics cannot change worker behavior. */ } }
+    }
+
+    private static function job_diagnostic( array $job ): array {
+        return array_merge( array_intersect_key( $job, array_flip( [ 'id', 'content_id', 'version', 'state', 'phase', 'attempts', 'next_attempt', 'last_error' ] ) ), [ 'delivery_id' => $job['payload']['discovery']['id'] ?? null, 'attempt_id' => $job['payload']['attempt_id'] ?? null ] );
     }
 
     private function block( array $job, string $code ) {
