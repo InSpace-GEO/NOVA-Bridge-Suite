@@ -10,6 +10,74 @@ final class Nova_Bridge_Suite_Static_Recipe_Adapter {
     private static function key( string $kind, string $identity ): string { return self::PREFIX . $kind . '_' . hash( 'sha256', $identity ); }
     private static function frozen( array $record ): array { return array_intersect_key( $record, array_flip( [ 'id', 'name', 'page_type', 'definition', 'mapping', 'revision' ] ) ); }
 
+    /** Serialize editor saves and retries. A lost PUT acknowledgement must be reconciled first. */
+    public static function sync_editor( array $connection, callable $load, bool $saving = false, $client = null, $locks = null ) {
+        if ( ! current_user_can( 'manage_options' ) || empty( $connection['enabled'] ) ) { return self::error( 'permission', 'Enable the posting connection and sign in as an administrator before synchronizing.' ); }
+        $client = $client ?: new Nova_Bridge_Suite_Posting_Client( $connection );
+        $invalid = $client->connection_error(); if ( is_wp_error( $invalid ) ) { return $invalid; }
+        $key = self::key( 'editor', $client->site_id() );
+        $locks = $locks ?: new Nova_Bridge_Suite_Posting_Jobs(); $lock = 'static-editor:' . $key;
+        $owned = $locks->lock( $lock ); if ( is_wp_error( $owned ) ) { return $owned; }
+        try {
+            $pending = get_option( $key, null );
+            if ( $saving && null !== $pending ) { return self::error( 'sync_pending', 'Use Sync saved revision to finish the previous posting-service update before saving another revision.' ); }
+            $saved = $load(); if ( is_wp_error( $saved ) ) { return $saved; }
+            try { $result = self::sync_editor_record( $client, $key, $saved, $pending ); }
+            catch ( Throwable $error ) { $result = self::error( 'sync_interrupted', 'The synchronization could not be confirmed. Use Sync saved revision to reconcile it.' ); }
+            $saved['posting_sync'] = is_wp_error( $result ) ? [ 'status' => 'failed', 'code' => $result->get_error_code(), 'message' => $result->get_error_message() ] : $result;
+            $saved['local_only'] = is_wp_error( $result );
+            return $saved;
+        } finally { $locks->unlock( $lock ); }
+    }
+
+    private static function editor_remote( $reply, string $id ) {
+        if ( is_wp_error( $reply ) ) { return $reply; }
+        $remote = $reply['body'] ?? null;
+        if ( 200 !== ( $reply['status'] ?? null ) || ! is_array( $remote ) || ( $remote['id'] ?? null ) !== $id || ! is_int( $remote['revision'] ?? null ) || $remote['revision'] < 1 || ( $remote['enabled'] ?? null ) !== true || ( $remote['retired_at'] ?? null ) !== null || ( $remote['page_type'] ?? null ) !== 'category' || ( $reply['etag'] ?? '' ) !== '"' . $remote['revision'] . '"' ) { return self::error( 'template_identity', 'The service did not return the enabled category template and its exact revision ETag.' ); }
+        return $remote;
+    }
+
+    /** Update the existing approved category template; never infer tenant scope or replace defaults. */
+    private static function sync_editor_record( $client, string $key, array $saved, $pending ) {
+        $record = Nova_Bridge_Suite_Layout_Recipes::delivery_record( $saved['id'], $saved['revision'] ); if ( is_wp_error( $record ) ) { return $record; }
+        $default = Nova_Bridge_Suite_Layout_Recipes::defaults()['taxonomy:product_cat'] ?? [];
+        if ( ( $default['id'] ?? null ) !== $record['id'] || ( $default['revision'] ?? null ) !== $record['revision'] ) { return self::error( 'default_changed', 'Reload the current category creation default before synchronizing.' ); }
+        $projection = self::project_record( $record ); if ( is_wp_error( $projection ) ) { return $projection; }
+        $reply = $client->site_request( 'GET', '/template-defaults' ); if ( is_wp_error( $reply ) ) { return $reply; }
+        $id = $reply['body']['defaults']['category'] ?? null;
+        if ( 200 !== ( $reply['status'] ?? null ) || ! Nova_Bridge_Suite_Posting_Protocol::uuid( $id ) ) { return self::error( 'setup_required', 'Set up and approve a category publishing template for this site before synchronizing editor revisions.' ); }
+        $remote = self::editor_remote( $client->site_request( 'GET', '/templates/' . $id ), $id ); if ( is_wp_error( $remote ) ) { return $remote; }
+        if ( null === $pending ) {
+            $prior = get_option( self::key( 'profile', $client->site_id() . ':' . $id . ':' . $remote['revision'] ), null );
+            $unsigned = is_array( $prior ) ? $prior : []; unset( $unsigned['profile_digest'] );
+            // The old recipe may need new field declarations; only its retained tenant authority is reused.
+            if ( ! is_array( $prior ) || ( $prior['mode'] ?? '' ) !== self::MODE || ! hash_equals( self::digest( $unsigned ), (string) ( $prior['profile_digest'] ?? '' ) ) || ( $prior['site_id'] ?? '' ) !== $client->site_id() || ( $prior['origin'] ?? '' ) !== rtrim( home_url( '/' ), '/' ) || ! Nova_Bridge_Suite_Posting_Protocol::decimal_id( $prior['client_id'] ?? null ) || ! Nova_Bridge_Suite_Posting_Protocol::decimal_id( $prior['domain_id'] ?? null ) || self::digest( $prior['template'] ?? [] ) !== self::digest( self::frozen( $remote ) ) ) { return self::error( 'profile_scope', 'The current remote category revision has no matching approved local authority. Review the site setup before synchronizing.' ); }
+            if ( self::digest( $prior['record'] ) === self::digest( $record ) ) { return self::editor_summary( $record, $remote ); }
+            $profile = [ 'mode' => self::MODE, 'site_id' => $client->site_id(), 'client_id' => $prior['client_id'], 'domain_id' => $prior['domain_id'], 'origin' => $prior['origin'], 'record' => $record, 'projection' => $projection ];
+            $pending = [ 'profile' => $profile, 'base_template' => self::frozen( $remote ) ];
+            if ( ! add_option( $key, $pending, '', false ) ) { return self::error( 'sync_storage', 'Could not retain the template update before contacting posting service.' ); }
+        }
+        $profile = $pending['profile'] ?? []; $base = $pending['base_template'] ?? [];
+        if ( ( $profile['site_id'] ?? '' ) !== $client->site_id() || ( $profile['origin'] ?? '' ) !== rtrim( home_url( '/' ), '/' ) || self::digest( $profile['record'] ?? [] ) !== self::digest( $record ) || self::digest( $profile['projection'] ?? [] ) !== self::digest( $projection ) || ( $base['id'] ?? '' ) !== $id || ! is_int( $base['revision'] ?? null ) ) { return self::error( 'sync_conflict', 'The pending update belongs to another revision or category default. No overwrite was attempted.' ); }
+        if ( $remote['revision'] === $base['revision'] && self::digest( self::frozen( $remote ) ) === self::digest( $base ) ) {
+            // Even unchanged scalar fields need a new remote revision for the new native recipe authority.
+            $remote = self::editor_remote( $client->site_request( 'PUT', '/templates/' . $id, $projection['input'], [ 'If-Match' => '"' . $base['revision'] . '"' ] ), $id );
+            if ( is_wp_error( $remote ) ) { return $remote; }
+        }
+        if ( $remote['revision'] !== $base['revision'] + 1 ) { return self::error( 'sync_conflict', 'The remote template changed concurrently. No further overwrite was attempted.' ); }
+        foreach ( $projection['input'] as $name => $value ) { if ( self::digest( [ $remote[$name] ?? null ] ) !== self::digest( [ $value ] ) ) { return self::error( 'template_projection', 'The remote revision differs from this saved category mapping.' ); } }
+        $profile['template'] = self::frozen( $remote ); $profile['profile_digest'] = self::digest( $profile );
+        $approved = self::key( 'profile', $client->site_id() . ':' . $id . ':' . $remote['revision'] );
+        if ( ! add_option( $approved, $profile, '', false ) && get_option( $approved, null ) !== $profile ) { return self::error( 'profile_conflict', 'This remote revision already has a different immutable local authority.' ); }
+        delete_option( $key );
+        if ( null !== get_option( $key, null ) ) { return self::error( 'sync_storage', 'The mapping was approved, but its pending update could not be cleared. Retry synchronization.' ); }
+        return self::editor_summary( $record, $remote );
+    }
+
+    private static function editor_summary( array $record, array $remote ): array {
+        return [ 'status' => 'synced', 'recipe_revision' => $record['revision'], 'template_id' => $remote['id'], 'template_revision' => $remote['revision'] ];
+    }
+
     /** The UI stores semantic role IDs independently of editable labels and source names. */
     public static function project_record( array $record, string $page_type = 'category' ) {
         $recipe = $record['recipe'] ?? [];

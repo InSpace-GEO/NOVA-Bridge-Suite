@@ -22,6 +22,21 @@ source mapping go to the service. Native field authority remains in WordPress.
 Select the resulting template under the source default key `category` using
 the service's ETag/If-Match contract. Configuration does not enable polling.
 
+Once that category default is approved and the posting connection is enabled,
+saving its creation template in the editor also updates the existing remote
+template with `PUT` and `If-Match`. The returned remote revision is bound to the
+exact new local recipe; older approved profiles remain intact. Local and remote
+revision numbers are independent. Even unchanged scalar fields need a remote
+revision when the native recipe changes. Other destination defaults are untouched.
+
+The editor reports local save and remote synchronization separately. After a
+failed or lost update response, **Sync saved revision** reconciles that same
+revision without another local save or a blind remote update. A pending update
+blocks newer category saves until reconciled. This uses a single WordPress
+option and the existing lock mechanism, without cron or database migrations.
+An unrecognized remote default, conflicting revision or unsupported recipe
+requires setup/review; no tenant scope or native mapping is inferred.
+
 Native execution uses the standard delivery journal with a separate term writer.
 It creates only a new category at the verified planned category URL. It refuses
 an existing target rather than treating creation as a rewrite. Recovery reads

@@ -11,6 +11,7 @@ function home_url( $path = '' ) { return 'https://native.fixture.invalid' . $pat
 function get_option( $key, $fallback = false ) { return $GLOBALS['options'][$key] ?? $fallback; }
 function add_option( $key, $value, ...$args ) { if ( isset( $GLOBALS['options'][$key] ) ) { return false; } $GLOBALS['options'][$key] = $value; return true; }
 function update_option( $key, $value, ...$args ) { $GLOBALS['options'][$key] = $value; return true; }
+function delete_option( $key ) { unset( $GLOBALS['options'][$key] ); return true; }
 function sanitize_text_field( $value ) { return strip_tags( $value ); }
 function wp_kses_post( $value ) { return str_replace( '<script>', '', $value ); }
 function sanitize_term_field( $field, $value, ...$args ) { return $value; }
@@ -30,6 +31,7 @@ function wp_insert_term( $name, $taxonomy, $args ) {
 }
 class Nova_Bridge_Suite_Layout_Recipes {
     static $record;
+    static function defaults() { return [ 'taxonomy:product_cat' => array_intersect_key( self::$record, array_flip( [ 'id', 'revision' ] ) ) ]; }
     static function delivery_record( $id, $revision ) { return self::$record['id'] === $id && self::$record['revision'] === $revision ? self::$record : new WP_Error( 'fixture_recipe_missing' ); }
     static function delivery_compile( $id, $revision, $content, $operation ) {
         $payload = []; foreach ( self::$record['recipe']['bindings'] as $binding ) { $role = explode( '_', str_replace( 'nova_role_', '', $binding['id'] ) )[0]; $field = 'title' === $role ? 'name' : ( 'top' === $role ? 'description' : 'content_below_products' ); $value = Nova_Bridge_Suite_Recipe_Engine::get( $content, $binding['source'] ); if ( null !== $value ) { $payload[$field] = $value; } } return [ 'writer_payload' => $payload ];

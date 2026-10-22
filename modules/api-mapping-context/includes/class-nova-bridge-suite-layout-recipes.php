@@ -12,7 +12,7 @@ final class Nova_Bridge_Suite_Layout_Recipes {
         add_action( 'rest_api_init', [ __CLASS__, 'routes' ], 1005 );
     }
     public static function routes(): void {
-        foreach ( [ 'catalog' => [ 'GET', 'catalog' ], 'design' => [ 'POST', 'design' ], 'region' => [ 'POST', 'region' ], 'preview' => [ 'POST', 'preview' ], 'save' => [ 'POST', 'save' ], 'profile' => [ 'GET', 'profile' ], 'blank' => [ 'GET', 'blank' ], 'translate' => [ 'POST', 'translate' ] ] as $suffix => $operation ) {
+        foreach ( [ 'catalog' => [ 'GET', 'catalog' ], 'design' => [ 'POST', 'design' ], 'region' => [ 'POST', 'region' ], 'preview' => [ 'POST', 'preview' ], 'save' => [ 'POST', 'save' ], 'sync' => [ 'POST', 'sync' ], 'profile' => [ 'GET', 'profile' ], 'blank' => [ 'GET', 'blank' ], 'translate' => [ 'POST', 'translate' ] ] as $suffix => $operation ) {
             register_rest_route( 'nova-bridge/v1', '/mapping/layout-recipes/' . $suffix, [ 'methods' => $operation[0], 'callback' => self::callback( $operation[1] ), 'permission_callback' => [ __CLASS__, 'can_admin' ] ] );
         }
         register_rest_route( 'nova-bridge/v1', '/mapping/layout-recipes/draft', [ [ 'methods' => 'POST', 'callback' => self::callback( 'draft' ), 'permission_callback' => [ __CLASS__, 'can_admin' ] ], [ 'methods' => 'GET', 'callback' => self::callback( 'recover_draft' ), 'permission_callback' => [ __CLASS__, 'can_admin' ] ] ] );
@@ -285,6 +285,22 @@ final class Nova_Bridge_Suite_Layout_Recipes {
         return self::response( [ 'preview_document' => $html, 'preview_receipt' => self::receipt( $recipe, $content ), 'summary' => $result['summary'], 'content_schema' => $result['content_schema'], 'warnings' => $result['warnings'], 'engine_version' => $result['engine_version'], 'plan_digest' => $result['plan_digest'] ] );
     }
     public static function save( $request ) {
+        $body = self::body( $request ); if ( is_wp_error( $body ) ) { return $body; }
+        $connection = class_exists( 'Nova_Bridge_Suite_Posting_Settings' ) ? Nova_Bridge_Suite_Posting_Settings::connection() : [];
+        $load = static function () use ( $request ) { return self::save_local( $request ); };
+        if ( ( $body['resource_id'] ?? '' ) === 'taxonomy:product_cat' && ! empty( $connection['enabled'] ) && class_exists( 'Nova_Bridge_Suite_Static_Recipe_Adapter' ) ) {
+            return self::response( Nova_Bridge_Suite_Static_Recipe_Adapter::sync_editor( $connection, $load, true ) );
+        }
+        return self::response( $load() );
+    }
+    /** Explicit retry reconciles the same saved revision without creating another local version. */
+    public static function sync( $request ) {
+        $body = self::body( $request ); if ( is_wp_error( $body ) ) { return $body; }
+        if ( ! self::uuid( $body['id'] ?? null ) || ! is_int( $body['revision'] ?? null ) || $body['revision'] < 1 ) { return self::error( 'identity', 'Supply the saved template ID and revision.' ); }
+        if ( ! class_exists( 'Nova_Bridge_Suite_Static_Recipe_Adapter' ) || ! class_exists( 'Nova_Bridge_Suite_Posting_Settings' ) ) { return self::error( 'sync_unavailable', 'The posting-service integration is unavailable.', 503 ); }
+        return self::response( Nova_Bridge_Suite_Static_Recipe_Adapter::sync_editor( Nova_Bridge_Suite_Posting_Settings::connection(), static function () use ( $body ) { return self::record( $body['id'], $body['revision'] ); } ) );
+    }
+    private static function save_local( $request ) {
         $body = self::body( $request ); if ( is_wp_error( $body ) ) { return $body; } $resource = self::resource( $body['resource_id'] ?? '' ); if ( is_wp_error( $resource ) ) { return $resource; } $recipe = self::reviewed( $body ); if ( is_wp_error( $recipe ) ) { return $recipe; }
         $scope = self::fits_resource( $recipe, $resource ); if ( is_wp_error( $scope ) ) { return $scope; }
         $source = class_exists( 'Nova_Bridge_Suite_Recipe_Visual' ) ? Nova_Bridge_Suite_Recipe_Visual::validate_source( $body, $recipe, $resource ) : null; if ( is_wp_error( $source ) ) { return $source; }
@@ -303,7 +319,7 @@ final class Nova_Bridge_Suite_Layout_Recipes {
             $record = [ 'id' => $id, 'revision' => $latest + 1, 'resource_id' => $resource['id'], 'label' => sanitize_text_field( $label ), 'mode' => $recipe['mode'], 'builder' => $recipe['builder'], 'recipe' => $recipe, 'seal' => $body['seal'], 'acf_seal' => $body['acf_seal'] ?? '', 'content_schema' => $compiled['content_schema'], 'sample' => $content, 'created_at' => gmdate( 'c' ), 'created_by' => get_current_user_id() ];
             if ( $source ) { $record['source_reference'] = $source; $record['source_receipt'] = $body['source_receipt']; }
             $state['profiles'][$id][$record['revision']] = $record; $state['defaults'][$resource['id']] = array_intersect_key( $record, array_flip( [ 'id', 'revision', 'label', 'mode', 'builder' ] ) ); return [ 'state' => $state, 'result' => $record + [ 'default_saved' => true, 'local_only' => true ] ];
-        } ); return self::response( $saved );
+        } ); return $saved;
     }
     private static function fits_resource( array $recipe, array $resource ) {
         $builder = $recipe['builder']; $blueprint = $recipe['blueprint'];

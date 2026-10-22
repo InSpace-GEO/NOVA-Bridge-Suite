@@ -100,7 +100,7 @@ function preview( array $design, array $recipe, array $content, $acf_seal = '' )
 function default_identity( $resource ) { $identity = Nova_Bridge_Suite_Layout_Recipes::defaults()[$resource] ?? null; return $identity ? [ 'id' => $identity['id'], 'revision' => $identity['revision'] ] : null; }
 function save_body( $design, $recipe, $content, $resource = 'post_type:page', $id = null, $revision = 0, $acf_seal = '' ) { $preview = preview( $design, $recipe, $content, $acf_seal ); $body = [ 'recipe' => $recipe, 'seal' => $design['seal'], 'acf_seal' => $acf_seal, 'resource_id' => $resource, 'expected_revision' => $revision, 'expected_default' => default_identity( $resource ), 'label' => 'Human template name', 'content' => $content, 'preview_receipt' => $preview['preview_receipt'] ]; if ( $id ) { $body['id'] = $id; } return $body; }
 
-check( count( $routes ) === 9 && isset( $routes['/mapping/layout-recipes/draft'][0], $routes['/mapping/layout-recipes/draft'][1] ), 'The complete template route surface was not registered' );
+check( count( $routes ) === 10 && isset( $routes['/mapping/layout-recipes/draft'][0], $routes['/mapping/layout-recipes/draft'][1] ), 'The complete template route surface was not registered' );
 $administrator = false; foreach ( array_keys( $routes ) as $path ) { $suffix = basename( $path ); rejected( route( $suffix, in_array( $suffix, [ 'catalog', 'profile', 'blank' ], true ) ? 'GET' : 'POST' ), 403, 'A registered route bypassed administrator access: ' . $suffix ); } $administrator = true;
 rejected( route( 'catalog', 'GET', [], null, [ 'x-wp-nonce' => 'invalid' ] ), 403, 'A bad cookie-session nonce was accepted' );
 data( route( 'catalog', 'GET', [], null, [] ) );
