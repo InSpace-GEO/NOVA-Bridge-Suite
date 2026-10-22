@@ -106,6 +106,7 @@ delivery_check( 'complete' === $store->row['state'] && 1 === Contract_Test_Write
 $diagnostic = get_option( Nova_Bridge_Suite_Posting_Delivery::LAST_RUN_OPTION );
 delivery_check( $diagnostic['completed'] && true === $diagnostic['successful'] && 1 === $diagnostic['jobs_claimed'] && 'complete' === $diagnostic['last_job']['state'] && 'none' === $diagnostic['last_job']['recovery_action'], 'Real worker diagnostics count the successful claim and completed native work.' );
 delivery_check( $GLOBALS['wake_fixture']['snapshot']['site_id'] === $diagnostic['site_id'] && $GLOBALS['wake_fixture']['item']['id'] === $diagnostic['last_job']['delivery_id'] && $server->attempt === $diagnostic['last_job']['attempt_id'], 'Real journal IDs correlate the safe run snapshot with the authenticated site, delivery and attempt.' );
+delivery_check( $store->row['content_id'] === $diagnostic['last_job']['content_id'], 'The journal delivery UUID remains available in the historical content_id diagnostic field.' );
 $posts = $server->posts; wake_run( $request );
 delivery_check( $posts === $server->posts && 1 === Contract_Test_Writer::$apply, 'Repeated same-content notification cannot replay a completed CMS write or produce new receipts.' );
 

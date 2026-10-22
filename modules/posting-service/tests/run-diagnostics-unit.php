@@ -39,6 +39,7 @@ class Nova_Bridge_Suite_Posting_Worker {
         $record = get_option( Nova_Bridge_Suite_Posting_Delivery::LAST_RUN_OPTION );
         if ( empty( $GLOBALS['fail_diagnostics'] ) ) { check( 'running' === $record['state'] && 0 === $record['jobs_claimed'], 'Worker starts with an unfinished zero-claim record.' ); }
         $job = [ 'id' => 12, 'content_id' => '12345678901234567890', 'version' => 4, 'delivery_id' => '22222222-2222-4222-8222-222222222222', 'attempt_id' => 'secret-not-a-uuid', 'state' => 'running', 'phase' => 'applying', 'attempts' => 2, 'next_attempt' => 0, 'last_error' => '', 'payload' => [ 'token' => 'secret-payload-token' ], 'url' => 'https://secret.example/token' ];
+        if ( array_key_exists( 'diagnostic_content_id', $GLOBALS ) ) { $job['content_id'] = $GLOBALS['diagnostic_content_id']; }
         $observe( [ 'jobs_claimed' => 1, 'last_job' => $job ] );
         if ( 'abort' === $GLOBALS['mode'] ) { exit( 0 ); }
         if ( 'throw' === $GLOBALS['behavior'] ) { throw new RuntimeException( 'secret-exception https://secret.example/token' ); }
@@ -101,4 +102,21 @@ $mode_before_failure = $mode;
 if ( 'unsupported' === $mode ) { run_fixture(); check( true, 'Diagnostic persistence failure cannot stop worker processing.' ); }
 $fail_diagnostics = false; Nova_Bridge_Suite_Posting_Settings::$fail_next = true; run_fixture();
 check( null === get_option( Nova_Bridge_Suite_Posting_Delivery::LAST_RUN_OPTION )['site_id'] && get_option( Nova_Bridge_Suite_Posting_Delivery::LAST_RUN_OPTION )['completed'], 'A failed diagnostic identity lookup leaves null correlation and does not stop the worker or its cleanup.' );
+if ( 'unsupported' === $mode ) {
+    foreach ( [
+        [ 'f8ea26b3-39f0-478a-8c2b-f18309c23567', 'f8ea26b3-39f0-478a-8c2b-f18309c23567' ],
+        [ 'C6A80E8A-873E-4F2D-8D67-CC1394CF399D', 'c6a80e8a-873e-4f2d-8d67-cc1394cf399d' ],
+        [ str_repeat( '9', 64 ), str_repeat( '9', 64 ) ],
+        [ str_repeat( '9', 65 ), null ],
+        [ 'https://secret.example/token', null ],
+        [ "f8ea26b3-39f0-478a-8c2b-f18309c23567\nsecret", null ],
+        [ 'g8ea26b3-39f0-478a-8c2b-f18309c23567', null ],
+        [ [ 'token' => 'secret' ], null ],
+        [ null, null ],
+    ] as [ $diagnostic_content_id, $expected_content_id ] ) {
+        run_fixture();
+        $record = get_option( Nova_Bridge_Suite_Posting_Delivery::LAST_RUN_OPTION );
+        check( $expected_content_id === $record['last_job']['content_id'] && false === strpos( json_encode( $record ), 'secret' ), 'Journal content identity accepts only UUIDs or bounded legacy decimal IDs and redacts all other values.' );
+    }
+}
 echo 'PASS ' . $checks . ' runner diagnostic checks (' . $mode_before_failure . ").\n";

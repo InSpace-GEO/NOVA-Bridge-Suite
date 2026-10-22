@@ -102,7 +102,10 @@ final class Nova_Bridge_Suite_Posting_Delivery {
     private static function safe_job( array $job ): array {
         $state = in_array( $job['state'] ?? null, [ 'ready', 'running', 'blocked', 'complete' ], true ) ? $job['state'] : 'unknown';
         $phase = in_array( $job['phase'] ?? null, [ 'accepted', 'attempt_check', 'validated', 'event_pending', 'received', 'configured', 'planned', 'applying', 'committed' ], true ) ? $job['phase'] : 'unknown';
-        return [ 'id' => max( 0, (int) ( $job['id'] ?? 0 ) ), 'content_id' => is_string( $job['content_id'] ?? null ) && preg_match( '/^[0-9]{1,64}$/D', $job['content_id'] ) ? $job['content_id'] : null, 'version' => max( 0, (int) ( $job['version'] ?? 0 ) ), 'delivery_id' => self::safe_uuid( $job['delivery_id'] ?? null ), 'attempt_id' => self::safe_uuid( $job['attempt_id'] ?? null ), 'state' => $state, 'phase' => $phase, 'attempts' => max( 0, (int) ( $job['attempts'] ?? 0 ) ), 'next_attempt' => max( 0, (int) ( $job['next_attempt'] ?? 0 ) ), 'error_code' => self::safe_error( $job['last_error'] ?? '' ), 'recovery_action' => self::recovery_action( $state ) ];
+        // The current journal stores a delivery UUID in this historical column; retain legacy decimal IDs too.
+        $content_id = $job['content_id'] ?? null;
+        $content_id = is_string( $content_id ) && preg_match( '/^[0-9]{1,64}$/D', $content_id ) ? $content_id : self::safe_uuid( $content_id );
+        return [ 'id' => max( 0, (int) ( $job['id'] ?? 0 ) ), 'content_id' => $content_id, 'version' => max( 0, (int) ( $job['version'] ?? 0 ) ), 'delivery_id' => self::safe_uuid( $job['delivery_id'] ?? null ), 'attempt_id' => self::safe_uuid( $job['attempt_id'] ?? null ), 'state' => $state, 'phase' => $phase, 'attempts' => max( 0, (int) ( $job['attempts'] ?? 0 ) ), 'next_attempt' => max( 0, (int) ( $job['next_attempt'] ?? 0 ) ), 'error_code' => self::safe_error( $job['last_error'] ?? '' ), 'recovery_action' => self::recovery_action( $state ) ];
     }
 
     private static function safe_uuid( $value ): ?string {
