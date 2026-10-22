@@ -31,6 +31,11 @@ final class Nova_Bridge_Suite_Posting_Settings {
     }
 
     public static function updated( $old, $next, $option ): void {
+        if ( class_exists( 'Nova_Bridge_Suite_Posting_Delivery' ) ) {
+            Nova_Bridge_Suite_Posting_Delivery::initialize();
+            if ( ! empty( $next['enabled'] ) && ! Nova_Bridge_Suite_Posting_Delivery::ensure_schema() ) { add_settings_error( self::OPTION, 'nova_posting_storage', 'Delivery storage could not be initialized. New deliveries remain unavailable.' ); }
+            return;
+        }
         if ( ! empty( $next['enabled'] ) && class_exists( 'Nova_Bridge_Suite_Posting_Jobs' ) ) {
             $installed = ( new Nova_Bridge_Suite_Posting_Jobs() )->install();
             if ( true !== $installed ) { add_settings_error( self::OPTION, 'nova_posting_storage', 'Delivery storage could not be initialized. New deliveries remain unavailable.' ); }

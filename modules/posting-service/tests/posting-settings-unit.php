@@ -7,6 +7,11 @@ class Nova_Bridge_Suite_Posting_Jobs {
     public static $unfinished = false;
     public static function has_unfinished_for_site( $site ) { return self::$unfinished; }
 }
+class Nova_Bridge_Suite_Posting_Delivery {
+    public static $initializations = 0; public static $storage = true;
+    public static function initialize() { ++self::$initializations; }
+    public static function ensure_schema() { return self::$storage; }
+}
 $saved = []; $admin = true; $errors = [];
 function get_option( $key, $default ) { return $GLOBALS['saved']; }
 function current_user_can( $cap ) { return $GLOBALS['admin']; }
@@ -37,4 +42,11 @@ Nova_Bridge_Suite_Posting_Jobs::$unfinished = new WP_Error();
 check( Nova_Bridge_Suite_Posting_Settings::sanitize( array_merge( $input, [ 'site_id' => '12345678-1234-4234-8234-123456789abd' ] ) ) === $saved, 'Database failures preserve current site binding.' );
 Nova_Bridge_Suite_Posting_Jobs::$unfinished = false;
 check( Nova_Bridge_Suite_Posting_Settings::sanitize( array_merge( $input, [ 'base_url' => 'https://other.example' ] ) )['paused'], 'Safe origin replacement requires resume.' );
+Nova_Bridge_Suite_Posting_Settings::updated( $first, $next, Nova_Bridge_Suite_Posting_Settings::OPTION );
+check( 1 === Nova_Bridge_Suite_Posting_Delivery::$initializations, 'Saving connection settings invokes webhook catch-up initialization.' );
+Nova_Bridge_Suite_Posting_Settings::updated( $next, [ 'enabled' => false ], Nova_Bridge_Suite_Posting_Settings::OPTION );
+check( 2 === Nova_Bridge_Suite_Posting_Delivery::$initializations, 'Disabling settings also initializes cleanup of the old delivery cron and catch-up marker.' );
+Nova_Bridge_Suite_Posting_Delivery::$storage = false;
+Nova_Bridge_Suite_Posting_Settings::updated( $first, $next, Nova_Bridge_Suite_Posting_Settings::OPTION );
+check( end( $errors ) === 'nova_posting_storage', 'A storage failure remains visible to the administrator saving settings.' );
 echo "PASS {$checks} posting connection checks\n";

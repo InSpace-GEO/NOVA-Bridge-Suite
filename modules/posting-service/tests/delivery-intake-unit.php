@@ -16,7 +16,7 @@ class Intake_Request {
     public $body = ''; public $headers = [];
     public function get_body() { return $this->body; }
     public function get_header( $name ) { return $this->headers[$name] ?? ''; }
-    public function get_param( $name ) { return null; }
+    public function get_param( $name ) { return 'id' === $name ? 1 : null; }
 }
 function is_wp_error( $value ) { return $value instanceof WP_Error; }
 function wp_json_encode( $value, $flags = 0 ) { return json_encode( $value, $flags ); }
@@ -25,8 +25,11 @@ function is_user_logged_in() { return $GLOBALS['logged_in']; }
 function wp_verify_nonce( $nonce, $action ) { return 'valid-fixture-nonce' === $nonce && 'wp_rest' === $action; }
 function get_option( $name, $default = false ) { return $GLOBALS['options'][$name] ?? $default; }
 function update_option( $name, $value, $autoload = null ) { $GLOBALS['options'][$name] = $value; return true; }
-function wp_next_scheduled( $hook ) { return false; }
-function wp_schedule_event() { ++$GLOBALS['scheduled']; }
+function delete_option( $name ) { unset( $GLOBALS['options'][$name] ); }
+function wp_next_scheduled( $hook ) { return $GLOBALS['cron'][$hook] ?? false; }
+function wp_clear_scheduled_hook( $hook ) { unset( $GLOBALS['cron'][$hook] ); ++$GLOBALS['cleared']; }
+function add_action( $hook, $callback, ...$args ) { $GLOBALS['hooks'][$hook][] = $callback; }
+function fastcgi_finish_request() { $GLOBALS['execution'][] = 'flush'; }
 function register_rest_route( $namespace, $path, $route ) { $GLOBALS['routes'][$path] = $route; }
 class Nova_Bridge_Suite_Posting_Settings {
     public static $connection = [];
@@ -35,6 +38,16 @@ class Nova_Bridge_Suite_Posting_Settings {
 class Nova_Bridge_Suite_Posting_Client {
     public function __construct( $connection ) {}
     public function site_request() { throw new RuntimeException( 'Intake/status/recheck must never make HTTP requests.' ); }
+}
+class Nova_Bridge_Suite_Posting_Worker {
+    private $connection;
+    public static $runs = 0; public static $on_run;
+    public function __construct( $connection ) { $this->connection = $connection; }
+    public function run() {
+        if ( empty( $this->connection['enabled'] ) ) { return; }
+        ++self::$runs; $GLOBALS['execution'][] = 'worker';
+        if ( self::$on_run ) { call_user_func( self::$on_run ); }
+    }
 }
 class Nova_Bridge_Suite_Posting_Jobs {
     public static $exists = false; public static $installs = 0; public static $reads = 0; public static $wakes = 0;
@@ -46,19 +59,25 @@ class Nova_Bridge_Suite_Posting_Jobs {
     public function summaries( $site ) { ++self::$reads; if ( ! self::$exists ) { throw new RuntimeException( 'Missing journal must not be queried.' ); } return []; }
     public function discovery_state( $site ) { return self::$state; }
     public function save_discovery_state( $site, $state ) { self::$state = $state; return true; }
-    public function request_discovery( $site ) { ++self::$wakes; return true; }
+    public static $fail_wake = false; public static $resumed = false;
+    public function request_discovery( $site ) { if ( self::$fail_wake ) { return new WP_Error( 'fixture_storage', '', [ 'status' => 503 ] ); } ++self::$wakes; return true; }
+    public function resume( $id, $site ) { self::$resumed = true; return true; }
 }
 require dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-posting-protocol.php';
 require dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-posting-discovery.php';
 require dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-posting-delivery.php';
-$checks = 0; $admin = true; $logged_in = true; $options = []; $scheduled = 0; $routes = [];
+$checks = 0; $admin = true; $logged_in = true; $options = []; $routes = []; $hooks = []; $execution = []; $cleared = 0;
+$cron = [ Nova_Bridge_Suite_Posting_Delivery::CRON_HOOK => 123, 'unrelated_hook' => 456 ];
 function intake_check( $condition, $message ) { ++$GLOBALS['checks']; if ( ! $condition ) { throw new RuntimeException( $message ); } }
 $request = new Intake_Request();
 Nova_Bridge_Suite_Posting_Settings::$connection = [ 'enabled' => false, 'paused' => true, 'site_id' => '', 'base_url' => '', 'token' => '' ];
-Nova_Bridge_Suite_Posting_Delivery::schedule();
+Nova_Bridge_Suite_Posting_Delivery::bootstrap();
+intake_check( ! isset( $hooks[Nova_Bridge_Suite_Posting_Delivery::CRON_HOOK], $hooks['cron_schedules'] ) && isset( $hooks['shutdown'], $hooks['init'] ), 'Bootstrap registers shutdown work and no delivery cron callback or recurrence.' );
+Nova_Bridge_Suite_Posting_Delivery::initialize();
+intake_check( 1 === $cleared && [ 'unrelated_hook' => 456 ] === $cron, 'Upgrade removes only the old delivery cron, including while disabled.' );
 $status = Nova_Bridge_Suite_Posting_Delivery::status( $request );
 intake_check( 200 === $status->status && [] === $status->data['jobs'] && [] === $status->data['discovery'], 'Disabled unconfigured installation returns empty status without a schema.' );
-intake_check( 0 === Nova_Bridge_Suite_Posting_Jobs::$installs && 0 === Nova_Bridge_Suite_Posting_Jobs::$reads && 0 === $scheduled, 'Disabled status and schedule do not install, query missing journals or schedule work.' );
+intake_check( 0 === Nova_Bridge_Suite_Posting_Jobs::$installs && 0 === Nova_Bridge_Suite_Posting_Jobs::$reads && null === $status->data['next_scheduled'], 'Disabled status does not install or query missing journals; no delivery cron remains.' );
 intake_check( 'private, no-store' === $status->headers['Cache-Control'], 'Administrator status is not cacheable.' );
 $admin = false; $logged_in = false;
 intake_check( 401 === Nova_Bridge_Suite_Posting_Delivery::status( $request )->get_error_data()['status'], 'Anonymous users cannot inspect delivery status.' );
@@ -76,16 +95,54 @@ intake_check( ! isset( $status->data['discovery']['cursor'], $status->data['disc
 $rechecked = Nova_Bridge_Suite_Posting_Delivery::retry_discovery( $request );
 intake_check( 200 === $rechecked->status && $rechecked->data['recheck_scheduled'] && ! Nova_Bridge_Suite_Posting_Jobs::$state['suspended'], 'Nonce-authenticated administrator can schedule same-credential reauthentication without HTTP.' );
 intake_check( is_wp_error( Nova_Bridge_Suite_Posting_Delivery::retry_discovery( $request ) ), 'Recheck applies only to authorization suspension.' );
+intake_check( 0 === Nova_Bridge_Suite_Posting_Worker::$runs, 'Auth recheck responds before the worker runs.' );
+Nova_Bridge_Suite_Posting_Delivery::run_queued();
+intake_check( 1 === Nova_Bridge_Suite_Posting_Worker::$runs && [ 'flush', 'worker' ] === $execution, 'Shutdown flushes the response before running the queued auth recheck.' );
 $request->body = json_encode( [ 'event' => 'content.ready', 'content_id' => '123', 'site' => $connection['site_id'], 'version' => 1 ] );
 $timestamp = (string) time(); $request->headers['x-nova-timestamp'] = $timestamp;
 $request->headers['x-nova-signature'] = 'sha256=' . hash_hmac( 'sha256', $timestamp . '.' . $request->body, $connection['webhook_secret'] );
 $accepted = Nova_Bridge_Suite_Posting_Delivery::ready( $request );
 intake_check( 202 === $accepted->status && $accepted->data['wake_accepted'] && 1 === Nova_Bridge_Suite_Posting_Jobs::$wakes, 'Paused connection accepts a signed event solely as a durable discovery wake.' );
 intake_check( ! isset( $accepted->data['job_id'] ) && 1 === Nova_Bridge_Suite_Posting_Jobs::$installs, 'Hint intake neither claims a content job nor repeats schema upgrade.' );
+intake_check( 1 === Nova_Bridge_Suite_Posting_Worker::$runs, '202 acknowledges only the persisted wake, before native processing.' );
 $request->body .= ' ';
 intake_check( 401 === Nova_Bridge_Suite_Posting_Delivery::ready( $request )->get_error_data()['status'] && 1 === Nova_Bridge_Suite_Posting_Jobs::$wakes, 'Invalid raw-body signature cannot create a wake.' );
 $request->body = rtrim( $request->body ); Nova_Bridge_Suite_Posting_Settings::$connection['enabled'] = false;
 intake_check( 503 === Nova_Bridge_Suite_Posting_Delivery::ready( $request )->get_error_data()['status'] && 1 === Nova_Bridge_Suite_Posting_Jobs::$wakes, 'Signed notification cannot activate a disabled connection.' );
+Nova_Bridge_Suite_Posting_Delivery::run_queued();
+intake_check( 1 === Nova_Bridge_Suite_Posting_Worker::$runs, 'Disabling the connection before shutdown prevents queued network or CMS work.' );
+Nova_Bridge_Suite_Posting_Settings::$connection = $connection;
+Nova_Bridge_Suite_Posting_Delivery::ready( $request ); Nova_Bridge_Suite_Posting_Delivery::ready( $request );
+Nova_Bridge_Suite_Posting_Delivery::run_queued(); Nova_Bridge_Suite_Posting_Delivery::run_queued();
+intake_check( 3 === Nova_Bridge_Suite_Posting_Jobs::$wakes && 2 === Nova_Bridge_Suite_Posting_Worker::$runs, 'Duplicate signed wakes persist independently but coalesce into one request-local batch.' );
+Nova_Bridge_Suite_Posting_Delivery::ready( $request ); Nova_Bridge_Suite_Posting_Delivery::run_queued();
+intake_check( 3 === Nova_Bridge_Suite_Posting_Worker::$runs, 'A later reminder with the same content and version runs another batch.' );
+Nova_Bridge_Suite_Posting_Jobs::$fail_wake = true;
+intake_check( is_wp_error( Nova_Bridge_Suite_Posting_Delivery::ready( $request ) ), 'Failed durable wake storage is not acknowledged.' );
+Nova_Bridge_Suite_Posting_Delivery::run_queued();
+intake_check( 3 === Nova_Bridge_Suite_Posting_Worker::$runs, 'Failed intake cannot queue unjournaled work.' );
+Nova_Bridge_Suite_Posting_Jobs::$fail_wake = false;
+Nova_Bridge_Suite_Posting_Delivery::resume( $request );
+intake_check( Nova_Bridge_Suite_Posting_Jobs::$resumed && 3 === Nova_Bridge_Suite_Posting_Worker::$runs, 'Explicit resume retains the journal and defers execution until after its response.' );
+Nova_Bridge_Suite_Posting_Delivery::run_queued();
+intake_check( 4 === Nova_Bridge_Suite_Posting_Worker::$runs, 'Explicit resume actually starts a batch without cron.' );
+$before = Nova_Bridge_Suite_Posting_Jobs::$wakes;
+Nova_Bridge_Suite_Posting_Delivery::initialize(); Nova_Bridge_Suite_Posting_Delivery::run_queued();
+$marker = $options[Nova_Bridge_Suite_Posting_Delivery::BOOTSTRAP_OPTION];
+intake_check( $before + 1 === Nova_Bridge_Suite_Posting_Jobs::$wakes && 5 === Nova_Bridge_Suite_Posting_Worker::$runs && 64 === strlen( $marker ), 'First enabled bootstrap records a private fingerprint and starts catch-up.' );
+Nova_Bridge_Suite_Posting_Delivery::initialize(); Nova_Bridge_Suite_Posting_Delivery::run_queued();
+intake_check( 5 === Nova_Bridge_Suite_Posting_Worker::$runs, 'Ordinary subsequent requests do not poll or start another batch.' );
+foreach ( [ 'paused' => false, 'token' => 'rotated-fixture-token', 'webhook_secret' => 'rotated-fixture-signing-secret' ] as $key => $value ) {
+    Nova_Bridge_Suite_Posting_Settings::$connection[$key] = $value;
+    Nova_Bridge_Suite_Posting_Delivery::initialize(); Nova_Bridge_Suite_Posting_Delivery::run_queued();
+}
+intake_check( 8 === Nova_Bridge_Suite_Posting_Worker::$runs, 'Unpause and credential reconnection each trigger bounded catch-up.' );
+Nova_Bridge_Suite_Posting_Settings::$connection['enabled'] = false;
+Nova_Bridge_Suite_Posting_Delivery::initialize();
+intake_check( ! isset( $options[Nova_Bridge_Suite_Posting_Delivery::BOOTSTRAP_OPTION] ), 'Disable clears the catch-up fingerprint without scheduling work.' );
+Nova_Bridge_Suite_Posting_Settings::$connection['enabled'] = true;
+Nova_Bridge_Suite_Posting_Delivery::initialize(); Nova_Bridge_Suite_Posting_Delivery::run_queued();
+intake_check( 9 === Nova_Bridge_Suite_Posting_Worker::$runs, 'Re-enabling the same connection triggers catch-up again.' );
 Nova_Bridge_Suite_Posting_Delivery::register_routes();
 intake_check( 'POST' === $routes['/posting/discovery/retry']['methods'] && [ 'Nova_Bridge_Suite_Posting_Delivery', 'can_retry_discovery' ] === $routes['/posting/discovery/retry']['permission_callback'], 'Authorization recheck is a protected POST route.' );
 echo 'PASS ' . $checks . " contracted intake and status checks.\n";

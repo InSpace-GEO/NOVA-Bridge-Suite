@@ -8,23 +8,53 @@ final class Nova_Bridge_Suite_Posting_Delivery {
     public const CLOCK_SKEW_SECONDS = 300;
     public const SCHEMA_OPTION = 'nova_bridge_posting_schema_version';
     public const SCHEMA_VERSION = 3;
+    public const BOOTSTRAP_OPTION = 'nova_bridge_posting_webhook_bootstrap';
     private static $schema_attempted = null;
+    private static $run_queued = false;
+    private static $running = false;
 
     public static function bootstrap(): void {
         add_action( 'rest_api_init', [ __CLASS__, 'register_routes' ] );
-        add_filter( 'cron_schedules', [ __CLASS__, 'schedules' ] );
-        add_action( self::CRON_HOOK, [ __CLASS__, 'drain' ] );
-        add_action( 'init', [ __CLASS__, 'schedule' ] );
+        add_action( 'init', [ __CLASS__, 'initialize' ] );
+        add_action( 'shutdown', [ __CLASS__, 'run_queued' ], 20 );
     }
 
-    public static function schedules( array $schedules ): array {
-        $schedules['nova_posting_minute'] = [ 'interval' => 60, 'display' => 'NOVA delivery recovery every minute' ];
-        return $schedules;
-    }
-
-    public static function schedule(): void {
+    /** One catch-up per effective connection; ordinary requests never poll for deliveries. */
+    public static function initialize(): void {
+        if ( wp_next_scheduled( self::CRON_HOOK ) ) { wp_clear_scheduled_hook( self::CRON_HOOK ); }
         $connection = Nova_Bridge_Suite_Posting_Settings::connection();
-        if ( ! empty( $connection['enabled'] ) && self::ensure_schema() && ! wp_next_scheduled( self::CRON_HOOK ) ) { wp_schedule_event( time() + 10, 'nova_posting_minute', self::CRON_HOOK ); }
+        if ( empty( $connection['enabled'] ) ) { delete_option( self::BOOTSTRAP_OPTION ); return; }
+        if ( ! self::ensure_schema() ) { return; }
+        $key = hash( 'sha256', wp_json_encode( [ 'webhook-runner-v1', $connection['base_url'] ?? '', $connection['site_id'] ?? '', $connection['token'] ?? '', $connection['webhook_secret'] ?? '', ! empty( $connection['paused'] ), (int) ( $connection['actor_user_id'] ?? 0 ) ] ) );
+        if ( get_option( self::BOOTSTRAP_OPTION, '' ) === $key ) { return; }
+        $store = new Nova_Bridge_Suite_Posting_Jobs();
+        if ( is_wp_error( $store->lock( 'webhook-bootstrap' ) ) ) { return; }
+        try {
+            if ( get_option( self::BOOTSTRAP_OPTION, '' ) === $key ) { return; }
+            if ( is_wp_error( ( new Nova_Bridge_Suite_Posting_Discovery( $connection, $store ) )->wake() ) ) { return; }
+            update_option( self::BOOTSTRAP_OPTION, $key, false );
+            self::queue_run();
+        } finally { $store->unlock( 'webhook-bootstrap' ); }
+    }
+
+    /** Coalesce wakes within this request; the service owns durable reminders between requests. */
+    private static function queue_run(): void { self::$run_queued = true; }
+
+    public static function run_queued(): void {
+        if ( ! self::$run_queued || self::$running ) { return; }
+        self::$run_queued = false;
+        self::$running = true;
+        $previous = ignore_user_abort( true );
+        try {
+            // WordPress has emitted its response before shutdown. Finish it before slow CMS work
+            // where supported; a host that cannot flush may time out and receive another reminder.
+            if ( function_exists( 'fastcgi_finish_request' ) ) { fastcgi_finish_request(); }
+            elseif ( function_exists( 'litespeed_finish_request' ) ) { litespeed_finish_request(); }
+            self::drain();
+        } finally {
+            ignore_user_abort( (bool) $previous );
+            self::$running = false;
+        }
     }
 
     /** Upgrade only an enabled connection; disabled installs perform no schema work. */
@@ -70,7 +100,9 @@ final class Nova_Bridge_Suite_Posting_Delivery {
         if ( empty( $connection['enabled'] ) ) { return new WP_Error( 'nova_posting_disabled', 'The connection is disabled.', [ 'status' => 503 ] ); }
         if ( ! self::ensure_schema() ) { return new WP_Error( 'nova_posting_storage', 'Discovery storage is unavailable.', [ 'status' => 503 ] ); }
         $result = ( new Nova_Bridge_Suite_Posting_Discovery( $connection ) )->retry_authentication();
-        return is_wp_error( $result ) ? $result : self::response( [ 'recheck_scheduled' => true, 'message' => 'Discovery will authenticate again on the next worker run. Retained work is unchanged.' ] );
+        if ( is_wp_error( $result ) ) { return $result; }
+        self::queue_run();
+        return self::response( [ 'recheck_scheduled' => true, 'message' => 'Discovery will authenticate again after this response. Blocked deliveries still require an explicit resume.' ] );
     }
 
     private static function response( array $data, int $status = 200 ) {
@@ -99,6 +131,7 @@ final class Nova_Bridge_Suite_Posting_Delivery {
         if ( ! self::ensure_schema() ) { return new WP_Error( 'nova_posting_storage', 'Discovery storage is unavailable.', [ 'status' => 503 ] ); }
         $woken = ( new Nova_Bridge_Suite_Posting_Discovery( $connection ) )->wake();
         if ( is_wp_error( $woken ) ) { return $woken; }
+        self::queue_run();
         // Only the durable wake is acknowledged. Discovery supplies authoritative work identities.
         return self::response( [ 'accepted' => true, 'wake_accepted' => true ], 202 );
     }
@@ -114,7 +147,7 @@ final class Nova_Bridge_Suite_Posting_Delivery {
         if ( is_wp_error( $jobs ) ) { return $jobs; }
         $discovery = self::SCHEMA_VERSION === (int) get_option( self::SCHEMA_OPTION, 0 ) ? $store->discovery_state( $connection['site_id'] ?? '' ) : [];
         $public_state = is_wp_error( $discovery ) ? [ 'last_error' => 'discovery_storage' ] : array_intersect_key( $discovery, array_flip( [ 'cycle_started', 'last_completed', 'next_attempt', 'failures', 'last_error', 'suspended', 'auth_status' ] ) );
-        return self::response( [ 'enabled' => ! empty( $connection['enabled'] ), 'paused' => ! empty( $connection['paused'] ), 'next_scheduled' => wp_next_scheduled( self::CRON_HOOK ) ?: null, 'jobs' => $jobs, 'discovery' => $public_state ] );
+        return self::response( [ 'enabled' => ! empty( $connection['enabled'] ), 'paused' => ! empty( $connection['paused'] ), 'next_scheduled' => null, 'jobs' => $jobs, 'discovery' => $public_state ] );
     }
 
     public static function resume( $request ) {
@@ -122,6 +155,8 @@ final class Nova_Bridge_Suite_Posting_Delivery {
         if ( is_wp_error( $permission ) ) { return $permission; }
         $connection = Nova_Bridge_Suite_Posting_Settings::connection();
         $result = ( new Nova_Bridge_Suite_Posting_Jobs() )->resume( (int) $request->get_param( 'id' ), $connection['site_id'] ?? '' );
-        return is_wp_error( $result ) ? $result : self::response( [ 'resumed' => true, 'message' => 'The saved phase will be retried. An uncertain mutation is reconciled before any new write.' ] );
+        if ( is_wp_error( $result ) ) { return $result; }
+        if ( ! empty( $connection['enabled'] ) ) { self::queue_run(); }
+        return self::response( [ 'resumed' => true, 'message' => 'The saved phase is queued for retry while the connection is enabled. An uncertain mutation is reconciled before any new write.' ] );
     }
 }
