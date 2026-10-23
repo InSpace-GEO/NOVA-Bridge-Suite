@@ -14,13 +14,21 @@ The delivered `title` is the SEO title; it must not replace the category name.
 The adapter rejects variable regions, other custom roles, ACF companions and
 undeclared bottom fields. This does not enable dynamic-template delivery.
 
-An administrator explicitly synchronizes and approves an immutable local recipe
-revision with `Nova_Bridge_Suite_Static_Recipe_Adapter::sync_and_approve()`.
-The approved profile retains the site, client, domain, origin, complete recipe
-and exact remote template revision. Only the scalar publishing definition and
-source mapping go to the service. Native field authority remains in WordPress.
-Select the resulting template under the source default key `category` using
-the service's ETag/If-Match contract. Configuration does not enable polling.
+With the posting connection enabled, an administrator saving the category creation
+template synchronizes it to the configured posting-service URL and site credential.
+If that registration has no `category` default, the editor creates its first remote
+template, retains the exact local execution profile, and selects the default with
+ETag/If-Match while preserving other page-type defaults. This works for both test
+and production connections; switching registrations does not reuse the old site's
+approvals. Only the scalar publishing definition and source mapping go to the
+service. Native field authority remains in WordPress. Configuration does not
+enable polling.
+
+Editor-created profiles use the authenticated site scope, origin, complete recipe
+and exact remote template revision. Private backoffice client/domain IDs are not
+required for setup. Existing explicit CLI approvals made with
+`Nova_Bridge_Suite_Static_Recipe_Adapter::sync_and_approve()` retain their additional
+client/domain pins.
 
 Once that category default is approved and the posting connection is enabled,
 saving its creation template in the editor also updates the existing remote
@@ -35,7 +43,9 @@ revision without another local save or a blind remote update. A pending update
 blocks newer category saves until reconciled. This uses a single WordPress
 option and the existing lock mechanism, without cron or database migrations.
 An unrecognized remote default, conflicting revision or unsupported recipe
-requires setup/review; no tenant scope or native mapping is inferred.
+requires setup/review. An unconfirmed first template creation requires manual
+reconciliation rather than a blind duplicate POST. A failed default selection
+can be retried with **Sync saved revision** using the already created template.
 
 Native execution uses the standard delivery journal with a separate term writer.
 It creates only a new category at the verified planned category URL. It refuses

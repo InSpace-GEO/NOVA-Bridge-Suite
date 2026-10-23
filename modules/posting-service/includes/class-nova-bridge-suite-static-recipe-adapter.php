@@ -30,30 +30,32 @@ final class Nova_Bridge_Suite_Static_Recipe_Adapter {
         } finally { $locks->unlock( $lock ); }
     }
 
-    private static function editor_remote( $reply, string $id ) {
+    private static function editor_remote( $reply, string $id, bool $creating = false ) {
         if ( is_wp_error( $reply ) ) { return $reply; }
         $remote = $reply['body'] ?? null;
-        if ( 200 !== ( $reply['status'] ?? null ) || ! is_array( $remote ) || ( $remote['id'] ?? null ) !== $id || ! is_int( $remote['revision'] ?? null ) || $remote['revision'] < 1 || ( $remote['enabled'] ?? null ) !== true || ( $remote['retired_at'] ?? null ) !== null || ( $remote['page_type'] ?? null ) !== 'category' || ( $reply['etag'] ?? '' ) !== '"' . $remote['revision'] . '"' ) { return self::error( 'template_identity', 'The service did not return the enabled category template and its exact revision ETag.' ); }
+        if ( ! in_array( $reply['status'] ?? null, $creating ? [ 200, 201 ] : [ 200 ], true ) || ! is_array( $remote ) || ! Nova_Bridge_Suite_Posting_Protocol::uuid( $id ) || ( $remote['id'] ?? null ) !== $id || ! is_int( $remote['revision'] ?? null ) || $remote['revision'] < 1 || ( $remote['enabled'] ?? null ) !== true || ( $remote['retired_at'] ?? null ) !== null || ( $remote['page_type'] ?? null ) !== 'category' || ( $reply['etag'] ?? '' ) !== '"' . $remote['revision'] . '"' ) { return self::error( 'template_identity', 'The service did not return the enabled category template and its exact revision ETag.' ); }
         return $remote;
     }
 
-    /** Update the existing approved category template; never infer tenant scope or replace defaults. */
+    /** Create the first category default, or update the existing locally approved template. */
     private static function sync_editor_record( $client, string $key, array $saved, $pending ) {
         $record = Nova_Bridge_Suite_Layout_Recipes::delivery_record( $saved['id'], $saved['revision'] ); if ( is_wp_error( $record ) ) { return $record; }
         $default = Nova_Bridge_Suite_Layout_Recipes::defaults()['taxonomy:product_cat'] ?? [];
         if ( ( $default['id'] ?? null ) !== $record['id'] || ( $default['revision'] ?? null ) !== $record['revision'] ) { return self::error( 'default_changed', 'Reload the current category creation default before synchronizing.' ); }
         $projection = self::project_record( $record ); if ( is_wp_error( $projection ) ) { return $projection; }
         $reply = $client->site_request( 'GET', '/template-defaults' ); if ( is_wp_error( $reply ) ) { return $reply; }
+        $defaults = self::editor_defaults( $reply ); if ( is_wp_error( $defaults ) ) { return $defaults; }
         $id = $reply['body']['defaults']['category'] ?? null;
-        if ( 200 !== ( $reply['status'] ?? null ) || ! Nova_Bridge_Suite_Posting_Protocol::uuid( $id ) ) { return self::error( 'setup_required', 'Set up and approve a category publishing template for this site before synchronizing editor revisions.' ); }
+        if ( ( null === $id && null === $pending ) || ( $pending['operation'] ?? '' ) === 'create' ) { return self::create_editor_default( $client, $key, $record, $projection, $pending, $reply ); }
+        if ( ! Nova_Bridge_Suite_Posting_Protocol::uuid( $id ) ) { return self::error( 'sync_conflict', 'The category default changed while an update was pending.' ); }
         $remote = self::editor_remote( $client->site_request( 'GET', '/templates/' . $id ), $id ); if ( is_wp_error( $remote ) ) { return $remote; }
         if ( null === $pending ) {
             $prior = get_option( self::key( 'profile', $client->site_id() . ':' . $id . ':' . $remote['revision'] ), null );
             $unsigned = is_array( $prior ) ? $prior : []; unset( $unsigned['profile_digest'] );
-            // The old recipe may need new field declarations; only its retained tenant authority is reused.
-            if ( ! is_array( $prior ) || ( $prior['mode'] ?? '' ) !== self::MODE || ! hash_equals( self::digest( $unsigned ), (string) ( $prior['profile_digest'] ?? '' ) ) || ( $prior['site_id'] ?? '' ) !== $client->site_id() || ( $prior['origin'] ?? '' ) !== rtrim( home_url( '/' ), '/' ) || ! Nova_Bridge_Suite_Posting_Protocol::decimal_id( $prior['client_id'] ?? null ) || ! Nova_Bridge_Suite_Posting_Protocol::decimal_id( $prior['domain_id'] ?? null ) || self::digest( $prior['template'] ?? [] ) !== self::digest( self::frozen( $remote ) ) ) { return self::error( 'profile_scope', 'The current remote category revision has no matching approved local authority. Review the site setup before synchronizing.' ); }
+            // Reuse only this site's retained authority, never a profile from another registration.
+            if ( ! is_array( $prior ) || ( $prior['mode'] ?? '' ) !== self::MODE || ! hash_equals( self::digest( $unsigned ), (string) ( $prior['profile_digest'] ?? '' ) ) || ( $prior['site_id'] ?? '' ) !== $client->site_id() || ( $prior['origin'] ?? '' ) !== rtrim( home_url( '/' ), '/' ) || ( ( $prior['scope'] ?? '' ) !== 'site_credential' && ( ! Nova_Bridge_Suite_Posting_Protocol::decimal_id( $prior['client_id'] ?? null ) || ! Nova_Bridge_Suite_Posting_Protocol::decimal_id( $prior['domain_id'] ?? null ) ) ) || self::digest( $prior['template'] ?? [] ) !== self::digest( self::frozen( $remote ) ) ) { return self::error( 'profile_scope', 'The current remote category revision has no matching approved local authority. Review the site setup before synchronizing.' ); }
             if ( self::digest( $prior['record'] ) === self::digest( $record ) ) { return self::editor_summary( $record, $remote ); }
-            $profile = [ 'mode' => self::MODE, 'site_id' => $client->site_id(), 'client_id' => $prior['client_id'], 'domain_id' => $prior['domain_id'], 'origin' => $prior['origin'], 'record' => $record, 'projection' => $projection ];
+            $profile = array_intersect_key( $prior, array_flip( [ 'mode', 'site_id', 'client_id', 'domain_id', 'scope', 'origin' ] ) ) + [ 'record' => $record, 'projection' => $projection ];
             $pending = [ 'profile' => $profile, 'base_template' => self::frozen( $remote ) ];
             if ( ! add_option( $key, $pending, '', false ) ) { return self::error( 'sync_storage', 'Could not retain the template update before contacting posting service.' ); }
         }
@@ -76,6 +78,48 @@ final class Nova_Bridge_Suite_Static_Recipe_Adapter {
 
     private static function editor_summary( array $record, array $remote ): array {
         return [ 'status' => 'synced', 'recipe_revision' => $record['revision'], 'template_id' => $remote['id'], 'template_revision' => $remote['revision'] ];
+    }
+
+    private static function editor_defaults( $reply ) {
+        if ( is_wp_error( $reply ) ) { return $reply; }
+        $body = $reply['body'] ?? [];
+        if ( ( $reply['status'] ?? null ) !== 200 || ! is_array( $body['defaults'] ?? null ) || ! is_int( $body['revision'] ?? null ) || $body['revision'] < 1 || ( $reply['etag'] ?? '' ) !== '"' . $body['revision'] . '"' ) { return self::error( 'defaults_identity', 'The service did not return category defaults with an exact revision ETag.' ); }
+        foreach ( $body['defaults'] as $id ) { if ( ! Nova_Bridge_Suite_Posting_Protocol::uuid( $id ) ) { return self::error( 'defaults_identity', 'The service returned an invalid template default.' ); } }
+        return $body['defaults'];
+    }
+
+    /** The site credential authorizes first-time setup without private backoffice client/domain IDs. */
+    private static function create_editor_default( $client, string $key, array $record, array $projection, $pending, array $defaults_reply ) {
+        $fresh = null === $pending;
+        if ( $fresh ) {
+            $pending = [ 'operation' => 'create', 'profile' => [ 'mode' => self::MODE, 'scope' => 'site_credential', 'site_id' => $client->site_id(), 'origin' => rtrim( home_url( '/' ), '/' ), 'record' => $record, 'projection' => $projection ] ];
+            if ( ! add_option( $key, $pending, '', false ) ) { return self::error( 'sync_storage', 'Could not retain the first template creation before contacting posting service.' ); }
+        }
+        $profile = $pending['profile'] ?? [];
+        if ( ( $profile['site_id'] ?? '' ) !== $client->site_id() || ( $profile['origin'] ?? '' ) !== rtrim( home_url( '/' ), '/' ) || self::digest( $profile['record'] ?? [] ) !== self::digest( $record ) || self::digest( $profile['projection'] ?? [] ) !== self::digest( $projection ) ) { return self::error( 'sync_conflict', 'The pending creation belongs to another site or saved revision.' ); }
+        $id = $pending['template_id'] ?? null;
+        if ( ! $fresh && ! $id ) { return self::error( 'create_uncertain', 'A template create was attempted but its UUID could not be confirmed. Reconcile it before retrying; no duplicate was created.' ); }
+        $reply = $id ? $client->site_request( 'GET', '/templates/' . $id ) : $client->site_request( 'POST', '/templates', $projection['input'] );
+        if ( is_wp_error( $reply ) ) { return $reply; }
+        $remote = self::editor_remote( $reply, $id ?: ( $reply['body']['id'] ?? '' ), $fresh ); if ( is_wp_error( $remote ) ) { return $remote; }
+        foreach ( $projection['input'] as $name => $value ) { if ( self::digest( [ $remote[$name] ?? null ] ) !== self::digest( [ $value ] ) ) { return self::error( 'template_projection', 'The created template differs from this saved category mapping.' ); } }
+        $pending['template_id'] = $remote['id']; update_option( $key, $pending, false );
+        if ( get_option( $key, null ) !== $pending ) { return self::error( 'sync_storage', 'Could not retain the created template identity.' ); }
+        $profile['template'] = self::frozen( $remote ); $profile['profile_digest'] = self::digest( $profile );
+        $approved = self::key( 'profile', $client->site_id() . ':' . $remote['id'] . ':' . $remote['revision'] );
+        if ( ! add_option( $approved, $profile, '', false ) && get_option( $approved, null ) !== $profile ) { return self::error( 'profile_conflict', 'This remote revision already has a different immutable local authority.' ); }
+        // Approve locally before selecting the default: new deliveries can arrive immediately afterwards.
+        $defaults = $defaults_reply['body']['defaults']; $selected = $defaults['category'] ?? null;
+        if ( null !== $selected && $selected !== $remote['id'] ) { return self::error( 'sync_conflict', 'Another category default was selected. No overwrite was attempted.' ); }
+        if ( null === $selected ) {
+            $defaults['category'] = $remote['id'];
+            $confirmed = self::editor_defaults( $client->site_request( 'PUT', '/template-defaults', [ 'defaults' => $defaults ], [ 'If-Match' => $defaults_reply['etag'] ] ) );
+            if ( is_wp_error( $confirmed ) ) { return $confirmed; }
+            if ( self::digest( $confirmed ) !== self::digest( $defaults ) ) { return self::error( 'sync_conflict', 'The service did not confirm the selected category default.' ); }
+        }
+        delete_option( $key );
+        if ( null !== get_option( $key, null ) ) { return self::error( 'sync_storage', 'The mapping is ready, but its pending creation could not be cleared. Retry synchronization.' ); }
+        return self::editor_summary( $record, $remote );
     }
 
     /** The UI stores semantic role IDs independently of editable labels and source names. */
@@ -143,7 +187,12 @@ final class Nova_Bridge_Suite_Static_Recipe_Adapter {
     }
     public static function validate_profile( array $snapshot, array $profile ) {
         $unsigned = $profile; unset( $unsigned['profile_digest'] );
-        if ( ( $profile['mode'] ?? '' ) !== self::MODE || ! hash_equals( self::digest( $unsigned ), (string) ( $profile['profile_digest'] ?? '' ) ) || ( $profile['site_id'] ?? '' ) !== ( $snapshot['site_id'] ?? null ) || ( $profile['client_id'] ?? '' ) !== ( $snapshot['client_id'] ?? null ) || ( $profile['domain_id'] ?? '' ) !== ( $snapshot['domain_id'] ?? null ) || ( $profile['origin'] ?? '' ) !== rtrim( home_url( '/' ), '/' ) || ( $snapshot['page_type_frontend'] ?? '' ) !== ( $profile['template']['page_type'] ?? null ) || self::digest( $snapshot['configuration'] ?? [] ) !== self::digest( $profile['template'] ?? [] ) ) { return self::error( 'profile_scope', 'The delivery differs from its approved site, client, domain, page type or frozen template revision.' ); }
+        // Editor-created profiles trust the authenticated site boundary, as the mapped adapter does.
+        // Explicit CLI approvals retain their additional client/domain pins.
+        $tenant = ( $profile['scope'] ?? '' ) === 'site_credential'
+            ? Nova_Bridge_Suite_Posting_Protocol::decimal_id( $snapshot['client_id'] ?? null ) && Nova_Bridge_Suite_Posting_Protocol::decimal_id( $snapshot['domain_id'] ?? null )
+            : ( $profile['client_id'] ?? '' ) === ( $snapshot['client_id'] ?? null ) && ( $profile['domain_id'] ?? '' ) === ( $snapshot['domain_id'] ?? null );
+        if ( ( $profile['mode'] ?? '' ) !== self::MODE || ! hash_equals( self::digest( $unsigned ), (string) ( $profile['profile_digest'] ?? '' ) ) || ( $profile['site_id'] ?? '' ) !== ( $snapshot['site_id'] ?? null ) || ! $tenant || ( $profile['origin'] ?? '' ) !== rtrim( home_url( '/' ), '/' ) || ( $snapshot['page_type_frontend'] ?? '' ) !== ( $profile['template']['page_type'] ?? null ) || self::digest( $snapshot['configuration'] ?? [] ) !== self::digest( $profile['template'] ?? [] ) ) { return self::error( 'profile_scope', 'The delivery differs from its approved site, client, domain, page type or frozen template revision.' ); }
         $record = Nova_Bridge_Suite_Layout_Recipes::delivery_record( $profile['record']['id'], $profile['record']['revision'] ); if ( is_wp_error( $record ) ) { return $record; }
         if ( self::digest( $record ) !== self::digest( $profile['record'] ) ) { return self::error( 'recipe_changed', 'The approved immutable local recipe changed.' ); }
         return true;
