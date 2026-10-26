@@ -22,4 +22,27 @@ check( str_starts_with( $saved['posting_sync']['code'], 'nova_static_' ) && ! No
 $before = $options[RECIPE_OPTION]; $retry = data( route( 'sync', 'POST', [], [ 'id' => $saved['id'], 'revision' => 1 ] ) );
 check( $retry['posting_sync']['status'] === 'failed' && $options[RECIPE_OPTION] === $before, 'Retrying remote sync never creates another local revision.' );
 rejected( route( 'sync', 'POST', [], [ 'id' => $saved['id'], 'revision' => 1 ], [ 'x-wp-nonce' => 'invalid' ] ), 403, 'Sync requires the valid administrator session nonce.' );
+// Exercise real endpoint dispatch/storage with a transport seam; native Elementor compilation has its own tests.
+class Nova_Bridge_Suite_Stored_Recipe_Sync {
+    public static $calls = [];
+    public static function sync_editor( array $connection, callable $load, bool $saving = false, string $recipe_id = '', $client = null, $locks = null, string $recover_template_id = '' ) {
+        self::$calls[] = [ 'saving' => $saving, 'recipe_id' => $recipe_id ];
+        $record = $load(); if ( is_wp_error( $record ) ) { return $record; }
+        $record['posting_sync'] = [ 'status' => 'synced', 'recipe_revision' => $record['revision'], 'template_revision' => 1, 'template_id' => '00000000-0000-4000-8000-000000000999' ];
+        return $record;
+    }
+}
+Nova_Bridge_Suite_Recipe_Engine::register_adapter( 'elementor', new Nova_Bridge_Suite_Recipe_Core() );
+$elementor = design( 'elementor', 'static' );
+$body = save_body( $elementor, $elementor['recipe_preset'], $elementor['sample'] ); $body['posting_page_type'] = 'informative';
+$elementor_saved = data( route( 'save', 'POST', [], $body ) );
+check( count( Nova_Bridge_Suite_Stored_Recipe_Sync::$calls ) === 1 && Nova_Bridge_Suite_Stored_Recipe_Sync::$calls[0]['saving'], 'A static Elementor creation save must enter the stored-layout synchronization wrapper.' );
+check( $elementor_saved['posting_page_type'] === 'informative' && $elementor_saved['posting_sync']['recipe_revision'] === $elementor_saved['revision'], 'The real save response must retain the selected NOVA content type and exact synchronized revision.' );
+$profile = data( route( 'profile', 'GET', [ 'id' => $elementor_saved['id'] ] ) );
+check( $profile['posting_page_type'] === 'informative', 'Reopening a saved layout must retain its NOVA content type.' );
+$before = $options[RECIPE_OPTION]; $retry = data( route( 'sync', 'POST', [], [ 'id' => $elementor_saved['id'], 'revision' => $elementor_saved['revision'] ] ) );
+check( count( Nova_Bridge_Suite_Stored_Recipe_Sync::$calls ) === 2 && ! Nova_Bridge_Suite_Stored_Recipe_Sync::$calls[1]['saving'] && $options[RECIPE_OPTION] === $before, 'Elementor retry must route to its stored-layout adapter without another local save.' );
+$dynamic = design( 'elementor', 'mixed' );
+$dynamic_saved = data( route( 'save', 'POST', [], save_body( $dynamic, $dynamic['recipe_preset'], $dynamic['sample'] ) ) );
+check( count( Nova_Bridge_Suite_Stored_Recipe_Sync::$calls ) === 2 && ! isset( $dynamic_saved['posting_sync'] ), 'Dynamic Elementor templates remain local and do not trigger unsupported automatic posting synchronization.' );
 echo 'PASS ' . $checks . " layout recipe save/sync integration checks.\n";

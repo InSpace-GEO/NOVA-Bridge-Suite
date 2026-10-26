@@ -291,18 +291,26 @@ final class Nova_Bridge_Suite_Layout_Recipes {
         if ( ( $body['resource_id'] ?? '' ) === 'taxonomy:product_cat' && ! empty( $connection['enabled'] ) && class_exists( 'Nova_Bridge_Suite_Static_Recipe_Adapter' ) ) {
             return self::response( Nova_Bridge_Suite_Static_Recipe_Adapter::sync_editor( $connection, $load, true ) );
         }
+        if ( ( $body['resource_id'] ?? '' ) === 'post_type:page' && ( $body['recipe']['builder'] ?? '' ) === 'elementor' && ( $body['recipe']['mode'] ?? '' ) === 'static' && ! empty( $connection['enabled'] ) && class_exists( 'Nova_Bridge_Suite_Stored_Recipe_Sync' ) ) {
+            return self::response( Nova_Bridge_Suite_Stored_Recipe_Sync::sync_editor( $connection, $load, true, $body['id'] ?? '' ) );
+        }
         return self::response( $load() );
     }
     /** Explicit retry reconciles the same saved revision without creating another local version. */
     public static function sync( $request ) {
         $body = self::body( $request ); if ( is_wp_error( $body ) ) { return $body; }
         if ( ! self::uuid( $body['id'] ?? null ) || ! is_int( $body['revision'] ?? null ) || $body['revision'] < 1 ) { return self::error( 'identity', 'Supply the saved template ID and revision.' ); }
+        $saved = self::record( $body['id'], $body['revision'] ); if ( is_wp_error( $saved ) ) { return $saved; }
+        if ( ( $saved['resource_id'] ?? '' ) === 'post_type:page' && ( $saved['builder'] ?? '' ) === 'elementor' && class_exists( 'Nova_Bridge_Suite_Stored_Recipe_Sync' ) ) {
+            return self::response( Nova_Bridge_Suite_Stored_Recipe_Sync::sync_editor( Nova_Bridge_Suite_Posting_Settings::connection(), static function () use ( $saved ) { return $saved; }, false, $body['id'], null, null, is_string( $body['recover_template_id'] ?? null ) ? $body['recover_template_id'] : '' ) );
+        }
         if ( ! class_exists( 'Nova_Bridge_Suite_Static_Recipe_Adapter' ) || ! class_exists( 'Nova_Bridge_Suite_Posting_Settings' ) ) { return self::error( 'sync_unavailable', 'The posting-service integration is unavailable.', 503 ); }
         return self::response( Nova_Bridge_Suite_Static_Recipe_Adapter::sync_editor( Nova_Bridge_Suite_Posting_Settings::connection(), static function () use ( $body ) { return self::record( $body['id'], $body['revision'] ); } ) );
     }
     private static function save_local( $request ) {
         $body = self::body( $request ); if ( is_wp_error( $body ) ) { return $body; } $resource = self::resource( $body['resource_id'] ?? '' ); if ( is_wp_error( $resource ) ) { return $resource; } $recipe = self::reviewed( $body ); if ( is_wp_error( $recipe ) ) { return $recipe; }
         $scope = self::fits_resource( $recipe, $resource ); if ( is_wp_error( $scope ) ) { return $scope; }
+        if ( isset( $body['posting_page_type'] ) && ! in_array( $body['posting_page_type'], [ 'service', 'informative' ], true ) ) { return self::error( 'posting_page_type', 'Choose service or informative as the NOVA content type.' ); }
         $source = class_exists( 'Nova_Bridge_Suite_Recipe_Visual' ) ? Nova_Bridge_Suite_Recipe_Visual::validate_source( $body, $recipe, $resource ) : null; if ( is_wp_error( $source ) ) { return $source; }
         $content = $body['content'] ?? null; if ( ! is_array( $content ) || ! is_string( $body['preview_receipt'] ?? null ) || ! hash_equals( self::receipt( $recipe, $content ), $body['preview_receipt'] ) ) { return self::error( 'preview', 'Preview the current template and example before saving.', 409 ); }
         $compiled = self::compile( $recipe, $content, 'save:' . Nova_Bridge_Suite_Recipe_Engine::digest( $recipe ) ); if ( is_wp_error( $compiled ) ) { return $compiled; }
@@ -317,6 +325,7 @@ final class Nova_Bridge_Suite_Layout_Recipes {
             if ( $history && ! empty( $history[$latest]['source_reference'] ) && ! $source ) { return self::error( 'reference', 'Keep the verified example identity, or capture a new design explicitly before updating this template.', 409 ); }
             if ( count( $history ) >= 50 || ( ! $history && count( $state['profiles'] ) >= 100 ) ) { return self::error( 'history', 'The retained template history reached its limit. No history was removed.', 409 ); }
             $record = [ 'id' => $id, 'revision' => $latest + 1, 'resource_id' => $resource['id'], 'label' => sanitize_text_field( $label ), 'mode' => $recipe['mode'], 'builder' => $recipe['builder'], 'recipe' => $recipe, 'seal' => $body['seal'], 'acf_seal' => $body['acf_seal'] ?? '', 'content_schema' => $compiled['content_schema'], 'sample' => $content, 'created_at' => gmdate( 'c' ), 'created_by' => get_current_user_id() ];
+            if ( 'post_type:page' === $resource['id'] && 'elementor' === $recipe['builder'] ) { $record['posting_page_type'] = $body['posting_page_type'] ?? 'service'; }
             if ( $source ) { $record['source_reference'] = $source; $record['source_receipt'] = $body['source_receipt']; }
             $state['profiles'][$id][$record['revision']] = $record; $state['defaults'][$resource['id']] = array_intersect_key( $record, array_flip( [ 'id', 'revision', 'label', 'mode', 'builder' ] ) ); return [ 'state' => $state, 'result' => $record + [ 'default_saved' => true, 'local_only' => true ] ];
         } ); return $saved;

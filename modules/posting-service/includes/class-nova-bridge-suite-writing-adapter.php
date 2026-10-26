@@ -9,7 +9,7 @@ final class Nova_Bridge_Suite_Writing_Adapter {
 
     public static function canonical_json( $value ): string {
         $normalize = function ( $item ) use ( &$normalize ) {
-            if ( is_float( $item ) || is_resource( $item ) || is_object( $item ) ) { throw new InvalidArgumentException( 'Unsupported policy value.' ); }
+            if ( ( is_float( $item ) && ! is_finite( $item ) ) || is_resource( $item ) || is_object( $item ) ) { throw new InvalidArgumentException( 'Unsupported policy value.' ); }
             if ( is_array( $item ) ) {
                 if ( [] !== $item && array_keys( $item ) !== range( 0, count( $item ) - 1 ) ) { ksort( $item, SORT_STRING ); }
                 foreach ( $item as $key => $child ) { $item[ $key ] = $normalize( $child ); }

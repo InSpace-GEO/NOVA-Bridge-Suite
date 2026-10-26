@@ -198,6 +198,17 @@ final class Nova_Bridge_Suite_Mapping_Drafts {
         return self::draft_response( $stored['draft'], $reference, self::catalog( $mode ) );
     }
 
+    /** Synchronization reads the captured revision even when its authoring example no longer exists. */
+    public static function saved_creation( string $type, int $id, string $expected_revision ) {
+        if ( ! in_array( $type, [ 'post', 'term' ], true ) || $id < 1 || ! self::text( $expected_revision, 100 ) ) { return self::error( 'reference', 'Supply a concrete saved mapping reference and revision.' ); }
+        $stored = self::stored( self::OPTION_PREFIX . hash( 'sha256', $type . ':' . $id ) );
+        if ( isset( $stored['error'] ) ) { return $stored['error']; }
+        $draft = $stored['draft'];
+        if ( ! $draft || 'create' !== ( $draft['routing']['operation'] ?? '' ) ) { return null; }
+        if ( ( $draft['revision'] ?? '' ) !== $expected_revision ) { return self::error( 'conflict', 'This saved creation mapping changed. Reload its current revision before synchronization.', 409 ); }
+        return $draft;
+    }
+
     private static function descriptor( string $path, array $field, array $reference ): array {
         $result = [ 'path' => $path, 'reference_type' => $reference['entity']['reference_type'], 'reference_id' => $reference['entity']['reference_id'], 'signature' => $reference['signature'] ];
         foreach ( [ 'route', 'transport', 'request_path', 'builder', 'write_mode', 'acf_key', 'binding', 'source', 'parent_path', 'element', 'logical_field', 'label', 'type', 'format', 'native_description' ] as $key ) {
@@ -249,6 +260,14 @@ final class Nova_Bridge_Suite_Mapping_Drafts {
         $draft['status'] = 'nova' === $input['catalog_mode'] ? 'awaiting_backend' : 'local_draft';
         $draft['warnings'] = self::warnings( $draft, $reference, $inventory, $template );
         if ( strlen( (string) wp_json_encode( $draft ) ) > self::MAX_BYTES ) { return self::error( 'size', 'The normalized draft exceeds 256 KiB.' ); }
+        if ( 'create' === $draft['routing']['operation'] ) {
+            // Capture server-owned native structure once for this revision. Deliveries never read the example page.
+            if ( ! class_exists( 'Nova_Bridge_Suite_Stored_Layout' ) ) { return self::error( 'stored_layout_unavailable', 'Stored layout creation is unavailable. No changes were saved.', 503 ); }
+            $layout = Nova_Bridge_Suite_Stored_Layout::capture( $draft );
+            if ( is_wp_error( $layout ) ) { return $layout; }
+            $draft['stored_layout'] = $layout;
+            if ( strlen( (string) wp_json_encode( $draft ) ) > 524288 ) { return self::error( 'size', 'The stored layout and mapping exceed the 512 KiB creation limit. No changes were saved.' ); }
+        }
         $saved = self::store( $name, $stored['raw'], $draft );
         if ( is_wp_error( $saved ) ) { return $saved; }
         return self::draft_response( $draft, $reference, $catalog );
@@ -256,10 +275,11 @@ final class Nova_Bridge_Suite_Mapping_Drafts {
 
     private static function validate_draft( array $input, $previous, array $reference, array $inventory, $template ) {
         $fields = $input['fields'] ?? []; $skips = $input['skipped_sources'] ?? []; $repeats = $input['repeat_slots'] ?? []; $routing = $input['routing'] ?? []; $destinations = $input['destination_groups'] ?? [];
-        if ( ! is_array( $fields ) || count( $fields ) > 500 || ! is_array( $skips ) || count( $skips ) > 144 || ! is_array( $repeats ) || count( $repeats ) > 8 || ! is_array( $routing ) || ! in_array( $routing['operation'] ?? null, [ 'update', 'clone' ], true ) || ! self::text( $routing['locale'] ?? '', 64 ) || ( '' !== ( $routing['locale'] ?? '' ) && ! preg_match( '/^[A-Za-z0-9_-]+$/D', $routing['locale'] ) ) ) { return self::error( 'shape', 'Supply bounded fields, skipped sources, fixed repeat slots and valid routing.' ); }
-        if ( 'term' === $reference['entity']['reference_type'] && 'clone' === $routing['operation'] ) { return self::error( 'routing', 'Category references support update drafts only; category cloning is not implemented.' ); }
-        $publication = $routing['publication'] ?? ( 'clone' === $routing['operation'] ? 'draft' : 'preserve' );
+        if ( ! is_array( $fields ) || count( $fields ) > 500 || ! is_array( $skips ) || count( $skips ) > 144 || ! is_array( $repeats ) || count( $repeats ) > 8 || ! is_array( $routing ) || ! in_array( $routing['operation'] ?? null, [ 'update', 'create', 'clone' ], true ) || ! self::text( $routing['locale'] ?? '', 64 ) || ( '' !== ( $routing['locale'] ?? '' ) && ! preg_match( '/^[A-Za-z0-9_-]+$/D', $routing['locale'] ) ) ) { return self::error( 'shape', 'Supply bounded fields, skipped sources, fixed repeat slots and valid routing.' ); }
+        if ( 'term' === $reference['entity']['reference_type'] && 'update' !== $routing['operation'] ) { return self::error( 'routing', 'Category references support update drafts only. Use a category recipe to create categories.' ); }
+        $publication = $routing['publication'] ?? ( 'update' === $routing['operation'] ? 'preserve' : 'draft' );
         if ( ! in_array( $publication, [ 'preserve', 'publish', 'draft' ], true ) ) { return self::error( 'routing', 'Choose a valid publication policy.' ); }
+        if ( 'create' === $routing['operation'] && 'preserve' === $publication ) { $publication = 'draft'; }
         // Instructions are bounded plain text; literal markup examples must survive for the adapter.
         $draft = [ 'schema_version' => 1, 'signature' => $reference['signature'], 'reference_type' => $reference['entity']['reference_type'], 'reference_id' => $reference['entity']['reference_id'], 'template' => [ 'id' => $input['template']['id'], 'revision' => $input['template']['revision'] ], 'catalog_mode' => $input['catalog_mode'], 'label' => sanitize_text_field( $input['label'] ?? '' ), 'guidance' => $input['guidance'] ?? '', 'fields' => [], 'skipped_sources' => [], 'repeat_slots' => [], 'routing' => [ 'operation' => $routing['operation'], 'locale' => $routing['locale'] ?? '' ], 'target_descriptors' => [] ];
         // An explicit switch retains historical source bindings for review; it never converts them.
@@ -380,7 +400,7 @@ final class Nova_Bridge_Suite_Mapping_Drafts {
         foreach ( $protected as $protected_path ) {
             foreach ( $draft['target_descriptors'] as $path => $descriptor ) {
                 $mode = $draft['fields'][ $path ]['mode'] ?? 'mapped';
-                $may_write = in_array( $mode, [ 'adapt', 'mapped' ], true ) || ( 'clone' === $routing['operation'] && 'leave_empty' === $mode );
+                $may_write = in_array( $mode, [ 'adapt', 'mapped' ], true ) || ( in_array( $routing['operation'], [ 'create', 'clone' ], true ) && 'leave_empty' === $mode );
                 if ( $path === $protected_path || ! $may_write ) { continue; }
                 if ( self::overlaps( $draft['target_descriptors'][ $protected_path ], $descriptor ) ) { return self::error( 'protected_overlap', 'A generated target overlaps a protected target or its complete-parent writer. Choose disjoint fields.' ); }
             }
@@ -448,6 +468,7 @@ final class Nova_Bridge_Suite_Mapping_Drafts {
 
     private static function warnings( array $draft, array $reference, array $inventory, $template ): array {
         $warnings = [ 'Local draft only: saving does not synchronize or publish.', 'Direct mappings synchronize as V1. Field or template fitting instructions select V3; synchronization and native approval remain separate from saving.' ];
+        if ( 'create' === ( $draft['routing']['operation'] ?? '' ) ) { $warnings[] = 'This revision stores the example page structure and styling. New deliveries use that saved layout; later changes to or deletion of the example page do not change it. Saving a new revision captures the current example again.'; }
         if ( 'preview' === $draft['catalog_mode'] ) { $warnings[] = 'This draft uses illustrative preview IDs and field types. It must be reviewed against a real NOVA template before synchronization.'; }
         $destination = 'destination' === $draft['catalog_mode'];
         if ( $destination ) { $warnings[] = 'Destination descriptions and fixed capacity are preparation only. No posting-service adaptation contract or native typed writer is certified by saving them.'; }

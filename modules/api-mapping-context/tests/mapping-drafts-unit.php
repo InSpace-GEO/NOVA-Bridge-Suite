@@ -65,11 +65,18 @@ function update_post_meta() { return wp_insert_post(); }
 function wp_remote_request() { ++$GLOBALS['remote_calls']; throw new RuntimeException( 'Draft endpoint must never call a backend.' ); }
 
 final class Nova_Bridge_Suite_Strategy {
-    public static $signature = 'layout-one'; public static $inventory = [];
-    public static function entity( $type, $id ) { return in_array( $id, [ 1, 2, 3 ], true ) ? [ 'reference_type' => $type, 'reference_id' => $id, 'post_type' => 'post' === $type ? 'page' : 'product_cat' ] : null; }
+    public static $signature = 'layout-one'; public static $inventory = []; public static $entity_calls = 0;
+    public static function entity( $type, $id ) { ++self::$entity_calls; return in_array( $id, [ 1, 2, 3, 4 ], true ) ? [ 'reference_type' => $type, 'reference_id' => $id, 'post_type' => 'post' === $type ? 'page' : 'product_cat' ] : null; }
     public static function fingerprint( $entity ) { return [ 'signature' => self::$signature, 'template' => 'native-page.php' ]; }
     public static function field_inventory( $entity ) { return self::$inventory; }
     public static function valid_pointer( $path ) { return is_string( $path ) && 1 === preg_match( '#^/(?:[^~\x00-\x1F]|~[01])*$#D', $path ) && false === strpos( $path, '__proto__' ); }
+}
+final class Nova_Bridge_Suite_Stored_Layout {
+    public static $calls = []; public static $fail = false; public static $style = '#8511D9';
+    public static function capture( array $draft ) {
+        self::$calls[] = $draft;
+        return self::$fail ? new WP_Error( 'capture_failed', 'The example could not be captured.' ) : [ 'format' => 'test-stored-layout', 'blueprint' => [ 'document' => [ [ 'id' => 'example-widget', 'settings' => [ 'color' => self::$style ] ] ] ] ];
+    }
 }
 $native = static function ( $path, array $extra = [] ) { return array_merge( [ 'path' => $path, 'writable' => true, 'route' => '/wp/v2/pages/{id}', 'transport' => 'wordpress', 'request_path' => $path, 'binding' => 'binding:' . $path ], $extra ); };
 $inventory = [ $native( '/title' ), $native( '/content' ), $native( '/excerpt', [ 'writable' => false ] ), $native( '/meta_all/acf/group/intro', [ 'write_mode' => 'complete_parent', 'request_path' => '/meta_all/acf/group' ] ), $native( '/meta_all/acf/group/faq', [ 'write_mode' => 'complete_parent', 'request_path' => '/meta_all/acf/group' ] ) ];
@@ -323,5 +330,25 @@ $switch = $legacy_saved->data['draft']; $switch['expected_revision'] = $switch['
 $switched = $save( $switch );
 $assert( $switched instanceof Draft_Test_Response && $switched->data['draft']['fields'] === $legacy_saved->data['draft']['fields'] && $switched->data['draft']['repeat_slots'] === $legacy_saved->data['draft']['repeat_slots'], 'Explicit destination-mode switch preserves historical source bindings and unsupported repeat identities for review.' );
 $assert( 'needs_review' === $switched->data['backend_description']['status'] && 'nova_writing_mixed_mapping' === $switched->data['backend_description']['error']['code'] && ! isset( $switched->data['backend_description']['description'] ), 'Mixed historical source/repeat selections stay readable while backend description export requires explicit review.' );
-$assert( 0 === $cms_calls && 0 === $remote_calls, 'All catalog/save/read/conflict scenarios perform zero CMS mutations and zero remote calls.' );
+$assert( [] === Nova_Bridge_Suite_Stored_Layout::$calls, 'Historical update and clone saves do not recapture their example pages.' );
+$creation = $input; $creation['reference_id'] = 4; $creation['routing']['operation'] = 'create'; $creation['routing']['publication'] = 'preserve';
+$creation['stored_layout'] = [ 'forged' => 'Browser-owned layout must not be trusted' ];
+$created = $save( $creation );
+$assert( $created instanceof Draft_Test_Response && 'draft' === $created->data['draft']['routing']['publication'], 'New-page creation defaults preserve to an explicit draft policy.' );
+$captured = $created->data['draft']['stored_layout'];
+$assert( 1 === count( Nova_Bridge_Suite_Stored_Layout::$calls ) && ! isset( Nova_Bridge_Suite_Stored_Layout::$calls[0]['stored_layout'] ) && '#8511D9' === $captured['blueprint']['document'][0]['settings']['color'], 'Creation captures a trusted native layout on save and ignores any client-supplied snapshot.' );
+Nova_Bridge_Suite_Stored_Layout::$style = '#000000';
+$assert( $get( 4 )->data['draft']['stored_layout'] === $captured && 1 === count( Nova_Bridge_Suite_Stored_Layout::$calls ), 'Reading a saved mapping keeps its captured styling even after the source changes.' );
+$creation['expected_revision'] = $created->data['draft']['revision']; $creation['routing']['publication'] = 'publish';
+Nova_Bridge_Suite_Stored_Layout::$fail = true; $failed_capture = $save( $creation );
+$assert( $failed_capture instanceof WP_Error && 'capture_failed' === $failed_capture->get_error_code() && $get( 4 )->data['draft']['revision'] === $creation['expected_revision'], 'A failed capture cannot replace the previously saved mapping revision.' );
+Nova_Bridge_Suite_Stored_Layout::$fail = false; $recaptured = $save( $creation );
+$assert( $recaptured instanceof Draft_Test_Response && 'publish' === $recaptured->data['draft']['routing']['publication'] && '#000000' === $recaptured->data['draft']['stored_layout']['blueprint']['document'][0]['settings']['color'] && $recaptured->data['draft']['revision'] !== $creation['expected_revision'], 'Saving a later creation revision captures new styling and retains explicit publish intent.' );
+$source_reads = Nova_Bridge_Suite_Strategy::$entity_calls;
+$stored_creation = Nova_Bridge_Suite_Mapping_Drafts::saved_creation( 'post', 4, $recaptured->data['draft']['revision'] );
+$assert( $stored_creation === $recaptured->data['draft'] && Nova_Bridge_Suite_Strategy::$entity_calls === $source_reads, 'Creation synchronization reads the exact saved layout without resolving or reading the example page.' );
+$error( Nova_Bridge_Suite_Mapping_Drafts::saved_creation( 'post', 4, 'earlier-revision' ), 'conflict', 409 );
+$assert( null === Nova_Bridge_Suite_Mapping_Drafts::saved_creation( 'post', 999, 'missing' ) && null === Nova_Bridge_Suite_Mapping_Drafts::saved_creation( 'post', 1, 'existing-update' ), 'Saved-creation lookup leaves missing mappings and existing update profiles to their original flow.' );
+$term_create = $creation; $term_create['reference_type'] = 'term'; $term_create['expected_revision'] = ''; $error( $save( $term_create ), 'routing' );
+$assert( 0 === $cms_calls && 0 === $remote_calls, 'All catalog/save/read/conflict/capture scenarios perform zero CMS mutations and zero remote calls.' );
 echo 'PASS ' . $checks . " local mapping draft, catalog, conflict, preservation and no-publication checks.\n";

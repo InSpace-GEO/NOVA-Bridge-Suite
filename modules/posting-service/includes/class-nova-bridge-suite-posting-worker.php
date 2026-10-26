@@ -186,6 +186,10 @@ final class Nova_Bridge_Suite_Posting_Worker {
             if ( ( $job['payload']['configuration']['mode'] ?? '' ) !== 'local_rules' || ( isset( $job['payload']['plan'] ) && ( $job['payload']['plan']['format'] ?? '' ) !== Nova_Bridge_Suite_Rule_Writer::FORMAT ) ) { return $this->block( $job, 'native_writer_identity' ); }
             $this->writer = 'Nova_Bridge_Suite_Rule_Writer';
         }
+        if ( $this->default_dispatch && ( $job['payload']['native_writer'] ?? '' ) === 'stored_layout_v3' ) {
+            if ( ( $job['payload']['configuration']['mode'] ?? '' ) !== 'stored_layout_v3' || ( isset( $job['payload']['plan'] ) && ( $job['payload']['plan']['format'] ?? '' ) !== Nova_Bridge_Suite_Stored_Layout_Writer::FORMAT ) ) { return $this->block( $job, 'native_writer_identity' ); }
+            $this->writer = 'Nova_Bridge_Suite_Stored_Layout_Writer';
+        }
         if ( empty( $this->connection['enabled'] ) ) { return $this->block( $job, 'connection_disabled' ); }
         if ( $job['site_id'] !== ( $this->connection['site_id'] ?? null ) ) { return $this->block( $job, 'installation_mismatch' ); }
         if ( ( $job['payload']['protocol'] ?? null ) !== Nova_Bridge_Suite_Posting_Protocol::SNAPSHOT ) { return $this->block( $job, 'legacy_protocol_requires_review' ); }
@@ -226,21 +230,23 @@ final class Nova_Bridge_Suite_Posting_Worker {
                 if ( is_wp_error( $configuration ) ) { return $this->native_failure( $job, $snapshot, $configuration->get_error_code(), [ 'no_native_commit' => true, 'boundary' => 'before_apply' ] ); }
                 $local_rules = ( $configuration['mode'] ?? '' ) === 'local_rules';
                 $static_term = ( $configuration['mode'] ?? '' ) === 'static_recipe_v1';
+                $stored_layout = ( $configuration['mode'] ?? '' ) === 'stored_layout_v3';
                 if ( $local_rules && ( ! array_key_exists( 'configuration', $snapshot ) || null !== $snapshot['configuration'] ) ) { return $this->block( $job, 'local_rules_remote_configuration' ); }
                 if ( $local_rules && $this->default_dispatch ) { $this->writer = 'Nova_Bridge_Suite_Rule_Writer'; }
                 if ( $static_term && $this->default_dispatch ) { $this->writer = 'Nova_Bridge_Suite_Static_Term_Writer'; }
+                if ( $stored_layout && $this->default_dispatch ) { $this->writer = 'Nova_Bridge_Suite_Stored_Layout_Writer'; }
                 $selected = $retained_local && isset( $job['payload']['selected_policy'] ) ? $job['payload']['selected_policy'] : call_user_func( $this->policy, $this->client, $snapshot, $configuration );
                 if ( is_wp_error( $selected ) ) { return $this->native_failure( $job, $snapshot, $selected->get_error_code(), [ 'no_native_commit' => true, 'boundary' => 'before_apply' ] ); }
                 $reference = $selected['reference'] ?? []; $routing = $selected['routing'] ?? [];
                 $operation = $routing['operation'] ?? null; $target = $reference['reference_id'] ?? 0;
-                $source_free = ( $local_rules || $static_term ) && 'create' === $operation && 0 === $target;
+                $source_free = ( $local_rules || $static_term || $stored_layout ) && 'create' === $operation && 0 === $target;
                 $reference_type = $static_term ? 'term' : 'post';
                 if ( ( ! $source_free && ( ! in_array( $operation, [ 'update', 'clone' ], true ) || $target < 1 ) ) || $reference_type !== ( $reference['reference_type'] ?? null ) || ! is_int( $target ) || ( $static_term && ! $source_free ) ) { return $this->native_failure( $job, $snapshot, 'routing_unavailable', [ 'no_native_commit' => true ] ); }
                 $publication = $routing['publication'] ?? 'preserve';
                 if ( ! in_array( $publication, [ 'preserve', 'publish', 'draft' ], true ) || ( $static_term && 'publish' !== $publication ) ) { return $this->native_failure( $job, $snapshot, 'publication_policy_unavailable', [ 'no_native_commit' => true ] ); }
-                $desired = 'preserve' === $publication ? ( 'clone' === $operation ? 'draft' : get_post_status( $target ) ) : $publication;
+                $desired = 'preserve' === $publication ? ( in_array( $operation, [ 'clone', 'create' ], true ) ? 'draft' : get_post_status( $target ) ) : $publication;
                 $context = [ 'site_id' => $job['site_id'], 'delivery_id' => $snapshot['id'], 'content_id' => $snapshot['content_item_id'], 'content_item_id' => $snapshot['content_item_id'], 'content_item_version_id' => $snapshot['content_item_version_id'], 'url_id' => $snapshot['url_id'], 'version' => $snapshot['version_number'], 'operation_id' => $job['operation_id'], 'business_result_id' => $job['operation_id'], 'target_post_id' => $target, 'operation' => $operation, 'desired_status' => $desired, 'actor_user_id' => (int) ( $this->connection['actor_user_id'] ?? 0 ), 'attempt_id' => $fetched['attempt_id'], 'source_sha256' => $snapshot['source_sha256'], 'snapshot_sha256' => hash( 'sha256', $fetched['snapshot_raw'] ), 'delivery_etag' => $fetched['delivery_etag'], 'language' => $snapshot['language'] ];
-                $job = $this->save_payload( $job, [ 'configuration' => $configuration, 'selected_policy' => $selected, 'context' => $context, 'native_writer' => $static_term ? 'static_recipe_v1' : ( $local_rules ? 'local_rules' : 'fixed_mapping' ) ], 'received' );
+                $job = $this->save_payload( $job, [ 'configuration' => $configuration, 'selected_policy' => $selected, 'context' => $context, 'native_writer' => $static_term ? 'static_recipe_v1' : ( $local_rules ? 'local_rules' : ( $stored_layout ? 'stored_layout_v3' : 'fixed_mapping' ) ) ], 'received' );
                 if ( is_wp_error( $job ) ) { return $job; }
                 $plan = call_user_func( [ $this->writer, 'plan' ], $snapshot, $configuration, $context );
                 if ( is_wp_error( $plan ) ) { return $this->native_failure( $job, $snapshot, $plan->get_error_code(), [ 'no_native_commit' => true, 'boundary' => 'before_apply' ] ); }
@@ -253,7 +259,7 @@ final class Nova_Bridge_Suite_Posting_Worker {
             $native_id_key = $static_term ? 'term_id' : 'post_id';
             $target_lock = $static_term ? 'term-url:' . $job['site_id'] . ':' . hash( 'sha256', $job['payload']['plan']['target']['target_url'] ) : ( ( $job['payload']['native_writer'] ?? '' ) === 'local_rules'
                 ? 'rule-url:' . $job['site_id'] . ':' . $snapshot['url_id']
-                : 'target:' . $job['site_id'] . ':' . $job['target_id'] );
+                : ( ( $job['payload']['native_writer'] ?? '' ) === 'stored_layout_v3' ? 'layout-url:' . $job['site_id'] . ':' . hash( 'sha256', $snapshot['url'] ) : 'target:' . $job['site_id'] . ':' . $job['target_id'] ) );
             if ( is_wp_error( $this->jobs->lock( $target_lock ) ) ) { $target_lock = null; return $this->retry( $job, 'target_busy' ); }
             $uncertain = $this->jobs->uncertain_target( $job );
             if ( is_wp_error( $uncertain ) ) { return $this->retry( $job, 'journal_unavailable' ); }

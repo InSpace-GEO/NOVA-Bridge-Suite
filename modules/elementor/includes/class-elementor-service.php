@@ -1160,7 +1160,8 @@ class Elementor_Service {
 			);
 		}
 
-		update_post_meta( $post_id, '_elementor_page_settings', $page_settings['value'] );
+		// Metadata storage unslashes values; retain literal CSS escapes from the captured settings.
+		update_post_meta( $post_id, '_elementor_page_settings', wp_slash( $page_settings['value'] ) );
 
 		return true;
 	}
