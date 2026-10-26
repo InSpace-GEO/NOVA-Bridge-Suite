@@ -71,7 +71,7 @@ try {
 
     foreach ( [ 3, 1 ] as $version ) {
         $case_local = $local; $case_local['revision'] .= ':v' . $version;
-        if ( 1 === $version ) { $case_local['catalog_mode'] = 'nova'; $case_local['guidance_mode'] = 'clear'; $case_local['guidance'] = ''; foreach ( [ '/title' => 'title', '/headline' => 'h1', '/body' => 'content' ] as $path => $source ) { $case_local['fields'][ $path ] = [ 'mode' => 'mapped', 'source_path' => $source, 'required' => true, 'instructions' => '' ]; } }
+        if ( 1 === $version ) { $case_local['catalog_mode'] = 'nova'; $case_local['template'] = [ 'id' => 'nova-delivery-fields-v1', 'revision' => '1' ]; $case_local['guidance_mode'] = 'clear'; $case_local['guidance'] = ''; foreach ( [ '/title' => 'title', '/headline' => 'h1', '/body' => 'content' ] as $path => $source ) { $case_local['fields'][ $path ] = [ 'mode' => 'mapped', 'source_path' => $source, 'required' => true, 'instructions' => '' ]; } }
         $operation = wp_generate_uuid4(); $url_id = (string) random_int( 100000000000, 900000000000 ); $slug = 'nova-layout-canary-v' . $version . '-' . $nova_canary_suffix; $template_id = wp_generate_uuid4();
         $op_key = 'nova_layout_operation_' . hash( 'sha256', $operation ); $association_key = 'nova_layout_page_' . hash( 'sha256', $nova_canary_site . ':' . $url_id );
         $nova_canary_assert( null === get_option( $op_key, null ) && null === get_option( $association_key, null ), 'V' . $version . ' canary journal identities are unused' );
