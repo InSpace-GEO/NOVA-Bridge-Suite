@@ -12,6 +12,7 @@ function get_locale() { return 'de_DE'; }
 function update_option( ...$args ) { throw new RuntimeException( 'Persistent language settings must not change' ); }
 function pll_save_post_translations( ...$args ) { throw new RuntimeException( 'Independent page must not create translation links' ); }
 function pll_languages_list( $args ) { return array_values( $args['fields'] === 'slug' ? array_keys( $GLOBALS['languages'] ) : $GLOBALS['languages'] ); }
+function pll_default_language( $field = 'slug' ) { return $field === 'locale' ? ( $GLOBALS['languages'][$GLOBALS['default_language']] ?? false ) : $GLOBALS['default_language']; }
 function pll_home_url( $code ) { return $GLOBALS['homes'][$code]; }
 function pll_is_translated_post_type( $type ) { return $type === 'page'; }
 function pll_get_post_language( $id, $field = 'slug' ) { $code = $GLOBALS['post_languages'][$id] ?? false; return $field === 'locale' && $code ? $GLOBALS['languages'][$code] : $code; }
@@ -28,24 +29,27 @@ function good( $value, $message ) { check( ! is_wp_error( $value ), $message . (
 function bad( $value, $message ) { check( is_wp_error( $value ), $message ); }
 $languages = [ 'de-de' => 'de_DE', 'en' => 'en_US', 'nl-nl' => 'nl_NL', 'nl-be' => 'nl_BE' ];
 $homes = [ 'de-de' => 'https://example.test/', 'en' => 'https://example.test/en/', 'nl-nl' => 'https://example.test/nl-nl/', 'nl-be' => 'https://example.test/nl-be/' ];
-$post_languages = []; $links = []; $assignments = 0; $denied = false; $wp_rewrite = new Language_Rewrite();
+$post_languages = []; $links = []; $assignments = 0; $denied = false; $default_language = 'de-de'; $wp_rewrite = new Language_Rewrite();
 $german = good( Language::creation( 'post_type:page', 'https://example.test/new-service/', 'de-DE' ), 'Default language page uses root without a synthetic parent' );
-check( $german['parent'] === 0 && $german['slug'] === 'new-service' && $german['native_language']['code'] === 'de-de', 'Exact German locale resolves the configured nonstandard slug' );
-$dutch = good( Language::creation( 'post_type:page', 'https://example.test/nl-nl/new-service/', 'nl-NL' ), 'Dutch page uses its real language home' );
-check( $dutch['parent'] === 0 && $dutch['slug'] === 'new-service' && $dutch['native_language']['code'] === 'nl-nl', 'Language prefix is not mistaken for a native parent page' );
-good( Language::creation( 'post_type:page', 'https://example.test/en/new-service/', 'en_US' ), 'WordPress underscore locale normalizes to exact BCP47 identity' );
-foreach ( [ [ 'https://example.test/nl-nl/new/', 'nl' ], [ 'https://example.test/new/', 'nl-NL' ], [ 'https://example.test/nl-be/new/', 'nl-NL' ], [ 'https://evil.test/nl-nl/new/', 'nl-NL' ], [ 'https://example.test/nl-nl/new/?lang=nl-nl', 'nl-NL' ], [ 'https://example.test/nl-nl/', 'nl-NL' ] ] as $case ) { bad( Language::creation( 'post_type:page', $case[0], $case[1] ), 'Ambiguous/foreign/wrong-prefix/noncanonical target fails before insertion' ); }
-$links[10] = 'https://example.test/nl-nl/services/'; $post_languages[10] = 'nl-nl';
-$nested = good( Language::creation( 'post_type:page', 'https://example.test/nl-nl/services/new/', 'nl-NL' ), 'An existing same-language native parent is supported' ); check( $nested['parent'] === 10, 'Parent resolves by exact native URL rather than guessed slug' );
-$post_languages[10] = 'nl-be'; bad( Language::creation( 'post_type:page', 'https://example.test/nl-nl/services/new/', 'nl-NL' ), 'A parent with wrong native language is rejected despite its URL' ); $post_languages[10] = 'nl-nl';
+check( $german['parent'] === 0 && $german['slug'] === 'new-service' && $german['native_language']['code'] === 'de-de', 'Configured German default resolves its nonstandard slug' );
+$dutch_content = good( Language::creation( 'post_type:page', 'https://example.test/new-service/', 'nl-NL' ), 'Dutch content metadata does not select a Dutch native destination' );
+check( $dutch_content === $german && $dutch_content['language'] === 'de_DE', 'Payload language does not change the default-language route or native assignment' );
+check( good( Language::creation( 'post_type:page', 'https://example.test/new-service/', 'nl' ), 'Generic content metadata does not require multilingual inference' ) === $german, 'Generic payload language also leaves native default unchanged' );
+foreach ( [ [ 'https://example.test/nl-nl/new/', 'nl-NL' ], [ 'https://example.test/en/new/', 'de-DE' ], [ 'https://example.test/nl-be/new/', 'nl-NL' ], [ 'https://evil.test/new/', 'nl-NL' ], [ 'https://example.test/new/?lang=nl-nl', 'nl-NL' ], [ 'https://example.test/', 'nl-NL' ] ] as $case ) { bad( Language::creation( 'post_type:page', $case[0], $case[1] ), 'Nondefault/foreign/noncanonical target fails without rewriting its URL' ); }
+$links[10] = 'https://example.test/services/'; $post_languages[10] = 'de-de';
+$nested = good( Language::creation( 'post_type:page', 'https://example.test/services/new/', 'nl-NL' ), 'An existing default-language native parent is supported' ); check( $nested['parent'] === 10, 'Parent resolves by exact native URL rather than guessed slug' );
+$post_languages[10] = 'nl-be'; bad( Language::creation( 'post_type:page', 'https://example.test/services/new/', 'nl-NL' ), 'A nondefault native parent is rejected despite its URL' ); $post_languages[10] = 'de-de';
 bad( Language::creation( 'post_type:page', $links[10], 'nl-NL' ), 'Existing native URL ownership cannot be taken over' );
-$post_languages[20] = 'de-de'; good( Language::assign( 20, $dutch ), 'The newly reserved page receives its explicit requested language' ); check( $post_languages[20] === 'nl-nl' && $assignments === 1, 'Polylang default is replaced only on the new page' );
-good( Language::assign( 20, $dutch ), 'Language assignment is idempotent on retry' ); check( $assignments === 1, 'Repeated assignment does not repeat a native mutation' );
-good( Language::verify( 'post_type:page', 20, $dutch ), 'Exact locale and slug are verified on the native page' );
-$post_languages[20] = 'nl-be'; bad( Language::verify( 'post_type:page', 20, $dutch ), 'A later language change cannot be reported as successful delivery' ); $post_languages[20] = 'nl-nl';
-$homes['nl-nl'] = 'https://example.test/changed/'; bad( Language::with_context( $dutch, static function () { return true; } ), 'Language URL drift invalidates the frozen target before writing' ); $homes['nl-nl'] = 'https://example.test/nl-nl/';
-$languages['duplicate'] = 'nl_NL'; $homes['duplicate'] = 'https://example.test/duplicate/'; bad( Language::creation( 'post_type:page', 'https://example.test/nl-nl/new/', 'nl-NL' ), 'Duplicate exact locales fail rather than choosing a first match' ); unset( $languages['duplicate'], $homes['duplicate'] );
-$denied = true; bad( Language::assign( 21, $dutch ), 'Publishing actor permissions apply to language assignment' ); $denied = false;
-$homes['nl-nl'] = 'https://foreign.test/'; bad( Language::creation( 'post_type:page', 'https://foreign.test/new/', 'nl-NL' ), 'Separate language domains remain outside this scoped adapter' ); $homes['nl-nl'] = 'https://example.test/nl-nl/';
-$wp_rewrite->structure = '/%year%/%pagename%/'; bad( Language::creation( 'post_type:page', 'https://example.test/nl-nl/new/', 'nl-NL' ), 'Unknown native page routing tokens fail closed' );
+$post_languages[20] = 'nl-nl'; good( Language::assign( 20, $german ), 'The newly reserved page receives only the site default language' ); check( $post_languages[20] === 'de-de' && $assignments === 1, 'Default assignment does not follow the Dutch content metadata' );
+good( Language::assign( 20, $german ), 'Language assignment is idempotent on retry' ); check( $assignments === 1, 'Repeated assignment does not repeat a native mutation' );
+good( Language::verify( 'post_type:page', 20, $german ), 'Default locale and slug are verified on the native page' );
+$post_languages[20] = 'nl-be'; bad( Language::verify( 'post_type:page', 20, $german ), 'A later language change cannot be reported as successful delivery' ); $post_languages[20] = 'de-de';
+$homes['de-de'] = 'https://example.test/changed/'; bad( Language::with_context( $german, static function () { return true; } ), 'Default language URL drift invalidates the frozen target before writing' ); $homes['de-de'] = 'https://example.test/';
+$default_language = 'nl-nl'; bad( Language::with_context( $german, static function () { return true; } ), 'Changing site default cannot silently move a retained page' );
+$new_default = good( Language::creation( 'post_type:page', 'https://example.test/nl-nl/new/', 'de-DE' ), 'New work uses the actual configured default even when it has a prefix' ); check( $new_default['parent'] === 0 && $new_default['native_language']['code'] === 'nl-nl', 'Default language prefix is not mistaken for a native parent page' );
+$default_language = 'de-de'; bad( Language::with_context( $new_default, static function () { return true; } ), 'Previously retained nondefault-language associations fail context verification' ); bad( Language::verify( 'post_type:page', 20, $new_default ), 'Nondefault associations fail final verification instead of retargeting' );
+$denied = true; bad( Language::assign( 21, $german ), 'Publishing actor permissions apply to default assignment' ); $denied = false;
+$homes['de-de'] = 'https://foreign.test/'; bad( Language::creation( 'post_type:page', 'https://foreign.test/new/', 'nl-NL' ), 'Separate default-language domains remain outside this scoped adapter' ); $homes['de-de'] = 'https://example.test/';
+$default_language = 'missing'; bad( Language::creation( 'post_type:page', 'https://example.test/new/', 'nl-NL' ), 'Unavailable site default fails closed' ); $default_language = 'de-de';
+$wp_rewrite->structure = '/%year%/%pagename%/'; bad( Language::creation( 'post_type:page', 'https://example.test/new/', 'nl-NL' ), 'Unknown native page routing tokens fail closed' );
 echo "Stored-layout language checks: $checks passed.\n";

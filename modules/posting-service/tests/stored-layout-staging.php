@@ -60,14 +60,10 @@ try {
     $nova_canary_checked( wp_delete_post( $nova_canary_source_id, true ), 'Delete owned example before delivery' );
     $nova_canary_assert( ! get_post( $nova_canary_source_id ), 'Example page is deleted before native delivery planning' );
     $nova_canary_report['cleanup']['deleted_post_ids'][] = $nova_canary_source_id;
-    $language = str_replace( '_', '-', get_locale() );
+    // Content metadata matches NOVA staging. Native routing must still use the site's default.
+    $language = 'nl-NL';
     $route_home = home_url( '/' );
-    if ( function_exists( 'pll_languages_list' ) ) {
-        $locales = pll_languages_list( [ 'fields' => 'locale' ] ); $slugs = pll_languages_list( [ 'fields' => 'slug' ] );
-        $index = array_search( 'nl_NL', $locales, true );
-        if ( false !== $index && isset( $slugs[$index] ) ) { $language = 'nl-NL'; $route_home = pll_home_url( $slugs[$index] ); }
-    }
-    if ( has_filter( 'wpml_element_language_details' ) || defined( 'ICL_SITEPRESS_VERSION' ) ) { $default_language = apply_filters( 'wpml_default_language', null ); $languages = (array) apply_filters( 'wpml_active_languages', null, [ 'skip_missing' => 0 ] ); $language = str_replace( '_', '-', $languages[ $default_language ]['default_locale'] ?? $default_language ); }
+    if ( function_exists( 'pll_default_language' ) ) { $route_home = pll_home_url( pll_default_language( 'slug' ) ); }
 
     foreach ( [ 3, 1 ] as $version ) {
         $case_local = $local; $case_local['revision'] .= ':v' . $version;
@@ -95,6 +91,7 @@ try {
         $nova_canary_created[ $id ] = [ 'kind' => 'target', 'marker' => $nova_canary_cases[ $operation ]['marker'], 'operation' => $operation, 'url_id' => $url_id ];
         $post = get_post( $id ); $raw = get_post_meta( $id, '_elementor_data', true ); $stored = is_array( $raw ) ? $raw : json_decode( (string) $raw, true );
         $nova_canary_assert( $post && 'draft' === $post->post_status && $post->post_title === $title && $post->post_name === $slug && $id !== $nova_canary_source_id, 'V' . $version . ' creates one fresh draft with the planned native identity' );
+        if ( function_exists( 'pll_default_language' ) ) { $nova_canary_assert( pll_get_post_language( $id, 'slug' ) === pll_default_language( 'slug' ), 'V' . $version . ' uses the site default language despite Dutch delivery metadata' ); }
         $nova_canary_assert( $nova_canary_digest( $stored ) === $nova_canary_digest( $plan['payload']['elementor_data'] ), 'V' . $version . ' saved complete native document matches its plan' );
         $nova_canary_assert( $stored[0]['elements'][0]['settings']['title'] === $heading && $stored[0]['elements'][1]['settings']['editor'] === $body && $stored[0]['elements'][2]['settings']['text'] === 'Protected canary button', 'V' . $version . ' fits content and preserves protected native content' );
         $nova_canary_assert( $stored[0]['settings'] === $saved_blueprint['document'][0]['settings'] && $stored[0]['elements'][0]['settings']['typography_font_size']['size'] === 48.5 && $stored[0]['elements'][0]['id'] !== 'b123456', 'V' . $version . ' preserves native styling with new element IDs' );
@@ -106,7 +103,7 @@ try {
         $nova_canary_assert( (int) $again['post_id'] === $id && (int) $recovered['post_id'] === $id && (int) $finished['post_id'] === $id && (int) $verified['post_id'] === $id, 'V' . $version . ' replay, recovery, finish and verification retain the same native page' );
         global $wpdb; $same = $wpdb->get_col( $wpdb->prepare( 'SELECT ID FROM `' . $wpdb->posts . '` WHERE post_content_filtered=%s', $nova_canary_cases[ $operation ]['marker'] ) );
         $nova_canary_assert( count( $same ) === 1 && (int) $same[0] === $id && ! get_post( $nova_canary_source_id ), 'V' . $version . ' has no duplicate page and no surviving example dependency' );
-        $nova_canary_report['cases'][] = [ 'version' => $version, 'post_id' => $id, 'status' => $post->post_status, 'planned_url' => $plan['target']['target_url'], 'source_deleted' => true, 'native_digest' => $verified['native_digest'] ];
+        $nova_canary_report['cases'][] = [ 'version' => $version, 'post_id' => $id, 'status' => $post->post_status, 'planned_url' => $plan['target']['target_url'], 'source_language' => $language, 'native_language' => $plan['target']['native_language'], 'source_deleted' => true, 'native_digest' => $verified['native_digest'] ];
     }
     $nova_canary_report['ok'] = true;
 } catch ( Throwable $error ) {
