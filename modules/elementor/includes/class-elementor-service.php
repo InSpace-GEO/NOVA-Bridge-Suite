@@ -792,7 +792,14 @@ class Elementor_Service {
 					|| ! method_exists( $elementor_document, 'set_is_built_with_elementor' )
 					|| ! method_exists( $elementor_document, 'is_editable_by_current_user' )
 					|| ! isset( $plugin->elements_manager )
-					|| ! method_exists( $plugin->elements_manager, 'get_element' )
+					|| (
+						! method_exists( $plugin->elements_manager, 'get_element' )
+						&& (
+							! method_exists( $plugin->elements_manager, 'get_element_types' )
+							|| ! isset( $plugin->widgets_manager )
+							|| ! method_exists( $plugin->widgets_manager, 'get_widget_types' )
+						)
+					)
 				) {
 					$failure_reason = 'elementor_api_unavailable';
 				} elseif ( ! $elementor_document->is_editable_by_current_user() ) {
@@ -935,10 +942,30 @@ class Elementor_Service {
 				return false;
 			}
 
-			$element_type = isset( $element['elType'] ) ? (string) $element['elType'] : '';
-			$widget_type  = isset( $element['widgetType'] ) ? (string) $element['widgetType'] : null;
+			$element_type = isset( $element['elType'] ) && is_string( $element['elType'] ) ? $element['elType'] : '';
+			$widget_type  = isset( $element['widgetType'] ) && is_string( $element['widgetType'] ) ? $element['widgetType'] : null;
 
-			if ( '' === $element_type || ! $elements_manager->get_element( $element_type, $widget_type ) ) {
+			// A null widget type asks legacy Elementor for the whole registry.
+			if ( '' === $element_type || ( 'widget' === $element_type && ( null === $widget_type || '' === $widget_type ) ) ) {
+				return false;
+			}
+
+			if ( method_exists( $elements_manager, 'get_element' ) ) {
+				$registered_element = $elements_manager->get_element( $element_type, $widget_type );
+			} elseif ( 'widget' === $element_type ) {
+				// Elementor before 3.34 resolves widgets through a separate manager.
+				$plugin = \Elementor\Plugin::instance();
+				if ( ! isset( $plugin->widgets_manager ) || ! method_exists( $plugin->widgets_manager, 'get_widget_types' ) ) {
+					return false;
+				}
+				$registered_element = $plugin->widgets_manager->get_widget_types( $widget_type );
+			} elseif ( method_exists( $elements_manager, 'get_element_types' ) ) {
+				$registered_element = $elements_manager->get_element_types( $element_type );
+			} else {
+				return false;
+			}
+
+			if ( ! $registered_element ) {
 				return false;
 			}
 

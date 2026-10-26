@@ -382,13 +382,18 @@ $GLOBALS['nbs_el_filters'] = [];
 
 function add_filter($hook, $callback, $priority = 10, $args = 1)
 {
-    $GLOBALS['nbs_el_filters'][$hook][] = $callback;
+    $GLOBALS['nbs_el_filters'][$hook][$priority][] = [$callback, $args];
 
     return true;
 }
 
 function remove_filter($hook, $callback, $priority = 10)
 {
+    foreach ($GLOBALS['nbs_el_filters'][$hook][$priority] ?? [] as $key => $entry) {
+        if ($entry[0] === $callback) {
+            unset($GLOBALS['nbs_el_filters'][$hook][$priority][$key]);
+        }
+    }
     return true;
 }
 
@@ -399,16 +404,34 @@ function add_action($hook, $callback, $priority = 10, $args = 1)
 
 function remove_action($hook, $callback, $priority = 10)
 {
-    return true;
+    return remove_filter($hook, $callback, $priority);
 }
 
-function apply_filters($hook, $value)
+function apply_filters($hook, $value, ...$args)
 {
+    if (!empty($GLOBALS['nbs_el_run_hooks'])) {
+        $priorities = $GLOBALS['nbs_el_filters'][$hook] ?? [];
+        ksort($priorities);
+        foreach ($priorities as $entries) {
+            foreach ($entries as [$callback, $accepted]) {
+                $value = $callback(...array_slice([$value, ...$args], 0, $accepted));
+            }
+        }
+    }
     return $value;
 }
 
-function do_action($hook)
+function do_action($hook, ...$args)
 {
+    if (!empty($GLOBALS['nbs_el_run_hooks'])) {
+        $priorities = $GLOBALS['nbs_el_filters'][$hook] ?? [];
+        ksort($priorities);
+        foreach ($priorities as $entries) {
+            foreach ($entries as [$callback, $accepted]) {
+                $callback(...array_slice($args, 0, $accepted));
+            }
+        }
+    }
 }
 
 function rest_ensure_response($value)
@@ -653,6 +676,13 @@ namespace Elementor;
 
 class NBS_Stub_Document
 {
+    private $post_id;
+
+    public function __construct($post_id)
+    {
+        $this->post_id = $post_id;
+    }
+
     public function is_editable_by_current_user()
     {
         return (bool) $GLOBALS['nbs_el_doc_editable'];
@@ -660,10 +690,21 @@ class NBS_Stub_Document
 
     public function set_is_built_with_elementor($value)
     {
+        if (!empty($GLOBALS['nbs_el_run_hooks'])) {
+            \update_post_meta($this->post_id, '_elementor_edit_mode', 'builder');
+        }
     }
 
     public function save($data)
     {
+        if (!empty($GLOBALS['nbs_el_run_hooks'])) {
+            ++$GLOBALS['nbs_el_compat_save_calls'];
+            $data = \apply_filters('elementor/document/save/data', $data, $this);
+            if (isset($data['elements'])) {
+                \update_post_meta($this->post_id, '_elementor_data', $data['elements']);
+            }
+            \do_action('elementor/editor/after_save', $this->post_id, \get_post_meta($this->post_id, '_elementor_data', true));
+        }
         return (bool) $GLOBALS['nbs_el_doc_save'];
     }
 }
@@ -672,7 +713,7 @@ class NBS_Stub_Documents
 {
     public function get($post_id, $from_cache = true)
     {
-        return new NBS_Stub_Document();
+        return new NBS_Stub_Document($post_id);
     }
 }
 
@@ -688,6 +729,7 @@ class Plugin
 {
     public $documents;
     public $elements_manager;
+    public $widgets_manager;
     private static $instance;
 
     public function __construct()
@@ -1339,6 +1381,185 @@ nbs_check('a healthy page does get its categories', $GLOBALS['nbs_el_calls']['wp
 nbs_check('a healthy page does get its meta_all write', $GLOBALS['nbs_el_calls']['meta_all_write'], 1);
 nbs_check('the healthy page really stored the meta_all value', get_post_meta(555, '_yoast_wpseo_metadesc', true), 'must never land');
 nbs_check('the healthy page really stored the thumbnail id', get_post_meta(555, '_thumbnail_id', true), 4242);
+
+// NB-5764: Elementor 3.33.3 has separate element/widget registries and no
+// Elements_Manager::get_element(). Keep the modern result authoritative while
+// exercising the legacy registries, including their null-means-all behavior.
+class NBS_Compat_Legacy_Elements
+{
+    public $calls = [];
+
+    public function get_element_types($type = null)
+    {
+        $this->calls[] = $type;
+        $registered = array_fill_keys(['section', 'column', 'container', '7'], (object) []);
+        return null === $type ? $registered : ($registered[$type] ?? null);
+    }
+}
+
+class NBS_Compat_Widgets
+{
+    public $calls = [];
+
+    public function get_widget_types($type = null)
+    {
+        $this->calls[] = $type;
+        $registered = array_fill_keys(['heading', 'text-editor', 'accordion', '7'], (object) []);
+        return null === $type ? $registered : ($registered[$type] ?? null);
+    }
+}
+
+class NBS_Compat_Modern_Elements
+{
+    public $calls = [];
+    public $legacy_calls = 0;
+    public $reject = false;
+
+    public function get_element($type, $widget = null)
+    {
+        $this->calls[] = [$type, $widget];
+        if (false !== $this->reject) {
+            return $this->reject;
+        }
+        if ('widget' === $type) {
+            return (new NBS_Compat_Widgets())->get_widget_types($widget);
+        }
+        return (new NBS_Compat_Legacy_Elements())->get_element_types($type);
+    }
+
+    public function get_element_types($type = null)
+    {
+        ++$this->legacy_calls;
+        return (object) [];
+    }
+}
+
+function nbs_compat_validate($service, $elements, $manager)
+{
+    try {
+        return nbs_invoke($service, 'elementor_elements_are_registered', [$elements, $manager]);
+    } catch (Throwable $error) {
+        // A missing-method fatal on the old implementation is a reported test
+        // failure, so the baseline run can still show the remaining cases.
+        return get_class($error) . ': ' . $error->getMessage();
+    }
+}
+
+$compat_plugin = \Elementor\Plugin::instance();
+$compat_original_elements = $compat_plugin->elements_manager;
+$compat_original_widgets = $compat_plugin->widgets_manager;
+$compat_widgets = new NBS_Compat_Widgets();
+$compat_valid = [[
+    'id' => 'section1', 'elType' => 'section', 'elements' => [[
+        'id' => 'column1', 'elType' => 'column', 'elements' => [[
+            'id' => 'heading1', 'elType' => 'widget', 'widgetType' => 'heading',
+            'settings' => ['title' => 'Preserved heading'], 'elements' => [],
+        ]],
+    ]],
+]];
+$compat_invalid = [
+    'unknown widget' => [['elType' => 'widget', 'widgetType' => 'not-registered']],
+    'missing widgetType' => [['elType' => 'widget']],
+    'null widgetType' => [['elType' => 'widget', 'widgetType' => null]],
+    'empty widgetType' => [['elType' => 'widget', 'widgetType' => '']],
+    'array widgetType' => [['elType' => 'widget', 'widgetType' => ['heading']]],
+    'numeric widgetType' => [['elType' => 'widget', 'widgetType' => 7]],
+    'unknown element' => [['elType' => 'not-registered']],
+    'missing elType' => [[]],
+    'null elType' => [['elType' => null]],
+    'empty elType' => [['elType' => '']],
+    'array elType' => [['elType' => ['section']]],
+    'numeric elType' => [['elType' => 7]],
+    'non-array child' => [['elType' => 'section', 'elements' => ['invalid']]],
+];
+$compat_nested_invalid = $compat_valid;
+$compat_nested_invalid[0]['elements'][0]['elements'][0]['widgetType'] = 'not-registered';
+$compat_invalid['unknown deeply nested widget'] = $compat_nested_invalid;
+
+foreach (['legacy' => new NBS_Compat_Legacy_Elements(), 'modern' => new NBS_Compat_Modern_Elements()] as $mode => $manager) {
+    $compat_plugin->elements_manager = $manager;
+    $compat_plugin->widgets_manager = $compat_widgets;
+    nbs_check("$mode accepts registered nested elements and widgets", nbs_compat_validate($service, $compat_valid, $manager), true);
+    foreach ($compat_invalid as $case => $elements) {
+        nbs_check("$mode rejects $case", nbs_compat_validate($service, $elements, $manager), false);
+    }
+}
+
+$compat_modern = new NBS_Compat_Modern_Elements();
+$compat_plugin->elements_manager = $compat_modern;
+$compat_plugin->widgets_manager = new stdClass();
+nbs_check('modern validation needs no legacy widget registry', nbs_compat_validate($service, $compat_valid, $compat_modern), true);
+$compat_modern->reject = null;
+nbs_check('modern null rejection never falls back', nbs_compat_validate($service, $compat_valid, $compat_modern), false);
+nbs_check('modern rejection did not consult the legacy element registry', $compat_modern->legacy_calls, 0);
+$compat_false = new class extends NBS_Compat_Modern_Elements {
+    public function get_element($type, $widget = null) { return false; }
+};
+nbs_check('modern false rejection never falls back', nbs_compat_validate($service, $compat_valid, $compat_false), false);
+nbs_check('modern false rejection did not consult the legacy element registry', $compat_false->legacy_calls, 0);
+
+// Execute the actual persistence filter/capture callbacks against in-memory
+// metadata. This is a lifecycle contract fixture, not a real Elementor install.
+$compat_saved_filters = $GLOBALS['nbs_el_filters'];
+$compat_saved_meta = $GLOBALS['nbs_el_meta'][555] ?? [];
+$GLOBALS['nbs_el_filters'] = [];
+$GLOBALS['nbs_el_run_hooks'] = true;
+$GLOBALS['nbs_el_doc_save'] = true;
+$GLOBALS['nbs_el_doc_editable'] = true;
+
+foreach (['legacy' => new NBS_Compat_Legacy_Elements(), 'modern' => new NBS_Compat_Modern_Elements()] as $mode => $manager) {
+    $compat_plugin->elements_manager = $manager;
+    $compat_plugin->widgets_manager = 'legacy' === $mode ? new NBS_Compat_Widgets() : new stdClass();
+    $GLOBALS['nbs_el_compat_save_calls'] = 0;
+    $result = nbs_invoke($service, 'persist_elementor_document', [555, $compat_valid, []]);
+    nbs_check("$mode passes the API guard and completes persistence", $result, true);
+    nbs_check("$mode calls the document save lifecycle once", $GLOBALS['nbs_el_compat_save_calls'], 1);
+    nbs_check("$mode persists the complete nested document", get_post_meta(555, '_elementor_data', true), $compat_valid);
+
+    update_post_meta(555, '_elementor_edit_mode', 'original-mode');
+    $before_rejection = get_post_meta(555);
+    $result = nbs_invoke($service, 'persist_elementor_document', [555, $compat_nested_invalid, []]);
+    nbs_check("$mode rejects a nested unknown widget during save", is_wp_error($result) ? ($result->get_error_data()['reason'] ?? null) : null, 'elementor_element_unavailable');
+    nbs_check("$mode rejected save preserves document and runtime metadata", get_post_meta(555), $before_rejection);
+}
+
+foreach ([
+    'missing element registry' => [new stdClass(), new NBS_Compat_Widgets()],
+    'missing widget registry' => [new NBS_Compat_Legacy_Elements(), new stdClass()],
+    'null widget registry' => [new NBS_Compat_Legacy_Elements(), null],
+] as $case => [$manager, $widgets]) {
+    $compat_plugin->elements_manager = $manager;
+    $compat_plugin->widgets_manager = $widgets;
+    $GLOBALS['nbs_el_compat_save_calls'] = 0;
+    $result = nbs_invoke($service, 'persist_elementor_document', [555, $compat_valid, []]);
+    nbs_check("$case retains API-unavailable failure", is_wp_error($result) ? ($result->get_error_data()['reason'] ?? null) : null, 'elementor_api_unavailable');
+    nbs_check("$case never enters document save", $GLOBALS['nbs_el_compat_save_calls'], 0);
+}
+
+$compat_plugin->elements_manager = new NBS_Compat_Legacy_Elements();
+$compat_plugin->widgets_manager = new NBS_Compat_Widgets();
+$compat_canonicalize = static function ($data) {
+    $data['elements'][0]['elements'][0]['elements'][0]['widgetType'] = 'heading';
+    return $data;
+};
+add_filter('elementor/document/save/data', $compat_canonicalize, 10, 1);
+$result = nbs_invoke($service, 'persist_elementor_document', [555, $compat_nested_invalid, []]);
+remove_filter('elementor/document/save/data', $compat_canonicalize, 10);
+nbs_check('legacy validation allows save-data filters to canonicalize a widget first', $result, true);
+nbs_check('canonicalized legacy document is persisted intact', get_post_meta(555, '_elementor_data', true), $compat_valid);
+$compat_remaining_hooks = 0;
+foreach ($GLOBALS['nbs_el_filters'] as $priorities) {
+    foreach ($priorities as $entries) {
+        $compat_remaining_hooks += count($entries);
+    }
+}
+nbs_check('successful and rejected persistence remove their temporary hooks', $compat_remaining_hooks, 0);
+
+$GLOBALS['nbs_el_run_hooks'] = false;
+$GLOBALS['nbs_el_filters'] = $compat_saved_filters;
+$GLOBALS['nbs_el_meta'][555] = $compat_saved_meta;
+$compat_plugin->elements_manager = $compat_original_elements;
+$compat_plugin->widgets_manager = $compat_original_widgets;
 
 // --- report ----------------------------------------------------------------
 
