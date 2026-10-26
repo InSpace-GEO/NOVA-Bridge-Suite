@@ -234,11 +234,13 @@ final class Nova_Bridge_Suite_Recipe_Elementor {
                     if ( is_array( $value ) ) { foreach ( $value as $key => $child ) { $visit( $child, array_merge( $parts, [ $key ] ) ); } return; }
                     $target = $base . $this->pointer( array_merge( [ 'settings' ], $parts ) ); $key = (string) end( $parts ); $map_address = 'google_maps' === $widget && [ 'address' ] === $parts;
                     if ( ( ! $map_address && ! in_array( $key, [ 'title', 'editor', 'text', 'url', 'alt', 'caption', 'tab_title', 'tab_content' ], true ) ) || ! is_string( $value ) ) { return; }
-                    $format = 'url' === $key ? 'url' : ( in_array( $key, [ 'editor', 'tab_content', 'title', 'caption' ], true ) ? 'html' : 'text' ); $valid = $this->validate_binding( $blueprint, [ 'target' => $target, 'format' => $format ] );
+                    $heading_title = 'heading' === $widget && [ 'title' ] === $parts;
+                    $format = 'url' === $key ? 'url' : ( ! $heading_title && in_array( $key, [ 'editor', 'tab_content', 'title', 'caption' ], true ) ? 'html' : 'text' ); $valid = $this->validate_binding( $blueprint, [ 'target' => $target, 'format' => $format ] );
                     $safe_id = 1 === preg_match( '/^[a-zA-Z0-9_-]+$/D', $node['id'] );
                     $fields[] = [ 'target' => $target, 'label' => $map_address ? 'Google Maps ' . $ordinals[$widget] . ' · Location or address' : $label . ' · ' . ucwords( str_replace( '_', ' ', $key ) ), 'format' => $format, 'kind' => $map_address ? 'map_address' : $key, 'value' => $value, 'writable' => ! is_wp_error( $valid ), 'protected' => is_wp_error( $valid ), 'reason' => is_wp_error( $valid ) ? $valid->get_error_message() : '',
                         'native_node_id' => $node['id'], 'node_target' => $base, 'element_type' => $widget, 'control_path' => array_merge( [ 'settings' ], $parts ),
                         'locator' => [ 'strategy' => $safe_id ? 'elementor' : 'none', 'native_node_id' => $node['id'], 'anchor' => '', 'precision' => 'element', 'status' => $safe_id ? 'candidate' : 'unavailable', 'reason' => $safe_id ? '' : 'The native element identity cannot be used safely in the page preview.' ] ];
+                    if ( $heading_title ) { $fields[count( $fields ) - 1]['allowed_formats'] = [ 'text', 'html' ]; }
                     if ( $map_address ) { $fields[count( $fields ) - 1] += [ 'allowed_formats' => [ 'text' ], 'schema' => [ 'type' => 'string' ], 'constraints' => [ 'type' => 'string' ], 'required' => false ]; }
                 }; $visit( $node['settings'], [] );
             }, [], 0 );
