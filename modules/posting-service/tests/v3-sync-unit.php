@@ -18,6 +18,13 @@ Nova_Bridge_Suite_Mapped_Writer::$blocked = false;
 $v3client->queue[] = [ 'GET', '/templates/' . $v3record['id'], reply( $v3record ) ];
 $approved = $v3sync->activate( $v3, [ 'actor_user_id' => 7 ] );
 check( ! is_wp_error( $approved ) && Nova_Bridge_Suite_Mapping_Sync::destination_enabled( $site ), 'Exact native profile approval enables V3 discovery for this site.' );
+$enabled_key = 'nova_posting_v3_' . hash( 'sha256', $site );
+// A later WordPress request reads a persisted boolean option as the string "1".
+$wpdb->rows[$enabled_key] = maybe_serialize( '1' );
+check( get_option( $enabled_key ) === '1' && Nova_Bridge_Suite_Mapping_Sync::destination_enabled( $site ), 'V3 discovery stays enabled after a persisted WordPress option reload.' );
+foreach ( [ true, 1, '1' ] as $enabled ) { update_option( $enabled_key, $enabled ); check( Nova_Bridge_Suite_Mapping_Sync::destination_enabled( $site ), 'Only supported WordPress true values enable discovery.' ); }
+foreach ( [ false, 0, '0', '', 'false', 'true', 'yes', 2, [], [ 1 ] ] as $disabled ) { update_option( $enabled_key, $disabled ); check( ! Nova_Bridge_Suite_Mapping_Sync::destination_enabled( $site ), 'Unrecognized or disabled option values cannot enable discovery.' ); }
+update_option( $enabled_key, '1' );
 $frozen = array_intersect_key( $v3record, array_flip( [ 'id', 'name', 'page_type', 'revision', 'definition', 'mapping' ] ) );
 check( ! is_wp_error( Nova_Bridge_Suite_Mapping_Sync::configuration_for_snapshot( [ 'site_id' => $site, 'configuration' => $frozen ], $site ) ), 'A frozen V3 template resolves to its immutable local profile.' );
 $v3['revision'] = 'destination-2'; $v3['guidance'] = 'Prefer category introductory content.';

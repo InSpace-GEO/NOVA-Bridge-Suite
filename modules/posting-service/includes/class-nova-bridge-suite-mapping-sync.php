@@ -28,7 +28,8 @@ final class Nova_Bridge_Suite_Mapping_Sync {
     private static function profile_key( string $site, string $id, int $revision ): string { return 'nova_publishing_profile_' . hash( 'sha256', $site . ':' . $id . ':' . $revision ); }
     public static function state( string $type, int $id, string $site ): ?array { $state = get_option( self::key( $site, $type, $id ), null ); return is_array( $state ) ? $state : null; }
     public static function scope_state( string $site, string $scope ): ?array { $state = get_option( 'nova_mapping_sync_' . hash( 'sha256', $site . ':' . $scope ), null ); return is_array( $state ) ? $state : null; }
-    public static function destination_enabled( string $site ): bool { return true === get_option( 'nova_posting_v3_' . hash( 'sha256', $site ), false ); }
+    // WordPress can return a cached boolean or the scalar string persisted in wp_options.
+    public static function destination_enabled( string $site ): bool { return in_array( get_option( 'nova_posting_v3_' . hash( 'sha256', $site ), false ), [ true, 1, '1' ], true ); }
     private static function response( array $data ) { $response = rest_ensure_response( $data ); $response->header( 'Cache-Control', 'private, no-store' ); return $response; }
     private static function permission( $request ) {
         $permission = Nova_Bridge_Suite_Mapping_Drafts::can_admin(); if ( is_wp_error( $permission ) ) { return $permission; }
