@@ -45,6 +45,14 @@ final class Nova_Bridge_Suite_Posting_Worker {
     /** The optional observer is diagnostic only and cannot interrupt delivery work. */
     public function run( ?callable $observe = null ): void {
         if ( empty( $this->connection['enabled'] ) ) { return; }
+        if ( class_exists( 'Nova_Bridge_Suite_Mapping_Sync' ) && Nova_Bridge_Suite_Mapping_Sync::destination_enabled( $this->connection['site_id'] ) ) {
+            $destination = ( new Nova_Bridge_Suite_Posting_Discovery( $this->connection, $this->jobs, $this->client ) )->run_destinations();
+            if ( is_wp_error( $destination ) ) {
+                $destination_status = (int) ( $destination->get_error_data()['status'] ?? 0 );
+                self::observe( $observe, [ 'last_error' => $destination->get_error_code(), 'discovery_http_status' => $destination_status ] );
+                if ( in_array( $destination_status, [ 401, 403 ], true ) ) { ( new Nova_Bridge_Suite_Posting_Discovery( $this->connection, $this->jobs, $this->client ) )->suspend( $destination ); return; }
+            }
+        }
         $discovery = ( new Nova_Bridge_Suite_Posting_Discovery( $this->connection, $this->jobs, $this->client ) )->run();
         $status = is_wp_error( $discovery ) ? (int) ( $discovery->get_error_data()['status'] ?? 0 ) : 0;
         if ( is_wp_error( $discovery ) ) { self::observe( $observe, [ 'last_error' => $discovery->get_error_code(), 'discovery_http_status' => $status ] ); }
@@ -116,7 +124,9 @@ final class Nova_Bridge_Suite_Posting_Worker {
 
     private function fetch( array $job ) {
         // The attempt header can change without changing frozen bytes: always request full 200.
-        $reply = $this->client->site_request( 'GET', self::path( $job ) );
+        $destination = Nova_Bridge_Suite_Posting_Protocol::DESTINATION === ( $job['payload']['discovery']['contract'] ?? null );
+        $path = $destination ? '/adaptation-deliveries/' . rawurlencode( $job['payload']['discovery']['id'] ) : self::path( $job );
+        $reply = $this->client->site_request( 'GET', $path );
         if ( is_wp_error( $reply ) ) { return $reply; }
         $snapshot = Nova_Bridge_Suite_Posting_Protocol::snapshot( $reply, $job );
         if ( is_wp_error( $snapshot ) ) { return $snapshot; }

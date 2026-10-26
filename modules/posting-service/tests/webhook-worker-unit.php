@@ -25,6 +25,7 @@ class Nova_Bridge_Suite_Posting_Settings {
     public static function connection() { return self::$connection; }
 }
 class Nova_Bridge_Suite_Mapping_Sync {
+    public static function destination_enabled( string $site ): bool { return false; }
     public static function configuration_for_snapshot( $snapshot, $site ) { return $GLOBALS['wake_fixture']['configuration']; }
     public static function frozen_policy( $client, $snapshot, $configuration ) {
         return [ 'reference' => [ 'reference_type' => 'post', 'reference_id' => 77 ], 'routing' => [ 'operation' => 'update', 'publication' => 'publish' ] ];

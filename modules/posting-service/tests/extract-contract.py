@@ -9,9 +9,9 @@ import pathlib
 import sys
 import yaml
 
-COMMIT = "145fbcfb7319333e6369796489c068196cb68665"
-SHA256 = "ce48ded00914e595dde23d543e347bc748155a7726a108331cc051dc8246af28"
-raw = pathlib.Path(sys.argv[1]).read_bytes()
+COMMIT = "07e37d5054044a66c1f6f35652be43038fdb9169"
+SHA256 = "f089d7dbde3115fcbef32a8cc825d1d0e7d032eedc15c9441b6f0c1ead404561"
+raw = pathlib.Path(sys.argv[1]).read_bytes().replace(b"\r\n", b"\n")
 assert hashlib.sha256(raw).hexdigest() == SHA256, "Review and pin the new API release first"
 all_schemas = yaml.safe_load(raw)["components"]["schemas"]
 selected = {}
@@ -34,6 +34,7 @@ def scan(value):
             scan(child)
 
 for root in ["DeliverySnapshot", "DeliveryPage", "ConnectorEventInput", "ConnectorEventAccepted",
+             "DestinationAdaptationStatus", "AdaptationStatusPage", "AdaptationDeliveryV2",
              "PublishingTemplate", "PublishingTemplateInput", "PublishingTemplateDefaults", "PublishingTemplateDefaultsInput",
              "PublishingPageSetting", "PublishingPageSettingInput"]:
     visit(root)

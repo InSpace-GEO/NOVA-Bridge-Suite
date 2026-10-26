@@ -71,13 +71,13 @@ function reply( array $record, int $status = 200 ): array { return [ 'status' =>
 $site = '11111111-1111-4111-8111-111111111111'; $remote_id = '22222222-2222-4222-8222-222222222222';
 $connection = [ 'base_url' => 'https://nova.example', 'site_id' => $site, 'token' => 'fixture-token-not-a-credential' ];
 $target = static function ( $path ) { return [ 'path' => $path, 'reference_type' => 'post', 'reference_id' => 10, 'signature' => 'layout-1', 'transport' => 'wordpress', 'request_path' => $path, 'write_mode' => 'replace' ]; };
-$draft = [ 'revision' => 'local-1', 'schema_version' => 1, 'reference_type' => 'post', 'reference_id' => 10, 'signature' => 'layout-1', 'catalog_mode' => 'nova', 'template' => [ 'id' => 'nova-delivery-fields-v1', 'revision' => '1' ], 'profile_page_type' => 'service', 'label' => 'Service layout', 'guidance_mode' => 'set', 'guidance' => 'Exactly one relevant label; keep the layout limits.', 'fields' => [ '/title' => [ 'mode' => 'mapped', 'source_path' => 'title', 'required' => true, 'instructions' => 'At most 30 characters.' ], '/faq' => [ 'mode' => 'protected', 'source_path' => '', 'instructions' => 'Retain original copy.' ] ], 'skipped_sources' => [ [ 'source_path' => 'meta_description', 'reason' => 'No metadata destination.' ] ], 'repeat_slots' => [], 'routing' => [ 'operation' => 'update', 'locale' => 'nl-NL', 'post_type' => 'page', 'native_template' => '', 'publication' => 'preserve' ], 'target_descriptors' => [ '/title' => $target( '/title' ), '/faq' => $target( '/faq' ) ] ];
+$draft = [ 'revision' => 'local-1', 'schema_version' => 1, 'reference_type' => 'post', 'reference_id' => 10, 'signature' => 'layout-1', 'catalog_mode' => 'nova', 'template' => [ 'id' => 'nova-delivery-fields-v1', 'revision' => '1' ], 'profile_page_type' => 'service', 'label' => 'Service layout', 'guidance_mode' => 'inherit', 'guidance' => '', 'fields' => [ '/title' => [ 'mode' => 'mapped', 'source_path' => 'title', 'required' => true, 'instructions' => '' ], '/faq' => [ 'mode' => 'protected', 'source_path' => '', 'instructions' => 'Retain original copy.' ] ], 'skipped_sources' => [ [ 'source_path' => 'meta_description', 'reason' => 'No metadata destination.' ] ], 'repeat_slots' => [], 'routing' => [ 'operation' => 'update', 'locale' => 'nl-NL', 'post_type' => 'page', 'native_template' => '', 'publication' => 'preserve' ], 'target_descriptors' => [ '/title' => $target( '/title' ), '/faq' => $target( '/faq' ) ] ];
 $original = $draft; $input = Nova_Bridge_Suite_Writing_Adapter::template_input( $draft );
 check( ! is_wp_error( $input ) && count( Nova_Bridge_Suite_Writing_Adapter::source_fields() ) === 12, 'Adapter supports exact twelve stock source names.' );
 check( true === Nova_Bridge_Suite_Posting_Protocol::validate( $input, 'PublishingTemplateInput' ) && $input['definition']['fields'][0]['required'] === true, 'Actual pinned schema accepts exact current projection and explicit required choice.' );
 check( $input['mapping']['fields'][0] === [ 'field_id' => Nova_Bridge_Suite_Writing_Adapter::field_id( '/title' ), 'source_field' => 'title' ], 'Remote field identity is deterministic for the local destination.' );
 check( ! str_contains( json_encode( $input ), 'instructions' ) && ! str_contains( json_encode( $input ), 'Exactly one' ) && ! str_contains( json_encode( $input ), 'reference_id' ) && $draft === $original, 'Human instructions and native addresses are retained unchanged locally, never disguised as remote fields.' );
-check( str_contains( implode( ' ', Nova_Bridge_Suite_Writing_Adapter::warnings( $draft ) ), 'does not accept them' ), 'Unsupported instruction synchronization is explicit.' );
+check( str_contains( implode( ' ', Nova_Bridge_Suite_Writing_Adapter::warnings( $draft ) ), 'No LLM fitting' ), 'Direct mapping explicitly avoids LLM fitting.' );
 check( Nova_Bridge_Suite_Writing_Adapter::canonical_json( [ 'z' => 'é/a', 'a' => [ 2, 1 ] ] ) === '{"a":[2,1],"z":"é/a"}', 'Canonical profile preserves UTF8, slash and array order.' );
 $bad = $draft; unset( $bad['template'] ); error_is( Nova_Bridge_Suite_Writing_Adapter::template_input( $bad ), 'legacy_catalog' );
 $bad = $draft; $bad['fields']['/title']['source_path'] = 'steps[].label'; error_is( Nova_Bridge_Suite_Writing_Adapter::template_input( $bad ), 'source_unsupported' );
@@ -88,7 +88,7 @@ $mirror = $draft; $mirror['fields']['/second-title'] = $draft['fields']['/title'
 $record = $input + [ 'id' => $remote_id, 'revision' => 1, 'created_at' => '2026-10-02T10:00:00Z', 'updated_at' => '2026-10-02T10:00:00Z', 'retired_at' => null ];
 $api = new QueueClient( $connection ); $api->queue = [ [ 'POST', '/templates', reply( $record, 201 ) ] ];
 $service = new Nova_Bridge_Suite_Mapping_Sync( $api ); $state = $service->synchronize( $draft );
-check( ! is_wp_error( $state ) && $state['status'] === 'synced_draft' && $state['instructions_sync'] === 'unsupported_local_only', 'Template POST stores exact successful revision but does not imply native approval.' );
+check( ! is_wp_error( $state ) && $state['status'] === 'synced_draft' && $state['instructions_sync'] === 'v1_direct', 'Template POST stores exact successful revision but does not imply native approval.' );
 check( $api->calls[0][2] === $input && $api->calls[0][3] === [], 'POST uses current exact wire shape with no invented idempotency header.' );
 $snapshot = [ 'site_id' => $site, 'configuration' => array_intersect_key( $record, array_flip( [ 'id', 'name', 'page_type', 'definition', 'mapping', 'revision' ] ) ), 'url_id' => '99', 'url' => get_permalink( 10 ) ];
 error_is( Nova_Bridge_Suite_Mapping_Sync::configuration_for_snapshot( $snapshot, $site ), 'profile_unapproved' );
@@ -114,7 +114,7 @@ $plain['url'] = 'https://wordpress.example/?page_id=11'; error_is( Nova_Bridge_S
 unset( $GLOBALS['fixture_permalink'] );
 $changed_profile = $profile; $changed_profile['local']['routing']['operation'] = 'clone'; error_is( Nova_Bridge_Suite_Mapping_Sync::frozen_policy( $api, $snapshot, $changed_profile ), 'profile_identity' );
 // Same template, a new local revision: conditional replace with lost acknowledgement.
-$next = $draft; $next['revision'] = 'local-2'; $next['guidance'] = 'Updated local rule.';
+$next = $draft; $next['revision'] = 'local-2'; $next['fields']['/faq']['instructions'] = 'Updated local protection note.';
 $record2 = $record; $record2['revision'] = 2; $record2['updated_at'] = '2026-10-02T10:01:00Z';
 $api->queue = [ [ 'PUT', '/templates/' . $remote_id, new WP_Error( 'transport_timeout', 'unknown acknowledgement', [ 'status' => 503 ] ) ] ];
 error_is( $service->synchronize( $next ), 'transport_timeout', 503 );

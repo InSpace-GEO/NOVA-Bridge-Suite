@@ -447,7 +447,7 @@ final class Nova_Bridge_Suite_Mapping_Drafts {
     }
 
     private static function warnings( array $draft, array $reference, array $inventory, $template ): array {
-        $warnings = [ 'Local draft only: saving does not synchronize or publish.', 'Human instructions and rules are retained locally. The current posting API does not accept them for content adaptation.' ];
+        $warnings = [ 'Local draft only: saving does not synchronize or publish.', 'Direct mappings synchronize as V1. Field or template fitting instructions select V3; synchronization and native approval remain separate from saving.' ];
         if ( 'preview' === $draft['catalog_mode'] ) { $warnings[] = 'This draft uses illustrative preview IDs and field types. It must be reviewed against a real NOVA template before synchronization.'; }
         $destination = 'destination' === $draft['catalog_mode'];
         if ( $destination ) { $warnings[] = 'Destination descriptions and fixed capacity are preparation only. No posting-service adaptation contract or native typed writer is certified by saving them.'; }

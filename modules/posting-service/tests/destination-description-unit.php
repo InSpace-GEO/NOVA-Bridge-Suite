@@ -77,10 +77,10 @@ $bad = $draft; $bad['destination_groups'][0]['slots'][1]['id'] = $bad['destinati
 $bad = $draft; $bad['destination_groups'][0]['slots'][1]['ordinal'] = 0; destination_error( Nova_Bridge_Suite_Writing_Adapter::destination_description( $bad ), 'Reordered slot ordinals fail description export.' );
 $bad = $draft; $bad['destination_groups'][0]['slots'][0]['fields'][] = '/protected'; destination_error( Nova_Bridge_Suite_Writing_Adapter::destination_description( $bad ), 'Protected fields cannot enter a generated repeat slot.' );
 $stock = $draft; $stock['catalog_mode'] = 'nova'; $stock['template'] = [ 'id' => 'nova-delivery-fields-v1', 'revision' => '1' ]; $stock['fields']['/stock'] = [ 'mode' => 'mapped', 'source_path' => 'h1', 'instructions' => '' ]; $stock['target_descriptors']['/stock'] = [ 'path' => '/stock' ];
-destination_error( Nova_Bridge_Suite_Writing_Adapter::template_input( $draft ), 'Destination-only profiles cannot become stock publishing templates.' );
+$input = Nova_Bridge_Suite_Writing_Adapter::template_input( $draft );
+destination_check( ! is_wp_error( $input ) && 3 === $input['definition']['version'] && 3 === $input['mapping']['version'], 'Destination profiles serialize as the released V3 contract.' );
+destination_check( $input['definition']['instructions'] === $export['instructions'] && $input['definition']['fields'] === $export['fields'] && $input['definition']['groups'] === $export['groups'], 'Purposes, instructions, limits and stable fixed slots survive synchronization.' );
+destination_check( ! str_contains( json_encode( $input ), 'reference_id' ) && ! str_contains( json_encode( $input ), '/meta_all/' ), 'Native addresses remain local.' );
 destination_error( Nova_Bridge_Suite_Writing_Adapter::template_input( $stock ), 'Mixed fitted/stock profiles cannot silently sync a stock subset.' );
-$client = new Nova_Bridge_Suite_Posting_Client( [ 'base_url' => 'https://posting.example', 'site_id' => '33333333-3333-4333-8333-333333333333', 'token' => 'test-token-not-a-credential' ] );
-$service = new Nova_Bridge_Suite_Mapping_Sync( $client );
-destination_error( $service->synchronize( $draft ), 'Destination synchronization is blocked before HTTP or SQL state changes.' );
-destination_error( $service->activate( $draft ), 'Destination activation is blocked before HTTP or SQL state changes.' );
+foreach ( [ 'image', 'list', 'link' ] as $type ) { $compound = $draft; $compound['fields']['/url']['description']['value_type'] = $type; destination_error( Nova_Bridge_Suite_Writing_Adapter::template_input( $compound ), 'Compound fields cannot silently become enabled scalar templates.' ); }
 echo 'PASS ' . $checks . " destination-description and local simulation assertions\n";

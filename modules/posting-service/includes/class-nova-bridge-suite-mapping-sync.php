@@ -26,6 +26,7 @@ final class Nova_Bridge_Suite_Mapping_Sync {
     private static function key( string $site, string $type, int $id ): string { return 'nova_mapping_sync_' . hash( 'sha256', $site . ':' . $type . ':' . $id ); }
     private static function profile_key( string $site, string $id, int $revision ): string { return 'nova_publishing_profile_' . hash( 'sha256', $site . ':' . $id . ':' . $revision ); }
     public static function state( string $type, int $id, string $site ): ?array { $state = get_option( self::key( $site, $type, $id ), null ); return is_array( $state ) ? $state : null; }
+    public static function destination_enabled( string $site ): bool { return true === get_option( 'nova_posting_v3_' . hash( 'sha256', $site ), false ); }
     private static function response( array $data ) { $response = rest_ensure_response( $data ); $response->header( 'Cache-Control', 'private, no-store' ); return $response; }
     private static function permission( $request ) {
         $permission = Nova_Bridge_Suite_Mapping_Drafts::can_admin(); if ( is_wp_error( $permission ) ) { return $permission; }
@@ -41,14 +42,14 @@ final class Nova_Bridge_Suite_Mapping_Sync {
             if ( ! Nova_Bridge_Suite_Writing_Adapter::template_record( $record ) ) { return $local; }
             if ( null === $record['retired_at'] ) { $templates[] = Nova_Bridge_Suite_Writing_Adapter::catalog_template( $record ); }
         }
-        return [ 'templates' => $templates, 'api_available' => true, 'message' => 'Current delivery sources and site publishing templates loaded. Human instructions remain local; this API does not apply them during generation.' ];
+        return [ 'templates' => $templates, 'api_available' => true, 'message' => 'Direct copies use V1. Field or template instructions select V3 fitting when synchronized.' ];
     }
     private static function summary( ?array $state ): array {
         if ( ! $state ) { return [ 'status' => 'not_synced' ]; }
         if ( self::CONTRACT !== ( $state['contract'] ?? '' ) ) { return [ 'status' => 'legacy_retained', 'local_revision' => $state['local_revision'] ?? '', 'warnings' => [ 'Historical writing configuration retained. Select the current delivery catalog and explicitly review this profile before synchronization.' ] ]; }
         $result = array_intersect_key( $state, array_flip( [ 'status', 'local_revision', 'site_id', 'updated_at', 'error', 'warnings', 'instructions_sync' ] ) );
         if ( isset( $state['pending'] ) ) { $result['pending'] = [ 'name' => $state['pending']['method'] === 'POST' ? 'create_template' : 'update_template', 'requires_template_id' => 'POST' === $state['pending']['method'] ]; }
-        if ( isset( $state['template'] ) ) { $result['template'] = [ 'id' => $state['template']['id'], 'revision' => $state['template']['revision'], 'etag' => '"' . $state['template']['revision'] . '"' ]; }
+        if ( isset( $state['template'] ) ) { $result['mapping_version'] = $state['template']['definition']['version']; $result['template'] = [ 'id' => $state['template']['id'], 'revision' => $state['template']['revision'], 'etag' => '"' . $state['template']['revision'] . '"' ]; }
         return $result;
     }
     public static function sync_state_response( $request ) {
@@ -94,13 +95,14 @@ final class Nova_Bridge_Suite_Mapping_Sync {
         try {
             $old = $this->state;
             if ( $old && self::CONTRACT === ( $old['contract'] ?? '' ) && isset( $old['pending'] ) && ( $old['local_revision'] ?? null ) !== $draft['revision'] ) { return self::error( 'pending_conflict', 'Recover the pending remote operation before changing the synchronized local revision.' ); }
-            if ( $old && self::CONTRACT === ( $old['contract'] ?? '' ) && ( $old['local_revision'] ?? null ) === $draft['revision'] && in_array( $old['status'], [ 'synced_draft', 'active' ], true ) ) { return $old; }
-            if ( ! $old || self::CONTRACT !== ( $old['contract'] ?? '' ) || ( $old['local_revision'] ?? null ) !== $draft['revision'] || 'rejected' === ( $old['status'] ?? '' ) ) {
+            $projection_changed = $old && self::CONTRACT === ( $old['contract'] ?? '' ) && in_array( $old['status'], [ 'synced_draft', 'active' ], true ) && ! self::matches( $old['template'], $input );
+            if ( $old && self::CONTRACT === ( $old['contract'] ?? '' ) && ( $old['local_revision'] ?? null ) === $draft['revision'] && in_array( $old['status'], [ 'synced_draft', 'active' ], true ) && ! $projection_changed ) { return $old; }
+            if ( ! $old || self::CONTRACT !== ( $old['contract'] ?? '' ) || ( $old['local_revision'] ?? null ) !== $draft['revision'] || 'rejected' === ( $old['status'] ?? '' ) || $projection_changed ) {
                 if ( $old && self::CONTRACT !== ( $old['contract'] ?? '' ) ) {
                     $archive = $this->state_name . '_legacy_' . substr( hash( 'sha256', self::json( $old ) ), 0, 20 );
                     if ( ! add_option( $archive, $old, '', false ) && get_option( $archive, null ) !== $old ) { return self::error( 'storage', 'The historical writing configuration could not be preserved.', 500 ); }
                 }
-                $this->state = [ 'contract' => self::CONTRACT, 'site_id' => $this->client->site_id(), 'local_revision' => $draft['revision'], 'local' => $draft, 'status' => 'pending', 'instructions_sync' => 'unsupported_local_only', 'warnings' => Nova_Bridge_Suite_Writing_Adapter::warnings( $draft ) ];
+                $this->state = [ 'contract' => self::CONTRACT, 'site_id' => $this->client->site_id(), 'local_revision' => $draft['revision'], 'local' => $draft, 'status' => 'pending', 'instructions_sync' => 3 === $input['definition']['version'] ? 'v3_destination_fitting' : 'v1_direct', 'warnings' => Nova_Bridge_Suite_Writing_Adapter::warnings( $draft ) ];
                 $prior = $old && self::CONTRACT === ( $old['contract'] ?? '' ) ? ( $old['template'] ?? null ) : null;
                 if ( $prior ) { $this->state['template'] = $prior; }
                 $this->state['pending'] = [ 'method' => $prior ? 'PUT' : 'POST', 'path' => $prior ? '/templates/' . $prior['id'] : '/templates', 'body' => $input, 'expected_revision' => $prior['revision'] ?? 0 ];
@@ -145,12 +147,18 @@ final class Nova_Bridge_Suite_Mapping_Sync {
             $record = self::remote_record( $this->client->site_request( 'GET', '/templates/' . $this->state['template']['id'] ), $this->state['template']['id'] );
             if ( is_wp_error( $record ) ) { return $record; }
             if ( self::json( $record ) !== self::json( $this->state['template'] ) || ! $record['enabled'] || null !== $record['retired_at'] ) { return self::error( 'revision_conflict', 'The synchronized publishing template changed. Review and synchronize again.' ); }
+            if ( ! self::matches( $record, $input ) ) { return self::error( 'not_synced', 'Synchronize the selected mapping version before approving native writes.' ); }
             if ( ! class_exists( 'Nova_Bridge_Suite_Mapped_Writer' ) ) { return self::error( 'writer_unavailable', 'The native writer is unavailable.' ); }
             $probe = Nova_Bridge_Suite_Mapped_Writer::probe_mapping( $record, $record['mapping'], $draft, $context );
             if ( is_wp_error( $probe ) ) { return $probe; }
             $profile = [ 'contract' => self::CONTRACT, 'site_id' => $this->client->site_id(), 'template' => self::frozen_remote( $record ), 'remote' => self::frozen_remote( $record ), 'local' => $draft, 'profile_digest' => hash( 'sha256', self::json( $draft ) ) ];
             $key = self::profile_key( $profile['site_id'], $record['id'], $record['revision'] );
             if ( ! add_option( $key, $profile, '', false ) && self::json( get_option( $key, [] ) ) !== self::json( $profile ) ) { return self::error( 'profile_conflict', 'This remote revision already belongs to another local native profile. It cannot be reassigned.', 409 ); }
+            if ( 3 === $record['definition']['version'] ) {
+                $enabled_key = 'nova_posting_v3_' . hash( 'sha256', $profile['site_id'] );
+                update_option( $enabled_key, true, false );
+                if ( ! self::destination_enabled( $profile['site_id'] ) ) { return self::error( 'storage', 'V3 discovery could not be enabled for this approved profile.', 500 ); }
+            }
             $this->state['status'] = 'active'; $this->state['evidence'] = $probe; $saved = $this->checkpoint();
             return is_wp_error( $saved ) ? $saved : $this->state;
         } finally { $this->release(); }
@@ -161,7 +169,7 @@ final class Nova_Bridge_Suite_Mapping_Sync {
         if ( ( $snapshot['site_id'] ?? null ) !== $site_id || ! is_array( $remote ) || ! Nova_Bridge_Suite_Posting_Protocol::uuid( $remote['id'] ?? null ) || ! is_int( $remote['revision'] ?? null ) || $remote['revision'] < 1 ) { return self::error( 'profile_missing', 'This delivery has no supported frozen publishing configuration.' ); }
         $profile = get_option( self::profile_key( $site_id, $remote['id'], $remote['revision'] ), null );
         if ( ! is_array( $profile ) || self::CONTRACT !== ( $profile['contract'] ?? '' ) || ( $profile['site_id'] ?? null ) !== $site_id || self::json( $profile['template'] ?? null ) !== self::json( $remote ) || hash( 'sha256', self::json( $profile['local'] ?? null ) ) !== ( $profile['profile_digest'] ?? null ) ) { return self::error( 'profile_unapproved', 'The exact frozen publishing revision has no matching approved local native profile. No current or historical writing-pin fallback is allowed.' ); }
-        $input = Nova_Bridge_Suite_Writing_Adapter::template_input( $profile['local'] ); if ( is_wp_error( $input ) ) { return $input; }
+        $input = Nova_Bridge_Suite_Writing_Adapter::template_input( $profile['local'], $remote['definition']['version'] ); if ( is_wp_error( $input ) ) { return $input; }
         unset( $input['enabled'] ); if ( ! self::matches( $remote, $input ) ) { return self::error( 'profile_projection', 'The retained local profile does not match the frozen delivery configuration.' ); }
         return $profile;
     }
@@ -236,7 +244,7 @@ final class Nova_Bridge_Suite_Mapping_Sync {
     }
 
     public static function validate_live( array $draft ) {
-        if ( Nova_Bridge_Suite_Writing_Adapter::is_destination_draft( $draft ) ) { return Nova_Bridge_Suite_Writing_Adapter::template_input( $draft ); }
+        $input = Nova_Bridge_Suite_Writing_Adapter::template_input( $draft ); if ( is_wp_error( $input ) ) { return $input; }
         $entity = Nova_Bridge_Suite_Strategy::entity( $draft['reference_type'], (int) $draft['reference_id'] );
         if ( ! $entity || Nova_Bridge_Suite_Strategy::fingerprint( $entity )['signature'] !== $draft['signature'] ) { return self::error( 'reference_changed', 'The selected native layout has changed. Reconcile and save its local draft.' ); }
         $inventory = array_column( Nova_Bridge_Suite_Strategy::field_inventory( $entity ), null, 'path' );

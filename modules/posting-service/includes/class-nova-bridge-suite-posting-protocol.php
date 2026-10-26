@@ -6,6 +6,7 @@ final class Nova_Bridge_Suite_Posting_Protocol {
     // Local journal markers, not members to add to the service's wire objects.
     public const SNAPSHOT = 'nova.delivery-snapshot/v1';
     public const RESULT = 'nova.connector-event/v1';
+    public const DESTINATION = 'destination-v3-scalar-v1';
     private static $schemas;
 
     private static function schemas(): array {
@@ -94,13 +95,19 @@ final class Nova_Bridge_Suite_Posting_Protocol {
         if ( ! self::uuid( $response['attempt_id'] ?? null ) ) { return self::error( 'snapshot_attempt', 'The service did not authorize a current connector attempt.' ); }
         $object = json_decode( $raw, false, 64 );
         if ( JSON_ERROR_NONE !== json_last_error() ) { return self::error( 'snapshot_json', 'The exact snapshot is not valid JSON.' ); }
-        $valid = self::validate( $object, 'DeliverySnapshot' );
+        $destination = self::DESTINATION === ( $item['contract'] ?? null );
+        $valid = self::validate( $object, $destination ? 'AdaptationDeliveryV2' : 'DeliverySnapshot' );
         if ( is_wp_error( $valid ) ) { return $valid; }
         $snapshot = json_decode( $raw, true, 64 );
         foreach ( [ 'id', 'content_item_version_id', 'source_sha256' ] as $key ) { if ( $snapshot[ $key ] !== ( $item[ $key ] ?? null ) ) { return self::error( 'snapshot_identity', 'The snapshot identity differs from authenticated discovery.' ); } }
+        if ( $destination ) {
+            foreach ( [ 'job_id', 'run_id', 'source_event_id', 'client_id', 'content_item_id', 'version_number' ] as $key ) {
+                if ( $snapshot[ $key ] !== ( $item[ $key ] ?? null ) ) { return self::error( 'snapshot_identity', 'The fitted result differs from its authenticated adaptation status.' ); }
+            }
+        }
         if ( $snapshot['site_id'] !== ( $job['site_id'] ?? null ) ) { return self::error( 'snapshot_site', 'The snapshot belongs to a different publishing site.' ); }
         foreach ( [ 'client_id', 'domain_id', 'url_id', 'content_item_id', 'content_item_version_id' ] as $key ) { if ( ! self::decimal_id( $snapshot[ $key ] ) ) { return self::error( 'snapshot_identity', 'A source identity is not a positive decimal bigint.' ); } }
-        if ( $snapshot['version_number'] < 1 || $snapshot['version_number'] > 2147483647 || '' === trim( $snapshot['language'] ) ) { return self::error( 'snapshot_identity', 'The source version or language is invalid.' ); }
+        if ( $snapshot['version_number'] < 1 || $snapshot['version_number'] > 2147483647 || ! is_string( $snapshot['language'] ) || '' === trim( $snapshot['language'] ) ) { return self::error( 'snapshot_identity', 'The source version or language is invalid.' ); }
         // source_sha256 covers backend source content, not these delivery bytes. Do not equate
         // the two hashes or replace the original body attempt_id with current header authority.
         return $snapshot;

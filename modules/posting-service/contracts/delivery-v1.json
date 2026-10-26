@@ -1,6 +1,6 @@
 {
-  "source_commit": "145fbcfb7319333e6369796489c068196cb68665",
-  "openapi_sha256": "ce48ded00914e595dde23d543e347bc748155a7726a108331cc051dc8246af28",
+  "source_commit": "07e37d5054044a66c1f6f35652be43038fdb9169",
+  "openapi_sha256": "f089d7dbde3115fcbef32a8cc825d1d0e7d032eedc15c9441b6f0c1ead404561",
   "schemas": {
     "DeliverySnapshot": {
       "type": "object",
@@ -176,6 +176,17 @@
       }
     },
     "PublishingTemplateDefinition": {
+      "description": "Stored template definition. Version 1 is returned as stored and is never rewritten into version 2.",
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/PublishingTemplateDefinitionV1"
+        },
+        {
+          "$ref": "#/components/schemas/PublishingTemplateDefinitionV2"
+        }
+      ]
+    },
+    "PublishingTemplateDefinitionV1": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -226,7 +237,74 @@
         }
       }
     },
+    "PublishingTemplateDefinitionV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "fields"
+      ],
+      "properties": {
+        "version": {
+          "type": "integer",
+          "enum": [
+            2
+          ]
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "label",
+              "consumer_name",
+              "kind",
+              "required"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]*$"
+              },
+              "label": {
+                "type": "string",
+                "pattern": "^\\S(?:.*\\S)?$"
+              },
+              "consumer_name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "text",
+                  "rich_text",
+                  "image",
+                  "list"
+                ]
+              },
+              "required": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    },
     "PublishingTemplateMapping": {
+      "description": "Stored template mapping. Version 1 is returned as stored and is never rewritten into version 2.",
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/PublishingTemplateMappingV1"
+        },
+        {
+          "$ref": "#/components/schemas/PublishingTemplateMappingV2"
+        }
+      ]
+    },
+    "PublishingTemplateMappingV1": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -255,21 +333,74 @@
                 "pattern": "^[a-z][a-z0-9_]*$"
               },
               "source_field": {
+                "$ref": "#/components/schemas/PublishingSourceField"
+              }
+            }
+          }
+        }
+      }
+    },
+    "PublishingSourceField": {
+      "type": "string",
+      "enum": [
+        "title",
+        "meta_description",
+        "h1",
+        "content",
+        "top_content",
+        "bottom_content",
+        "image_url",
+        "image_urls",
+        "image_alt",
+        "url",
+        "page_type_frontend",
+        "language"
+      ]
+    },
+    "PublishingTemplateMappingV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "source_scope",
+        "fields"
+      ],
+      "properties": {
+        "version": {
+          "type": "integer",
+          "enum": [
+            2
+          ]
+        },
+        "source_scope": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/components/schemas/PublishingSourceField"
+          }
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "field_id",
+              "source_fields"
+            ],
+            "properties": {
+              "field_id": {
                 "type": "string",
-                "enum": [
-                  "title",
-                  "meta_description",
-                  "h1",
-                  "content",
-                  "top_content",
-                  "bottom_content",
-                  "image_url",
-                  "image_urls",
-                  "image_alt",
-                  "url",
-                  "page_type_frontend",
-                  "language"
-                ]
+                "pattern": "^[a-z][a-z0-9_]*$"
+              },
+              "source_fields": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "$ref": "#/components/schemas/PublishingSourceField"
+                }
               }
             }
           }
@@ -447,7 +578,646 @@
         }
       }
     },
+    "DestinationAdaptationStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "tenant_id",
+        "site_id",
+        "source_event_id",
+        "content_item_id",
+        "content_item_version_id",
+        "version_number",
+        "source_sha256",
+        "job_id",
+        "run_id",
+        "status_revision",
+        "status",
+        "delivery_id",
+        "contract"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "enum": [
+            2
+          ]
+        },
+        "tenant_id": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "site_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "source_event_id": {
+          "type": "string",
+          "pattern": "^posting-source-v1-[0-9a-f]{64}$"
+        },
+        "content_item_id": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "content_item_version_id": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "version_number": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "job_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "run_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "status_revision": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "processing",
+            "ready",
+            "blocked",
+            "cancelled"
+          ]
+        },
+        "delivery_id": {
+          "type": "string",
+          "format": "uuid",
+          "nullable": true
+        },
+        "contract": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "template_version",
+            "result_kind",
+            "result_schema_version"
+          ],
+          "properties": {
+            "template_version": {
+              "type": "integer",
+              "enum": [
+                3
+              ]
+            },
+            "result_kind": {
+              "type": "string",
+              "enum": [
+                "adaptation.delivery"
+              ]
+            },
+            "result_schema_version": {
+              "type": "integer",
+              "enum": [
+                2
+              ]
+            }
+          }
+        }
+      }
+    },
+    "AdaptationStatusPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "items",
+        "next_cursor"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/AdaptationStatus"
+          }
+        },
+        "next_cursor": {
+          "type": "string",
+          "format": "uuid",
+          "nullable": true
+        }
+      }
+    },
+    "AdaptationStatus": {
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/InternalAdaptationStatus"
+        },
+        {
+          "$ref": "#/components/schemas/DestinationAdaptationStatus"
+        }
+      ]
+    },
+    "InternalAdaptationStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "tenant_id",
+        "site_id",
+        "source_event_id",
+        "content_item_id",
+        "content_item_version_id",
+        "version_number",
+        "source_sha256",
+        "job_id",
+        "run_id",
+        "status_revision",
+        "status",
+        "delivery_id"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "enum": [
+            1
+          ]
+        },
+        "tenant_id": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "site_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "source_event_id": {
+          "type": "string",
+          "pattern": "^posting-source-v1-[0-9a-f]{64}$"
+        },
+        "content_item_id": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "content_item_version_id": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "version_number": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "job_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "run_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "status_revision": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "processing",
+            "ready",
+            "blocked",
+            "cancelled"
+          ]
+        },
+        "delivery_id": {
+          "type": "string",
+          "format": "uuid",
+          "nullable": true
+        }
+      }
+    },
+    "AdaptationDeliveryV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "id",
+        "site_id",
+        "client_id",
+        "domain_id",
+        "url_id",
+        "content_item_id",
+        "content_item_version_id",
+        "version_number",
+        "source_event_id",
+        "source_sha256",
+        "job_id",
+        "run_id",
+        "url",
+        "page_type_frontend",
+        "language",
+        "configuration",
+        "destination_values"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "enum": [
+            2
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "adaptation.delivery"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "site_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "client_id": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "domain_id": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "url_id": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "content_item_id": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "content_item_version_id": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "version_number": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "source_event_id": {
+          "type": "string",
+          "pattern": "^posting-source-v1-[0-9a-f]{64}$"
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "job_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "run_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "url": {
+          "type": "string",
+          "nullable": true
+        },
+        "page_type_frontend": {
+          "type": "string",
+          "nullable": true
+        },
+        "language": {
+          "type": "string",
+          "nullable": true
+        },
+        "configuration": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "page_type",
+            "revision",
+            "definition",
+            "mapping"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "name": {
+              "type": "string"
+            },
+            "page_type": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "definition": {
+              "$ref": "#/components/schemas/PublishingTemplateDefinitionV3"
+            },
+            "mapping": {
+              "$ref": "#/components/schemas/PublishingTemplateMappingV3"
+            }
+          }
+        },
+        "destination_values": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "PublishingTemplateDefinitionV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "instructions",
+        "fields",
+        "groups"
+      ],
+      "properties": {
+        "version": {
+          "type": "integer",
+          "enum": [
+            3
+          ]
+        },
+        "instructions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "text"
+          ],
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "inherit",
+                "set",
+                "clear"
+              ]
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 8000
+            }
+          }
+        },
+        "fields": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 500,
+          "items": {
+            "$ref": "#/components/schemas/PublishingDestination"
+          }
+        },
+        "groups": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "label",
+              "capacity",
+              "slots"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "capacity": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500
+              },
+              "slots": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 500,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "id",
+                    "ordinal",
+                    "field_ids"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "ordinal": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 499
+                    },
+                    "field_ids": {
+                      "type": "array",
+                      "minItems": 1,
+                      "maxItems": 500,
+                      "uniqueItems": true,
+                      "items": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9_]*$"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "PublishingDestination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "purpose",
+        "value_type",
+        "required",
+        "instructions"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "value_type": {
+          "type": "string",
+          "enum": [
+            "text",
+            "rich_text",
+            "url",
+            "email",
+            "image",
+            "list",
+            "link"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "instructions": {
+          "type": "string",
+          "maxLength": 8000
+        },
+        "element": {
+          "type": "string"
+        },
+        "logical_field": {
+          "type": "string"
+        },
+        "constraints": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_length": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100000
+            },
+            "min_items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 500
+            },
+            "max_items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 500
+            }
+          }
+        }
+      }
+    },
+    "PublishingTemplateMappingV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version"
+      ],
+      "properties": {
+        "version": {
+          "type": "integer",
+          "enum": [
+            3
+          ]
+        },
+        "available_sources": {
+          "description": "Omission resolves privately to the exact ten-field allowlist in its declared default order; stored mapping is not rewritten.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/components/schemas/PublishingDestinationSourceField"
+          }
+        },
+        "source_hints": {
+          "description": "Preferences only, never required source bindings.",
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "field_id",
+              "source_fields"
+            ],
+            "properties": {
+              "field_id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]*$"
+              },
+              "source_fields": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 10,
+                "uniqueItems": true,
+                "items": {
+                  "$ref": "#/components/schemas/PublishingDestinationSourceField"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "PublishingDestinationSourceField": {
+      "type": "string",
+      "enum": [
+        "title",
+        "meta_description",
+        "h1",
+        "content",
+        "top_content",
+        "bottom_content",
+        "image_url",
+        "image_urls",
+        "image_alt",
+        "url"
+      ]
+    },
     "PublishingTemplate": {
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/PublishingTemplateV1"
+        },
+        {
+          "$ref": "#/components/schemas/PublishingTemplateV2"
+        },
+        {
+          "$ref": "#/components/schemas/PublishingTemplateV3"
+        }
+      ]
+    },
+    "PublishingTemplateV1": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -477,10 +1247,116 @@
           "type": "boolean"
         },
         "definition": {
-          "$ref": "#/components/schemas/PublishingTemplateDefinition"
+          "$ref": "#/components/schemas/PublishingTemplateDefinitionV1"
         },
         "mapping": {
-          "$ref": "#/components/schemas/PublishingTemplateMapping"
+          "$ref": "#/components/schemas/PublishingTemplateMappingV1"
+        },
+        "revision": {
+          "type": "integer"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "retired_at": {
+          "type": "string",
+          "format": "date-time",
+          "nullable": true
+        }
+      }
+    },
+    "PublishingTemplateV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "page_type",
+        "enabled",
+        "definition",
+        "mapping",
+        "revision",
+        "created_at",
+        "updated_at",
+        "retired_at"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "page_type": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "definition": {
+          "$ref": "#/components/schemas/PublishingTemplateDefinitionV2"
+        },
+        "mapping": {
+          "$ref": "#/components/schemas/PublishingTemplateMappingV2"
+        },
+        "revision": {
+          "type": "integer"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "retired_at": {
+          "type": "string",
+          "format": "date-time",
+          "nullable": true
+        }
+      }
+    },
+    "PublishingTemplateV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "page_type",
+        "enabled",
+        "definition",
+        "mapping",
+        "revision",
+        "created_at",
+        "updated_at",
+        "retired_at"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "page_type": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "definition": {
+          "$ref": "#/components/schemas/PublishingTemplateDefinitionV3"
+        },
+        "mapping": {
+          "$ref": "#/components/schemas/PublishingTemplateMappingV3"
         },
         "revision": {
           "type": "integer"
@@ -501,7 +1377,20 @@
       }
     },
     "PublishingTemplateInput": {
-      "description": "Connector-consumed metadata only; the existing Fastify 1 MiB request-body limit applies. No transformations or executable commands.",
+      "description": "Connector-consumed metadata only; historical requests retain the 1 MiB limit and V3 requests have a 256 KiB original UTF-8 limit. Writes require matched 1/1, 2/2 or 3/3 versions; no transformations, executable commands or native authority.",
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/PublishingTemplateInputV1"
+        },
+        {
+          "$ref": "#/components/schemas/PublishingTemplateInputV2"
+        },
+        {
+          "$ref": "#/components/schemas/PublishingTemplateInputV3"
+        }
+      ]
+    },
+    "PublishingTemplateInputV1": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -524,10 +1413,71 @@
           "type": "boolean"
         },
         "definition": {
-          "$ref": "#/components/schemas/PublishingTemplateDefinition"
+          "$ref": "#/components/schemas/PublishingTemplateDefinitionV1"
         },
         "mapping": {
-          "$ref": "#/components/schemas/PublishingTemplateMapping"
+          "$ref": "#/components/schemas/PublishingTemplateMappingV1"
+        }
+      }
+    },
+    "PublishingTemplateInputV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "page_type",
+        "definition",
+        "mapping",
+        "enabled"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^\\S(?:.*\\S)?$"
+        },
+        "page_type": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "definition": {
+          "$ref": "#/components/schemas/PublishingTemplateDefinitionV2"
+        },
+        "mapping": {
+          "$ref": "#/components/schemas/PublishingTemplateMappingV2"
+        }
+      }
+    },
+    "PublishingTemplateInputV3": {
+      "description": "Source-free description only; no fitting or native authority. Original UTF-8 request limit is 256 KiB. Byte limits and cross-field rules are validated by the template handler.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "page_type",
+        "definition",
+        "mapping",
+        "enabled"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^\\S(?:.*\\S)?$"
+        },
+        "page_type": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "definition": {
+          "$ref": "#/components/schemas/PublishingTemplateDefinitionV3"
+        },
+        "mapping": {
+          "$ref": "#/components/schemas/PublishingTemplateMappingV3"
         }
       }
     },

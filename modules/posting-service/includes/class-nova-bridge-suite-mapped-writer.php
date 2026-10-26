@@ -108,9 +108,15 @@ final class Nova_Bridge_Suite_Mapped_Writer {
         $taxonomy = self::taxonomy_plan( $snapshot, $operation, $desired );
         if ( isset( $local['routing']['post_type'] ) && $local['routing']['post_type'] !== $snapshot['post']['post_type'] ) { self::fail( 'post_type', 'The document post type changed.' ); }
         if ( strlen( self::json( $snapshot ) ) > self::MAX_SNAPSHOT_BYTES ) { self::fail( 'snapshot_size', 'This document exceeds the bounded writer snapshot size.' ); }
-        $values = $content['content'] ?? null;
+        $destination = 3 === ( $template['definition']['version'] ?? null );
+        if ( $destination ) { $local = Nova_Bridge_Suite_Writing_Adapter::adaptation_draft( $local ); }
+        if ( $destination && ( 'adaptation.delivery' !== ( $content['kind'] ?? null ) || 2 !== ( $content['schema_version'] ?? null ) || 'update' !== $operation ) ) { self::fail( 'destination_scope', 'V3 currently updates scalar fields in an existing approved post. Clone routing requires a separate native URL policy.' ); }
+        $values = $destination ? ( $content['destination_values'] ?? null ) : ( $content['content'] ?? null );
         if ( ! is_array( $values ) ) { self::fail( 'values', 'Delivery content must be an object of canonical source values.' ); }
-        foreach ( [ 'url', 'page_type_frontend', 'language' ] as $source ) { $values[ $source ] = $content[ $source ] ?? null; }
+        if ( $destination ) {
+            $fitted = Nova_Bridge_Suite_Writing_Adapter::validate_fitted_values( $local, $values );
+            if ( is_wp_error( $fitted ) ) { self::fail( 'fitted_values', $fitted->get_error_message() ); }
+        } else { foreach ( [ 'url', 'page_type_frontend', 'language' ] as $source ) { $values[ $source ] = $content[ $source ] ?? null; } }
         $definitions = array_column( $template['definition']['fields'] ?? [], null, 'id' );
         $bindings = array_column( $template['mapping']['fields'] ?? [], 'source_field', 'field_id' );
         $writes = []; $guards = [];
@@ -119,6 +125,16 @@ final class Nova_Bridge_Suite_Mapped_Writer {
             if ( ! is_array( $descriptor ) || ( $descriptor['path'] ?? '' ) !== $path ) { self::fail( 'local_descriptor', 'A retained local target descriptor is missing or changed.' ); }
             if ( 'protected' === ( $field['mode'] ?? '' ) ) { $guards[] = self::resolve_target( $descriptor, $snapshot, $inventory, true ); continue; }
             if ( 'leave_empty' === ( $field['mode'] ?? '' ) ) { if ( 'clone' === $operation ) { $writes[] = [ 'target' => self::resolve_target( $descriptor, $snapshot, $inventory ), 'value' => '', 'source_path' => null ]; } continue; }
+            if ( $destination ) {
+                if ( 'adapt' !== ( $field['mode'] ?? '' ) ) { self::fail( 'configuration', 'A V3 destination must have an adapted scalar policy.' ); }
+                if ( ! array_key_exists( $path, $fitted ) ) { continue; }
+                $target = self::resolve_target( $descriptor, $snapshot, $inventory );
+                if ( 'post' === $target['kind'] && 'post_name' === $target['column'] ) { self::fail( 'slug', 'V3 field fitting cannot change a native slug.' ); }
+                $definition = $definitions[ Nova_Bridge_Suite_Writing_Adapter::field_id( $path ) ];
+                self::validate_value( $fitted[ $path ], [ 'kind' => 'rich_text' === $definition['value_type'] ? 'rich_text' : 'text' ] );
+                $writes[] = [ 'target' => $target, 'value' => $fitted[ $path ], 'source_path' => null ];
+                continue;
+            }
             if ( 'mapped' !== ( $field['mode'] ?? '' ) ) { self::fail( 'configuration', 'The retained field policy is unsupported.' ); }
             $id = Nova_Bridge_Suite_Writing_Adapter::field_id( $path );
             $definition = $definitions[ $id ] ?? null; $source = $bindings[ $id ] ?? null;
@@ -161,7 +177,7 @@ final class Nova_Bridge_Suite_Mapped_Writer {
 
     private static function verify_policy( array $template, array $local ): void {
         if ( ! class_exists( 'Nova_Bridge_Suite_Writing_Adapter' ) ) { self::fail( 'policy', 'The local policy adapter is unavailable.' ); }
-        $input = Nova_Bridge_Suite_Writing_Adapter::template_input( $local );
+        $input = Nova_Bridge_Suite_Writing_Adapter::template_input( $local, $template['definition']['version'] );
         if ( is_wp_error( $input ) ) { self::fail( 'configuration', $input->get_error_message() ); }
         foreach ( [ 'definition', 'mapping', 'page_type', 'name' ] as $key ) { if ( ! self::same( $template[ $key ] ?? null, $input[ $key ] ) ) { self::fail( 'binding_identity', 'The frozen template differs from the exact retained local mapping.' ); } }
     }
@@ -473,6 +489,9 @@ final class Nova_Bridge_Suite_Mapped_Writer {
                 $inventory = array_column( Nova_Bridge_Suite_Strategy::field_inventory( $entity ), null, 'path' );
                 $snapshot = self::snapshot( $post_id );
                 $operation = $local['routing']['operation'] ?? '';
+                $destination = 3 === ( $template['definition']['version'] ?? null );
+                if ( $destination ) { $local = Nova_Bridge_Suite_Writing_Adapter::adaptation_draft( $local ); }
+                if ( $destination && 'update' !== $operation ) { self::fail( 'destination_scope', 'V3 native approval currently supports updates to existing posts only.' ); }
                 $publication = $local['routing']['publication'] ?? 'preserve';
                 $type = get_post_type_object( $snapshot['post']['post_type'] );
                 if ( ! in_array( $operation, [ 'update', 'clone' ], true ) || ! in_array( $publication, [ 'preserve', 'draft', 'publish' ], true ) || ! $type || ( 'clone' === $operation && ! current_user_can( $type->cap->create_posts ) ) || ( 'publish' === $publication && ! current_user_can( $type->cap->publish_posts ) ) ) { self::fail( 'permission', 'The approved routing exceeds the publishing user capabilities.' ); }
@@ -487,10 +506,12 @@ final class Nova_Bridge_Suite_Mapped_Writer {
                     if ( 'protected' === $field['mode'] ) { $guards[] = self::resolve_target( $descriptor, $snapshot, $inventory, true ); continue; }
                     if ( 'leave_empty' === $field['mode'] ) { if ( 'clone' === $operation ) { $targets[] = self::resolve_target( $descriptor, $snapshot, $inventory ); } continue; }
                     $id = Nova_Bridge_Suite_Writing_Adapter::field_id( $path );
-                    if ( 'mapped' !== $field['mode'] || ! isset( $definitions[ $id ], $bindings[ $id ] ) || $bindings[ $id ] !== ( $field['source_path'] ?? '' ) || ! in_array( $definitions[ $id ]['kind'], [ 'text', 'rich_text' ], true ) ) { self::fail( 'value_adapter', 'Every mapped destination needs a supported scalar source before activation.' ); }
+                    if ( $destination ) {
+                        if ( 'adapt' !== $field['mode'] || ! isset( $definitions[ $id ] ) || ! in_array( $definitions[ $id ]['value_type'], [ 'text', 'rich_text', 'url', 'email' ], true ) ) { self::fail( 'value_adapter', 'Each V3 destination needs a supported scalar description.' ); }
+                    } elseif ( 'mapped' !== $field['mode'] || ! isset( $definitions[ $id ], $bindings[ $id ] ) || $bindings[ $id ] !== ( $field['source_path'] ?? '' ) || ! in_array( $definitions[ $id ]['kind'], [ 'text', 'rich_text' ], true ) ) { self::fail( 'value_adapter', 'Every mapped destination needs a supported scalar source before activation.' ); }
                     $coverage[ $id ] = true;
                     $target = self::resolve_target( $descriptor, $snapshot, $inventory ); $targets[] = $target;
-                    if ( 'post' === $target['kind'] && 'post_name' === $target['column'] ) { if ( 'url' !== $bindings[ $id ] ) { self::fail( 'slug', 'Native slugs must be mapped from the delivery URL.' ); } $slug = true; }
+                    if ( 'post' === $target['kind'] && 'post_name' === $target['column'] ) { if ( $destination || 'url' !== $bindings[ $id ] ) { self::fail( 'slug', 'Native slugs must be mapped from the delivery URL; V3 fitting cannot change them.' ); } $slug = true; }
                 }
                 foreach ( $targets as $index => $target ) {
                     $uses_acf = $uses_acf || ! empty( $target['acf'] );

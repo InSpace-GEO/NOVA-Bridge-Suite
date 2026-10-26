@@ -26,7 +26,11 @@ class Posting_Jobs_Database {
         if ( false !== strpos( $sql, 'COUNT(*)' ) ) { return $this->count_override ?? count( $this->rows ); }
         if ( 0 === strpos( $sql, 'SELECT id FROM' ) ) {
             $this->guard( $sql, 'protocol=%s AND identity_conflict=0' );
-            foreach ( $this->rows as $row ) {
+            $ordered = array_values( $this->rows );
+            if ( false !== strpos( $sql, "ORDER BY CASE WHEN phase='attempt_check' THEN 1 ELSE 0 END,id" ) ) {
+                usort( $ordered, static function ( $a, $b ) { return [ (int) ( 'attempt_check' === $a['phase'] ), $a['id'] ] <=> [ (int) ( 'attempt_check' === $b['phase'] ), $b['id'] ]; } );
+            }
+            foreach ( $ordered as $row ) {
                 if ( $row['site_id'] !== $args[0] || $row['protocol'] !== $args[1] || $row['identity_conflict'] || ! in_array( $row['state'], [ 'ready', 'running' ], true ) || $row['next_attempt'] > $args[2] || $row['lease_until'] >= $args[3] ) { continue; }
                 if ( false !== strpos( $sql, "phase IN ('applying','committed','event_pending')" ) && ! in_array( $row['phase'], [ 'applying', 'committed', 'event_pending' ], true ) ) { continue; }
                 return $row['id'];
@@ -195,5 +199,18 @@ journal_check( 0 === $counter['attempts'] && 0 === $counter_db->rows[1]['attempt
 foreach ( [ -1, '0', 4294967296 ] as $invalid_attempts ) { journal_check( is_wp_error( $counter_jobs->save( $counter, [ 'attempts' => $invalid_attempts ] ) ), 'Invalid retry counters cannot reach SQL.' ); }
 $before_lock_failure = $counter_db->rows; $counter_db->deny_lock = true;
 journal_check( is_wp_error( $counter_jobs->save( $counter, [ 'state' => 'complete' ] ) ) && $before_lock_failure === $counter_db->rows, 'Worker save fails closed when admission coordination is unavailable.' );
+
+$priority_db = new Posting_Jobs_Database(); $priority_jobs = new Nova_Bridge_Suite_Posting_Jobs( $priority_db );
+for ( $i = 1; $i <= 4; ++$i ) {
+    $priority_jobs->enqueue_discovered( $site, journal_item( (string) $i ), '1' );
+    $priority_db->rows[ $i ]['state'] = 'complete'; $priority_db->rows[ $i ]['phase'] = 'committed';
+    $priority_jobs->enqueue_discovered( $site, journal_item( (string) $i ), '2' );
+}
+$priority_jobs->enqueue_discovered( $site, journal_item( '5' ), '2' );
+$new_delivery = $priority_jobs->claim( $site );
+journal_check( 5 === $new_delivery['id'] && 'accepted' === $new_delivery['phase'], 'A scan of historical ready results cannot starve a newly accepted delivery.' );
+$priority_jobs->save( $new_delivery, [ 'state' => 'complete', 'phase' => 'committed' ] );
+$old_result = $priority_jobs->claim( $site );
+journal_check( 1 === $old_result['id'] && 'attempt_check' === $old_result['phase'], 'Historical results still receive their authenticated attempt check after new work.' );
 
 echo 'PASS ' . $checks . " contracted journal checks.\n";

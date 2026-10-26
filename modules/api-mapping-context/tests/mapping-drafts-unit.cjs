@@ -84,10 +84,24 @@ async function editorFixture(saved=null,options={},externalChrome=false,fixtureO
  const controller=drafts.mount(host,{...layout,fields:fixtureOptions.fields||[{path:'/title',label:'Hero title',type:'text',writable:true},{path:'/form',label:'Form',type:'object',writable:false}]},{mappingUrl:'/mapping',nonce:'test-nonce',postingIntegration:true,...options},fixtureOptions.callbacks||{},{chromeHost:chrome});await controller.ready;
  return {host,chrome,calls,responses,controller,button:label=>host.all().find(item=>item.tag==='button'&&item.ownText===label),control:label=>host.all().find(item=>item.tag==='label'&&item.ownText===label)?.parentNode.children.find(item=>['input','select','textarea'].includes(item.tag))};
 }
-test('new destination editor operates offline, creates rules and groups, saves and never attempts backend sync',async()=>{
+test('V3 synchronization is explicit and native approval uses the reviewed saved revision',async()=>{
  const originalFetch=global.fetch;let view;
  try{
-  view=await editorFixture();assert.equal(view.calls.length,1);assert(view.calls[0].url.startsWith('/mapping/draft?'));assert(!view.control('Delivery field catalog'));assert(!view.control('NOVA source'));assert(view.host.textContent.includes('Local preparation for handover')&&!view.button('Synchronize publishing template'));
+  const saved=drafts.initialDraft(layout);saved.revision='v3-reviewed';saved.fields['/title']=drafts.adaptField({path:'/title',label:'Hero heading'});saved.fields['/title'].description.purpose='Introduction above products';
+  view=await editorFixture(saved,{view:'workspace'});
+  assert(view.calls.every(call=>call.options.method==='GET'),'Opening an existing V3 setup does not synchronize it');
+  const state={status:'synced_draft',local_revision:saved.revision,template:{id:'11111111-1111-4111-8111-111111111111',revision:1}};
+  view.responses.push({state});view.button('Synchronize publishing template').click();await new Promise(resolve=>setImmediate(resolve));
+  const sync=view.calls.at(-1);assert.equal(sync.url,'/mapping/sync');assert.equal(sync.options.method,'POST');assert.equal(JSON.parse(sync.options.body).expected_revision,'v3-reviewed');
+  assert(view.host.textContent.includes('field purposes and instructions'));assert.equal(view.button('Validate and approve native profile').disabled,false);
+  view.responses.push({state:{...state,status:'active'}});view.button('Validate and approve native profile').click();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(view.calls.at(-1).url,'/mapping/activate');assert(view.host.textContent.includes('Native profile approved for this exact template revision'));
+ }finally{view?.controller.destroy();global.fetch=originalFetch;}
+});
+test('new destination editor saves locally and exposes explicit V3 synchronization',async()=>{
+ const originalFetch=global.fetch;let view;
+ try{
+  view=await editorFixture();assert.equal(view.calls.length,1);assert(view.calls[0].url.startsWith('/mapping/draft?'));assert(!view.control('Delivery field catalog'));assert(!view.control('NOVA source'));assert(view.host.textContent.includes('V3 destination mapping')&&view.button('Synchronize publishing template').disabled);
   const mode=view.control('Field behavior');mode.value='adapt';mode.events.change();assert.equal(view.controller.getDraft().fields['/title'].description.label,'Hero title');assert(!view.control('NOVA source'));assert(!view.control('Minimum list items'));
   const maximum=view.control('Maximum characters');maximum.value='40';maximum.events.input();assert.equal(view.controller.getDraft().fields['/title'].description.constraints.max_length,40);
   view.button('Describe a fixed existing group').click();const chosen=view.control('Add a field to this existing slot');chosen.value='/title';chosen.events.change();const first=view.controller.getDraft().destination_groups[0].slots[0];assert.deepEqual(first.fields,['/title']);
@@ -106,7 +120,7 @@ test('backend description export rejects a changed saved revision before downloa
 test('legacy editor switches to the destination sentinel without silently converting bindings',async()=>{
  const originalFetch=global.fetch;let view;
  try{
-  const saved=fixture();saved.revision='legacy-revision';saved.catalog_snapshot={...template,...saved.template,authoring_notes:'One relevant label'};view=await editorFixture(saved);view.button('Prepare destination descriptions instead').click();const migrated=view.controller.getDraft();assert.deepEqual(migrated.template,{id:'local-destination',revision:'1'});assert.equal(migrated.catalog_mode,'destination');assert.deepEqual(migrated.fields,saved.fields);assert.deepEqual(migrated.repeat_slots,saved.repeat_slots);assert.equal(migrated.guidance,'One relevant label');assert(!view.control('Delivery field catalog'));assert(!view.control('NOVA source'));assert(view.button('Remove retained legacy repeat bindings after review'));assert(view.host.textContent.includes('Local preparation for handover')&&!view.button('Synchronize publishing template'));
+  const saved=fixture();saved.revision='legacy-revision';saved.catalog_snapshot={...template,...saved.template,authoring_notes:'One relevant label'};view=await editorFixture(saved);view.button('Prepare destination descriptions instead').click();const migrated=view.controller.getDraft();assert.deepEqual(migrated.template,{id:'local-destination',revision:'1'});assert.equal(migrated.catalog_mode,'destination');assert.deepEqual(migrated.fields,saved.fields);assert.deepEqual(migrated.repeat_slots,saved.repeat_slots);assert.equal(migrated.guidance,'One relevant label');assert(!view.control('Delivery field catalog'));assert(!view.control('NOVA source'));assert(view.button('Remove retained legacy repeat bindings after review'));assert(view.host.textContent.includes('V3 destination mapping')&&view.button('Synchronize publishing template').disabled);
  }finally{view?.controller.destroy();global.fetch=originalFetch;}
 });
 test('backend description export downloads the saved proposal and refuses unsaved edits',async()=>{
@@ -130,7 +144,7 @@ test('guided existing-layout setup preserves edits across review, saves before c
   view.button('Back to fields').click();assert.deepEqual(view.controller.getDraft(),before);assert.equal(view.control('Destination label').value,'Prepared hero heading');assert.equal(view.calls.length,1,'Moving between steps performs no save or synchronization');
   view.button('Review setup').click();const saved=view.controller.getDraft();saved.revision='saved-setup';view.responses.push({draft:saved,warnings:[]});await view.button('Save setup').click();
   assert.equal(stage('nmd-complete').hidden,false);assert.equal(view.controller.getDraft().revision,'saved-setup');assert.equal(view.calls.length,2);assert.equal(view.calls[1].url,'/mapping/draft');
-  view.button('Open saved setup').click();assert.equal(stage('nmd-stage-fields').hidden,false);assert.equal(stage('nmd-stage-review').hidden,false);assert.equal(view.button('Save changes').hidden,false);assert.equal(view.button('Use this reference').hidden,true);assert.equal(view.calls.length,2,'Opening a saved workspace is a presentation transition only');
+  view.button('Open saved setup').click();assert.equal(stage('nmd-stage-fields').hidden,false);assert.equal(stage('nmd-stage-review').hidden,false);assert.equal(view.button('Save changes').hidden,false);assert.equal(view.button('Use this reference').hidden,true);assert.equal(view.calls.length,3);assert(view.calls[2].url.startsWith('/mapping/sync-state?'));assert.equal(view.calls[2].options.method,'GET','Opening a workspace only reads local synchronization state');
  }finally{view?.controller.destroy();global.fetch=originalFetch;}
 });
 
@@ -145,9 +159,9 @@ test('explicit saved workspace and setup links keep distinct journeys; reference
 });
 
 test('setup status separates local preparation, remote synchronization and exact writer approval',()=>{
- const prepared=drafts.initialDraft(layout);prepared.revision='one';assert.equal(drafts.setupState(prepared,{status:'active',local_revision:'one'},false).label,'Saved locally');
+ const prepared=drafts.initialDraft(layout);prepared.revision='one';assert.equal(drafts.setupState(prepared,{status:'active',local_revision:'one'},false).label,'Writer approved');
  const connected={...prepared,catalog_mode:'nova'};assert.equal(drafts.setupState(connected,{status:'synced_draft',local_revision:'one'},false).label,'Template synchronized');assert.equal(drafts.setupState(connected,{status:'active',local_revision:'one'},false).label,'Writer approved');
- assert.equal(drafts.setupState(connected,{status:'active',local_revision:'other'},false).label,'Saved locally');assert.equal(drafts.setupState(connected,{status:'active',local_revision:'one'},true).label,'Unsaved changes');
+ assert.equal(drafts.setupState(connected,{status:'active',local_revision:'other'},false).label,'Saved locally');assert.equal(drafts.setupState(prepared,{status:'active',local_revision:'one',mapping_version:1},false).label,'Synchronize mapping version');assert.equal(drafts.setupState(connected,{status:'active',local_revision:'one'},true).label,'Unsaved changes');
  const before=structuredClone(prepared);prepared.fields={'/title':{mode:'adapt'},'/form':{mode:'protected'},'/empty':{mode:'leave_empty'}};prepared.routing.operation='clone';
  assert.deepEqual(drafts.impactSummary(prepared,[{path:'/title'},{path:'/form'},{path:'/empty'},{path:'/other'}]),{described:1,delivered:0,preserved:1,omitted:1,unconfigured:1,operation:'clone',preparation:true});assert.equal(prepared.revision,before.revision,'Impact review does not change stored configuration');
 });
@@ -189,7 +203,7 @@ test('a fresh workspace URL still requires reference confirmation and reviewed s
  try{
   const journeys=[];view=await editorFixture(null,{view:'workspace'},false,{callbacks:{onJourneyChange:journey=>journeys.push(journey)}});assert.equal(journeys.at(-1).view,'setup');assert.equal(journeys.at(-1).step,1);view.controller.selectField('/title');assert.equal(journeys.at(-1).step,1,'A stale workspace link cannot bypass choosing a reference');
   view.controller.goStep(3);view.button('3. Review setup').click();await view.button('Save setup').click();assert.equal(journeys.at(-1).step,1);assert.equal(view.calls.length,1,'Hidden or disabled actions also refuse forward bypasses');
-  view.button('Use this reference').click();view.controller.goStep(4);assert.equal(journeys.at(-1).step,2);view.button('Review setup').click();const saved=view.controller.getDraft();saved.revision='reviewed';view.responses.push({draft:saved,warnings:[]});await view.button('Save setup').click();assert.equal(journeys.at(-1).step,4);assert.equal(view.calls.length,2);view.button('Open saved setup').click();assert.equal(journeys.at(-1).view,'workspace');assert.equal(view.calls.length,2,'Destination workspace does not call remote services');
+  view.button('Use this reference').click();view.controller.goStep(4);assert.equal(journeys.at(-1).step,2);view.button('Review setup').click();const saved=view.controller.getDraft();saved.revision='reviewed';view.responses.push({draft:saved,warnings:[]});await view.button('Save setup').click();assert.equal(journeys.at(-1).step,4);assert.equal(view.calls.length,2);view.button('Open saved setup').click();assert.equal(journeys.at(-1).view,'workspace');assert.equal(view.calls.length,3);assert(view.calls[2].url.startsWith('/mapping/sync-state?'));assert.equal(view.calls[2].options.method,'GET');
  }finally{view?.controller.destroy();global.fetch=originalFetch;}
 });
 
@@ -200,5 +214,30 @@ test('new guided descriptions replace exact bridge boilerplate with a blank huma
   view=await editorFixture(saved,{view:'setup'},false,{fields});view.button('Use this reference').click();let mode=view.control('Field behavior');mode.value='adapt';mode.events.change();assert.equal(view.controller.getDraft().fields['/hero'].description.purpose,'');assert.equal(view.control('What content belongs here?').value,'');assert(view.control('What content belongs here?').parentNode.textContent.includes('a short heading introducing this section'),'The empty new purpose retains a human example');
   view.controller.selectField('/body');mode=view.control('Field behavior');mode.value='adapt';mode.events.change();assert.equal(view.control('What content belongs here?').value,meaningful);assert.equal(view.controller.getDraft().fields['/body'].description.purpose,meaningful);
   view.controller.selectField('/title');mode=view.control('Field behavior');mode.value='adapt';mode.events.change();assert.equal(view.control('What content belongs here?').value,boilerplate,'Even an earlier saved boilerplate purpose is preserved until a human edits it');assert.equal(drafts.describeField(fields[0]).purpose,boilerplate,'Library and workspace defaults retain their prior contract');
+ }finally{view?.controller.destroy();global.fetch=originalFetch;}
+});
+
+
+test('mapping version follows fitting intent rather than native nesting',()=>{
+ const direct={catalog_mode:'nova',guidance_mode:'inherit',fields:{'/acf/hero/rows/0/title':{mode:'mapped',source_path:'h1',instructions:''},'/footer':{mode:'protected',instructions:'Keep this note'}}};
+ assert.equal(drafts.mappingVersion(direct),1);
+ const fieldNotes=structuredClone(direct);fieldNotes.fields['/acf/hero/rows/0/title'].instructions='Select a short heading';assert.equal(drafts.mappingVersion(fieldNotes),3);
+ const inherited={...direct,catalog_snapshot:{authoring_notes:'Use the introductory section'}};assert.equal(drafts.mappingVersion(inherited),3);assert.equal(drafts.mappingVersion({...inherited,guidance_mode:'clear'}),1);
+ assert.equal(drafts.mappingVersion({...direct,guidance_mode:'set',guidance:'Fit these destinations'}),3);
+ assert.equal(drafts.mappingVersion({...direct,destination_groups:[{id:'fixed'}]}),3);
+});
+
+test('editor offers direct copies and explains automatic fitting when instructions are added',async()=>{
+ const originalFetch=global.fetch;let view;
+ try{
+  const saved=drafts.initialDraft(layout);saved.revision='direct-choice';view=await editorFixture(saved,{view:'workspace'});
+  view.responses.push({origin:'nova',api_available:true,templates:[{id:'nova-delivery-fields-v1',revision:'1',label:'Delivery fields',family:'page',authoring_notes:'',fields:[{source_path:'h1',label:'Heading',type:'text'}],groups:[],protected_slots:[]}]});
+  await view.button('Copy delivery fields directly').click();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(view.controller.getDraft().catalog_mode,'nova');assert.equal(drafts.mappingVersion(view.controller.getDraft()),1);
+  const mode=view.control('Field behavior');mode.value='mapped';mode.events.change();const source=view.control('NOVA source');source.value='h1';source.events.change();
+  assert.equal(drafts.mappingVersion(view.controller.getDraft()),1);assert(view.host.textContent.includes('without LLM fitting'));
+  const notes=view.control('Human instructions for this field');notes.value='Select the introductory heading';notes.events.input();
+  assert.equal(drafts.mappingVersion(view.controller.getDraft()),3);assert(view.host.textContent.includes('V3 destination mapping'));assert.equal(view.controller.getDraft().fields['/title'].source_path,'h1');
+  assert.equal(view.calls.filter(call=>call.options.method==='POST').length,0,'Changing intent never silently saves or synchronizes');
  }finally{view?.controller.destroy();global.fetch=originalFetch;}
 });

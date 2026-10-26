@@ -60,11 +60,30 @@ final class Nova_Bridge_Suite_Writing_Adapter {
 
     public static function is_destination_draft( array $draft ): bool {
         if ( 'destination' === ( $draft['catalog_mode'] ?? '' ) || ! empty( $draft['destination_groups'] ) ) { return true; }
-        foreach ( $draft['fields'] ?? [] as $field ) { if ( 'adapt' === ( $field['mode'] ?? '' ) ) { return true; } }
+        $mode = $draft['guidance_mode'] ?? ( empty( $draft['guidance'] ) ? 'inherit' : 'set' );
+        $notes = 'inherit' === $mode ? ( $draft['catalog_snapshot']['authoring_notes'] ?? '' ) : ( 'clear' === $mode ? '' : ( $draft['guidance'] ?? '' ) );
+        if ( is_string( $notes ) && '' !== trim( $notes ) ) { return true; }
+        foreach ( $draft['fields'] ?? [] as $field ) {
+            if ( 'adapt' === ( $field['mode'] ?? '' ) || ( 'mapped' === ( $field['mode'] ?? '' ) && '' !== trim( $field['instructions'] ?? '' ) ) ) { return true; }
+        }
         return false;
     }
 
-    /** Backend handover data, not an undocumented publishing-template HTTP request. */
+    /** Effective V3 view; the original approved draft and its digest stay immutable. */
+    public static function adaptation_draft( array $draft ): array {
+        if ( 'nova' !== ( $draft['catalog_mode'] ?? '' ) ) { return $draft; }
+        foreach ( $draft['fields'] ?? [] as $field ) { if ( 'adapt' === ( $field['mode'] ?? '' ) ) { return $draft; } }
+        $sources = self::source_fields();
+        foreach ( $draft['fields'] ?? [] as $path => $field ) {
+            if ( 'mapped' !== ( $field['mode'] ?? '' ) || ! isset( $sources[ $field['source_path'] ?? '' ] ) ) { continue; }
+            $source = $sources[ $field['source_path'] ];
+            $draft['fields'][ $path ] = array_merge( $field, [ 'mode' => 'adapt', 'source_path' => '',
+                'description' => [ 'label' => $source['label'], 'purpose' => 'Content for the ' . $source['label'] . ' destination.', 'value_type' => $source['type'], 'constraints' => [] ] ] );
+        }
+        return $draft;
+    }
+
+    /** Shared destination description for export and the V3 publishing contract. */
     public static function destination_description( array $draft ) {
         $notes = self::authoring_notes( $draft ); if ( is_wp_error( $notes ) ) { return $notes; }
         if ( ! class_exists( 'Nova_Bridge_Suite_Mapping_Drafts' ) || ! method_exists( 'Nova_Bridge_Suite_Mapping_Drafts', 'normalize_description' ) ) { return self::error( 'description_unavailable', 'Destination description validation is unavailable.', 503 ); }
@@ -130,9 +149,29 @@ final class Nova_Bridge_Suite_Writing_Adapter {
         return $result;
     }
 
-    /** Exact wire input only. Descriptors, notes, native IDs and guards stay in WordPress. */
-    public static function template_input( array $draft ) {
-        if ( self::is_destination_draft( $draft ) ) { return self::error( 'adaptation_contract_unavailable', 'Destination descriptions are prepared locally. The current posting API cannot synchronize them or return fitted destination values; export the backend description for integration.', 409 ); }
+    /** Exact wire input. Fitting instructions go to V3; native IDs and guards stay local. */
+    public static function template_input( array $draft, ?int $frozen_version = null ) {
+        $notes = self::authoring_notes( $draft ); if ( is_wp_error( $notes ) ) { return $notes; }
+        // Only frozen-profile verification supplies a version. New saves select from intent.
+        if ( 3 === $frozen_version || ( null === $frozen_version && self::is_destination_draft( $draft ) ) ) {
+            $hints = [];
+            if ( 'nova' === ( $draft['catalog_mode'] ?? '' ) ) {
+                $direct = self::template_input( $draft, 1 ); if ( is_wp_error( $direct ) ) { return $direct; }
+                foreach ( $direct['mapping']['fields'] as $binding ) { $hints[] = [ 'field_id' => $binding['field_id'], 'source_fields' => [ $binding['source_field'] ] ]; }
+            }
+            $description = self::destination_description( self::adaptation_draft( $draft ) );
+            if ( is_wp_error( $description ) ) { return $description; }
+            foreach ( $description['fields'] as $field ) {
+                if ( '' === trim( $field['purpose'] ) ) { return self::error( 'purpose_required', 'Describe the purpose of each V3 field before synchronization: ' . $field['label'] ); }
+                if ( ! in_array( $field['value_type'], [ 'text', 'rich_text', 'url', 'email' ], true ) ) { return self::error( 'scalar_only', 'V3 synchronization supports text, rich text, URL and email fields. Keep compound image, link and list descriptions local.', 409 ); }
+            }
+            $input = [ 'name' => $description['name'], 'page_type' => $description['page_type'],
+                'definition' => [ 'version' => 3, 'instructions' => $description['instructions'], 'fields' => $description['fields'], 'groups' => $description['groups'] ],
+                'mapping' => [ 'version' => 3 ], 'enabled' => true ];
+            if ( $hints ) { $input['mapping']['source_hints'] = $hints; }
+            $valid = Nova_Bridge_Suite_Posting_Protocol::validate( $input, 'PublishingTemplateInput' );
+            return is_wp_error( $valid ) ? $valid : $input;
+        }
         $notes = self::authoring_notes( $draft ); if ( is_wp_error( $notes ) ) { return $notes; }
         if ( 'nova' !== ( $draft['catalog_mode'] ?? '' ) ) { return self::error( 'preview', 'Choose the current NOVA delivery catalog before synchronization.', 409 ); }
         if ( 'nova-delivery-fields-v1' !== ( $draft['template']['id'] ?? '' ) && ! Nova_Bridge_Suite_Posting_Protocol::uuid( $draft['template']['id'] ?? null ) ) { return self::error( 'legacy_catalog', 'The historical writing template is retained. Select the current delivery catalog and review its source mappings before synchronizing.', 409 ); }
@@ -168,7 +207,8 @@ final class Nova_Bridge_Suite_Writing_Adapter {
     }
 
     public static function warnings( array $draft ): array {
-        $warnings = [ 'Human instructions and rules are retained in WordPress only. The current posting API does not accept them or apply them during content adaptation.', 'The current publishing API maps existing delivered fields; fitting them to destination descriptions requires the backend adaptation contract.' ];
+        if ( self::is_destination_draft( $draft ) ) { return [ 'V3 uses field purposes and instructions to select existing source text. It does not generate or rewrite content. The whole template uses fitting; existing source selections become preferences rather than exact copy bindings.', 'Only existing scalar destinations and fixed groups are supported. Required missing values or impossible constraints block fitting; optional missing values preserve the existing field.' ]; }
+        $warnings = [ 'V1 copies the selected delivery fields directly, including supported nested targets. No LLM fitting is requested. Adding field or template instructions selects V3 on the next synchronization.' ];
         if ( ! empty( $draft['skipped_sources'] ) ) { $warnings[] = 'Skipped sources are omitted from this publishing mapping. NOVA may still deliver them; their generation is unchanged.'; }
         return $warnings;
     }

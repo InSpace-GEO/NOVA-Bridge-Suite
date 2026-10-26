@@ -14,10 +14,15 @@
 	function boundedText( value, limit ) { var result = '', size = 0; for ( var character of String( value || '' ) ) { size += utf8Bytes( character ); if ( size > limit ) { break; } result += character; } return result; }
 	function slotUuid( value ) { return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test( value ); }
 	function destinationMode( draft ) { return draft.catalog_mode === 'destination'; }
+	function mappingVersion( draft ) {
+		var mode = draft.guidance_mode || ( draft.guidance ? 'set' : 'inherit' );
+		var notes = mode === 'inherit' ? ( draft.catalog_snapshot && draft.catalog_snapshot.authoring_notes || '' ) : ( mode === 'clear' ? '' : draft.guidance || '' );
+		return destinationMode( draft ) || ( draft.destination_groups || [] ).length || notes.trim() || Object.values( draft.fields || {} ).some( function ( field ) { return field.mode === 'adapt' || field.mode === 'mapped' && ( field.instructions || '' ).trim(); } ) ? 3 : 1;
+	}
 	function setupState( draft, sync, dirty ) {
 		if ( dirty ) { return { label: 'Unsaved changes', tone: 'pending' }; }
 		if ( ! draft.revision ) { return { label: 'New setup', tone: 'pending' }; }
-		if ( destinationMode( draft ) ) { return { label: 'Saved locally', tone: 'saved' }; }
+		if ( sync && sync.mapping_version && sync.mapping_version !== mappingVersion( draft ) ) { return { label: 'Synchronize mapping version', tone: 'pending' }; }
 		if ( sync && sync.local_revision === draft.revision && sync.status === 'active' ) { return { label: 'Writer approved', tone: 'saved' }; }
 		if ( sync && sync.local_revision === draft.revision && sync.status === 'synced_draft' ) { return { label: 'Template synchronized', tone: 'saved' }; }
 		return { label: 'Saved locally', tone: 'saved' };
@@ -216,12 +221,12 @@
 				var entry = ( draft.fields || {} )[ field.path ], mode = entry ? entry.mode : '', inRepeat = repeatUse( field.path );
 				badge.textContent = field.stale ? 'Missing field' : inRepeat ? 'Earlier repeat slot' : { adapt: 'Described', mapped: 'Delivered field', leave_empty: 'Skip / blank copy', protected: 'Keep existing' }[ mode ] || 'Choose content';
 				if ( field.current_value !== undefined && field.current_value !== '' ) { var current = typeof field.current_value === 'string' ? field.current_value : JSON.stringify( field.current_value ); contents.appendChild( el( 'p', 'nmd-current-value', ( workspace ? current : current.replace( /<[^>]*>/g, ' ' ).replace( /\s+/g, ' ' ).trim() ).slice( 0, 600 ) ) ); }
-				if ( ! workspace && ( mode === 'mapped' || inRepeat ) ) { contents.appendChild( el( 'p', 'nmd-help', 'This field keeps an earlier saved binding. It will stay unchanged in this guide; its details are available in the saved workspace.' ) ); return; }
+				if ( ! workspace && ( mode === 'mapped' && destinationMode( draft ) || inRepeat ) ) { contents.appendChild( el( 'p', 'nmd-help', 'This field keeps an earlier saved binding. It will stay unchanged in this guide; its details are available in the saved workspace.' ) ); return; }
 				if ( field.stale ) { contents.appendChild( el( 'p', 'nmd-warning', 'This saved target is absent from the current reference. Its mapping is retained; restore or explicitly remove it after review.' ) ); contents.appendChild( button( 'Remove this missing target from the draft', function () { delete draft.fields[ field.path ]; if ( discardedTargets.indexOf( field.path ) < 0 ) { discardedTargets.push( field.path ); } changed(); renderFields(); } ) ); }
 				else if ( field.writable === false ) { contents.appendChild( el( 'p', 'nmd-warning', 'This target is currently unavailable for writing. Discovery and saved mappings remain visible.' ) ); }
 				var behaviors = [ { value: '', label: 'Not configured' } ];
 				if ( destinationMode( draft ) ) { behaviors.push( { value: 'adapt', label: 'Describe the content for this field' } ); }
-				if ( workspace && ( ! destinationMode( draft ) || mode === 'mapped' ) ) { behaviors.push( { value: 'mapped', label: 'Legacy: map a NOVA source', disabled: field.writable === false && mode !== 'mapped' } ); }
+				if ( ! destinationMode( draft ) || workspace && mode === 'mapped' ) { behaviors.push( { value: 'mapped', label: 'Copy a NOVA source field', disabled: field.writable === false && mode !== 'mapped' } ); }
 				behaviors.push( { value: 'leave_empty', label: 'Skip on updates / blank in a copy' }, { value: 'protected', label: 'Keep existing content and settings' } );
 				var modeSelect = control( contents, 'Field behavior', select( behaviors, mode ) );
 				modeSelect.disabled = inRepeat || !! field.stale;
@@ -253,7 +258,7 @@
 					protectedSlot.addEventListener( 'change', function () { draft.fields[ field.path ].protected_slot = protectedSlot.value; changed(); } );
 				}
 				var details = el( 'details', 'nmd-target-details' ); details.append( el( 'summary', '', 'Target details' ), el( 'code', '', field.path ) ); if ( field.transport ) { details.appendChild( el( 'p', 'nmd-help', field.transport + ( field.write_mode ? ' · ' + field.write_mode : '' ) ) ); } contents.appendChild( details );
-				if ( mode ) { var instructions = control( workspace ? contents : details, 'Human instructions for this field', textInput( entry.instructions, true ), 'Optional notes for the handover, saved locally.' ); instructions.maxLength = 8000; instructions.disabled = !! field.stale; instructions.addEventListener( 'input', function () { draft.fields[ field.path ].instructions = instructions.value; changed(); } ); }
+				if ( mode ) { var instructions = control( workspace ? contents : details, 'Human instructions for this field', textInput( entry.instructions, true ), 'Instructions on a written field select V3 LLM fitting for the whole template. Notes on protected or skipped fields stay local.' ); instructions.maxLength = 8000; instructions.disabled = !! field.stale; instructions.addEventListener( 'input', function () { draft.fields[ field.path ].instructions = instructions.value; changed(); } ); }
 				if ( field.write_mode === 'complete_parent' ) { details.appendChild( el( 'p', 'nmd-help', 'This nested field shares a parent. Writing it later requires an adapter that preserves its siblings.' ) ); }
 			}
 			redraw(); return card;
@@ -351,6 +356,18 @@
 			catch ( error ) { if ( active() ) { note( error.message, true ); } }
 			finally { if ( active() ) { setBusy( false ); } }
 		}
+		async function chooseDirect() {
+			if ( busy ) { return; } setBusy( true );
+			try {
+				var result = await request( base + '/catalog?mode=nova', config.nonce, undefined, abort && abort.signal ); if ( ! active() ) { return; }
+				var stock = ( result.templates || [] ).find( function ( item ) { return item.id === 'nova-delivery-fields-v1'; } );
+				if ( ! stock ) { throw new Error( 'The delivery source catalog is unavailable.' ); }
+				if ( draft.guidance_mode === 'inherit' && template() && template().authoring_notes ) { draft.guidance = template().authoring_notes; draft.guidance_mode = 'set'; }
+				catalog = result; draft.catalog_mode = 'nova'; draft.template = { id: stock.id, revision: stock.revision }; draft.catalog_snapshot = copy( stock ); draft.destination_groups = [];
+				changed(); render(); note( 'Choose source fields to copy directly. Adding human instructions selects V3 fitting for the whole template.' );
+			} catch ( error ) { if ( active() ) { note( error.message, true ); } }
+			finally { if ( active() ) { setBusy( false ); } }
+		}
 		async function save() {
 			if ( ! workspace && ( journeyStep !== 3 || ! referenceAccepted ) ) { note( 'Continue through the reference and field steps, then review this setup before saving.', true ); return; }
 			if ( utf8Bytes( draft.guidance ) > 8000 || ( draft.guidance_mode === 'set' && ! draft.guidance.trim() ) ) { note( 'Replacement instructions must be nonempty and at most 8000 UTF-8 bytes. Choose Clear to remove inherited instructions.', true ); return; }
@@ -362,7 +379,7 @@
 			try {
 				var result = await request( base + '/draft', config.nonce, payload( draft, { signature: layout.signature, confirm_reference_change: referenceConfirmed, discard_stale_targets: discardedTargets } ), abort && abort.signal ); if ( ! active() ) { return; }
 				draft = saveResult( result ); dirty = false; discardedTargets = []; referenceConfirmed = false; serverWarnings = result.warnings || draft.warnings || []; if ( result.catalog ) { catalog = result.catalog; }
-				if ( ! workspace ) { journeyStep = 4; savedInJourney = true; } render(); note( destinationMode( draft ) ? 'Setup saved on this site. Export the handover when you are ready to share its field descriptions.' : 'Setup saved on this site. Optional delivery setup is separate from saving.' ); if ( callbacks.onSaved ) { callbacks.onSaved( copy( draft ) ); } if ( workspace ) { loadIntegration(); }
+				if ( ! workspace ) { journeyStep = 4; savedInJourney = true; } render(); note( destinationMode( draft ) ? 'Setup saved on this site. Open the saved setup to synchronize its V3 field descriptions and instructions.' : 'Setup saved on this site. Optional delivery setup is separate from saving.' ); if ( callbacks.onSaved ) { callbacks.onSaved( copy( draft ) ); } if ( workspace ) { loadIntegration(); }
 			} catch ( error ) {
 				if ( active() ) { note( error.status === 409 ? 'Save conflict: ' + error.message + ' Your edits are retained. Export them before reopening this reference to reconcile the latest saved draft.' : error.message, true ); }
 			} finally { if ( active() ) { setBusy( false ); } }
@@ -388,7 +405,7 @@
 		}
 		function referencePayload() { return { reference_type: draft.reference_type, reference_id: draft.reference_id, signature: layout.signature, expected_revision: draft.revision || '' }; }
 		async function loadIntegration() {
-			if ( ! active() || ! config.postingIntegration || destinationMode( draft ) ) { return; }
+			if ( ! active() || ! config.postingIntegration ) { return; }
 			try {
 				var query = '?reference_type=' + encodeURIComponent( draft.reference_type ) + '&reference_id=' + encodeURIComponent( draft.reference_id ) + '&signature=' + encodeURIComponent( layout.signature );
 				var result = await request( base + '/sync-state' + query, config.nonce, undefined, abort && abort.signal );
@@ -396,13 +413,13 @@
 			} catch ( error ) { if ( active() && integrationBox ) { integrationBox.replaceChildren( el( 'p', 'nmd-warning', 'Synchronization status unavailable: ' + error.message ), button( 'Refresh synchronization status', loadIntegration ) ); } }
 		}
 		async function integrate( action, resume ) {
-			if ( busy || dirty || ! draft.revision || draft.catalog_mode !== 'nova' ) { note( 'Save a reviewed draft using the current NOVA catalog first.', true ); return; }
+			if ( busy || dirty || ! draft.revision || ( draft.catalog_mode !== 'nova' && ! destinationMode( draft ) ) ) { note( 'Save and review this NOVA mapping before synchronization.', true ); return; }
 			setBusy( true );
 			try {
 				var data = referencePayload(); if ( resume ) { data.recover_template_id = recoveryId.trim(); }
 				var result = await request( base + '/' + action, config.nonce, data, abort && abort.signal );
 				if ( ! active() ) { return; } syncState = result.state || null; renderIntegration();
-				note( action === 'activate' ? 'Native profile approved locally. Human instructions remain local only.' : 'Publishing template synchronized. Instructions and native addresses remain in WordPress.' );
+				note( action === 'activate' ? 'Native profile approved for this exact template revision.' : ( mappingVersion( draft ) === 3 ? 'V3 template synchronized with field purposes and instructions. Approve the native profile before selecting it for deliveries.' : 'V1 template synchronized for direct copying without LLM fitting.' ) );
 			} catch ( error ) { if ( active() ) { note( error.message, true ); await loadIntegration(); } }
 			finally { if ( active() ) { setBusy( false ); } }
 		}
@@ -425,14 +442,15 @@
 		}
 		function renderIntegration() {
 			if ( ! integrationBox ) { return; } integrationBox.replaceChildren();
-			if ( destinationMode( draft ) ) { integrationBox.append( el( 'h4', '', 'Local preparation for handover' ), el( 'p', 'nmd-help', 'These field descriptions are saved on this site. They are not uploaded, used to fit incoming content, or connected to automatic publication. Export the handover to share this setup.' ) ); return; }
-			integrationBox.appendChild( el( 'h4', '', 'Earlier delivered-field integration' ) );
-			var same = syncState && syncState.local_revision === draft.revision, stateName = syncState && syncState.status || 'not_synced';
+			integrationBox.appendChild( el( 'h4', '', mappingVersion( draft ) === 3 ? 'V3 destination mapping' : 'Delivered-field integration' ) );
+			var versionChanged = syncState && syncState.mapping_version && syncState.mapping_version !== mappingVersion( draft );
+			var same = syncState && syncState.local_revision === draft.revision && ! versionChanged, stateName = syncState && syncState.status || 'not_synced';
 			var readableState = { not_synced: 'Saved locally; not synchronized', pending: 'Synchronization needs recovery', rejected: 'Synchronization needs review', synced_draft: 'Template synchronized; writer not approved', active: 'Writer approved for this exact setup', legacy_retained: 'Earlier configuration retained' }[ stateName ] || 'Status needs review';
 			integrationBox.appendChild( el( 'p', 'nmd-help', readableState + ( syncState && ! same ? ' (an earlier local revision)' : '' ) ) );
-			integrationBox.appendChild( el( 'p', 'nmd-warning', 'Human instructions and rules are saved locally only. The current API does not accept or apply them during generation. Publishing templates map existing delivered fields; they do not generate custom labels or repeat members.' ) );
+			if ( versionChanged ) { integrationBox.appendChild( el( 'p', 'nmd-warning', 'The saved remote template uses V' + syncState.mapping_version + '. Synchronize and approve V' + mappingVersion( draft ) + ' to apply this setup’s fitting instructions.' ) ); }
+			integrationBox.appendChild( el( 'p', 'nmd-help', mappingVersion( draft ) === 3 ? 'Synchronize field purposes, instructions and fixed groups to NOVA. V3 fits existing text into scalar destinations; it does not rewrite content or create rows. Existing source choices become preferences for fitting the whole template. Requires an environment with V3 enabled. Native delivery currently supports updates to existing posts and pages; category terms and cloning need a separate writer integration.' : 'V1 copies the selected delivery fields, including supported nested targets, without LLM fitting. Adding field or template instructions automatically selects V3.' ) );
 			if ( syncState && syncState.error ) { integrationBox.appendChild( el( 'p', 'nmd-warning', warningText( syncState.error ) ) ); }
-			var synchronize = button( 'Synchronize publishing template', function () { integrate( 'sync', false ); } ); synchronize.disabled = dirty || ! draft.revision || draft.catalog_mode !== 'nova' || catalog.api_available === false || stateName === 'pending'; integrationBox.appendChild( synchronize );
+			var synchronize = button( 'Synchronize publishing template', function () { integrate( 'sync', false ); } ); synchronize.disabled = dirty || ! draft.revision || ( ! destinationMode( draft ) && ( draft.catalog_mode !== 'nova' || catalog.api_available === false ) ) || stateName === 'pending'; integrationBox.appendChild( synchronize );
 			if ( syncState && stateName === 'pending' ) {
 				if ( syncState.pending && syncState.pending.requires_template_id ) { var recovery = control( integrationBox, 'Created NOVA template UUID for recovery', textInput( recoveryId ), 'Creation is never retried automatically. Review the created template in NOVA; it must match this exact request.' ); recovery.addEventListener( 'input', function () { recoveryId = recovery.value; } ); }
 				var resume = button( 'Recover pending synchronization', function () { integrate( 'sync', true ); } ); resume.disabled = dirty || ! same; integrationBox.appendChild( resume );
@@ -489,11 +507,12 @@
 			var choose = el( 'section', 'nmd-stage nmd-choose' ); choose.hidden = workspace || journeyStep !== 1; choose.append( el( 'h4', '', 'Choose the page whose layout you want to use' ), el( 'p', '', layout.title || draft.label || 'Selected reference' ), el( 'p', 'nmd-help', 'Use the page list and reference selector to choose a different example. The preview helps you identify its existing fields.' ), el( 'p', 'nmd-help', 'This route prepares an existing layout. Build new content creates fresh editable pages independently.' ) ); body.appendChild( choose );
 			var form = el( 'section', 'nmd-stage nmd-stage-fields' ); form.hidden = ! workspace && journeyStep !== 2; body.appendChild( form );
 			var catalogNote = el( 'div', 'nmd-catalog-note' );
-			if ( destinationMode( draft ) ) { catalogNote.appendChild( el( 'p', '', 'Describe the content that belongs in each existing field, or choose what to keep. These descriptions stay on this site until you export them for handover.' ) ); if ( Object.values( draft.fields ).some( function ( field ) { return field.mode === 'mapped'; } ) || Object.values( draft.repeat_slots ).some( function ( slots ) { return slots.length; } ) ) { catalogNote.appendChild( el( 'p', 'nmd-warning', 'Earlier source and repeat bindings are retained. Review each one before converting this setup to field descriptions.' ) ); } if ( Object.values( draft.repeat_slots ).some( function ( slots ) { return slots.length; } ) ) { catalogNote.appendChild( button( 'Remove retained legacy repeat bindings after review', function () { Object.values( draft.repeat_slots ).forEach( function ( slots ) { slots.forEach( function ( slot ) { Object.values( slot.targets || {} ).forEach( discardMissing ); } ); } ); draft.repeat_slots = {}; changed(); render(); note( 'Earlier repeat bindings removed from this local draft. Describe the existing fields and fixed slots before saving.' ); } ) ); } }
+			if ( destinationMode( draft ) ) { catalogNote.appendChild( el( 'p', '', 'Describe the content that belongs in each existing field, or choose what to keep. Save, synchronize and approve this setup to send its descriptions and instructions to NOVA as V3.' ) ); if ( Object.values( draft.fields ).some( function ( field ) { return field.mode === 'mapped'; } ) || Object.values( draft.repeat_slots ).some( function ( slots ) { return slots.length; } ) ) { catalogNote.appendChild( el( 'p', 'nmd-warning', 'Earlier source and repeat bindings are retained. Review each one before converting this setup to field descriptions.' ) ); } if ( Object.values( draft.repeat_slots ).some( function ( slots ) { return slots.length; } ) ) { catalogNote.appendChild( button( 'Remove retained legacy repeat bindings after review', function () { Object.values( draft.repeat_slots ).forEach( function ( slots ) { slots.forEach( function ( slot ) { Object.values( slot.targets || {} ).forEach( discardMissing ); } ); } ); draft.repeat_slots = {}; changed(); render(); note( 'Earlier repeat bindings removed from this local draft. Describe the existing fields and fixed slots before saving.' ); } ) ); } }
 			else if ( ! workspace ) { catalogNote.appendChild( el( 'p', '', 'Earlier saved field choices are retained. You can review them here and edit their details in the saved workspace.' ) ); }
 			else if ( catalog.origin !== 'nova' ) { catalogNote.appendChild( el( 'p', '', catalog.origin === 'preview' ? 'Documented preview catalog. These field definitions and IDs are local examples, not an active NOVA configuration.' : catalog.message || 'The NOVA catalog is not connected yet. Use the documented preview fields to prepare a local draft.' ) ); if ( catalog.origin !== 'preview' ) { catalogNote.appendChild( button( 'Use documented preview fields', choosePreview ) ); } }
-			else { catalogNote.appendChild( el( 'p', '', catalog.message || 'Current NOVA delivery fields loaded. Human instructions remain local.' ) ); }
+			else { catalogNote.appendChild( el( 'p', '', catalog.message || 'Direct mappings use V1; mappings with human instructions use V3 fitting.' ) ); }
 			form.appendChild( catalogNote );
+			if ( destinationMode( draft ) && ! Object.values( draft.fields ).some( function ( field ) { return field.mode === 'adapt'; } ) && ! ( draft.destination_groups || [] ).length ) { form.appendChild( button( 'Copy delivery fields directly', chooseDirect ) ); }
 			if ( inventoryStale ) { form.appendChild( el( 'p', 'nmd-warning', 'The reference changed while this editor was loading. Export any edits, then refresh the layout inventory before saving.' ) ); }
 			else if ( draft.signature !== layout.signature ) { var review = el( 'div', 'nmd-warning' ), reviewLabel = el( 'label', 'nmd-checkbox' ), reviewCheck = el( 'input' ); reviewCheck.type = 'checkbox'; reviewCheck.checked = referenceConfirmed; reviewLabel.append( reviewCheck, el( 'span', '', 'I reviewed the saved targets against this changed layout.' ) ); review.append( el( 'p', '', 'This setup was saved for an earlier layout. Reconcile missing fields and verify all retained bindings.' ), reviewLabel ); reviewCheck.addEventListener( 'change', function () { referenceConfirmed = reviewCheck.checked; changed(); } ); form.appendChild( review ); }
 			if ( ! destinationMode( draft ) ) { var migrate = button( 'Prepare destination descriptions instead', function () { prepareDestination( draft, template() ); changed(); render(); note( 'Switched to local field descriptions. Earlier bindings are retained for explicit review.' ); } ); migrate.hidden = ! workspace; form.appendChild( migrate ); }
@@ -506,12 +525,12 @@
 			}
 			var basics = el( 'div', 'nmd-workspace-basics' ); basics.hidden = ! workspace; form.appendChild( basics );
 			var label = control( basics, 'Setup name', textInput( draft.label ), 'A name that helps you find this existing layout later.' ); label.maxLength = 120; label.addEventListener( 'input', function () { draft.label = label.value; changed(); } );
-			var notes = el( 'details', 'nmd-advanced' ); notes.appendChild( el( 'summary', '', 'Shared instructions for the handover' ) ); form.appendChild( notes );
+			var notes = el( 'details', 'nmd-advanced' ); notes.appendChild( el( 'summary', '', 'Shared fitting instructions' ) ); form.appendChild( notes );
 			notes.hidden = ! workspace;
-			var notesMode = control( notes, 'Template instructions', select( [ { value: 'inherit', label: 'Retain inherited local instructions' }, { value: 'set', label: 'Set replacement instructions' }, { value: 'clear', label: 'Clear instructions explicitly' } ], draft.guidance_mode ) );
+			var notesMode = control( notes, 'Template instructions', select( [ { value: 'inherit', label: 'Retain inherited instructions' }, { value: 'set', label: 'Set replacement instructions' }, { value: 'clear', label: 'Clear instructions explicitly' } ], draft.guidance_mode ) );
 			notesMode.addEventListener( 'change', function () { draft.guidance_mode = notesMode.value; if ( draft.guidance_mode !== 'set' ) { draft.guidance = ''; } changed(); render(); } );
-			if ( draft.guidance_mode === 'inherit' ) { notes.appendChild( el( 'p', 'nmd-help', 'Retained local inherited instructions: ' + ( template() && template().authoring_notes || '(none)' ) ) ); }
-			if ( draft.guidance_mode === 'set' ) { var guidance = control( notes, 'Local human instructions and rules', textInput( draft.guidance, true ) ), notesCount = el( 'p', 'nmd-help', utf8Bytes( draft.guidance ) + ' / 8000 UTF-8 bytes' ); notes.appendChild( notesCount ); guidance.addEventListener( 'input', function () { draft.guidance = guidance.value; notesCount.textContent = utf8Bytes( draft.guidance ) + ' / 8000 UTF-8 bytes'; changed(); } ); }
+			if ( draft.guidance_mode === 'inherit' ) { notes.appendChild( el( 'p', 'nmd-help', 'Inherited instructions: ' + ( template() && template().authoring_notes || '(none)' ) ) ); }
+			if ( draft.guidance_mode === 'set' ) { var guidance = control( notes, 'Human instructions and rules', textInput( draft.guidance, true ) ), notesCount = el( 'p', 'nmd-help', utf8Bytes( draft.guidance ) + ' / 8000 UTF-8 bytes' ); notes.appendChild( notesCount ); guidance.addEventListener( 'input', function () { draft.guidance = guidance.value; notesCount.textContent = utf8Bytes( draft.guidance ) + ' / 8000 UTF-8 bytes'; changed(); } ); }
 			coverageBox = el( 'div', 'nmd-coverage' ); coverageBox.hidden = ! workspace; coverageBox.setAttribute( 'aria-live', 'polite' ); form.appendChild( coverageBox );
 			form.appendChild( el( 'h4', '', workspace ? 'Fields in this reference' : 'Describe one content field' ) );
 			form.appendChild( el( 'p', 'nmd-help', workspace ? 'Select a highlighted region in the reference preview, or open a field below.' : 'Choose a content field below, or select a highlighted field in the reference preview. Describe what belongs there.' ) );
@@ -534,7 +553,7 @@
 			var pageType = control( routing, 'NOVA page-type label', textInput( draft.profile_page_type || 'page' ), 'A label for the handover or publishing template. The selected WordPress reference remains the target.' ); pageType.addEventListener( 'input', function () { draft.profile_page_type = pageType.value; changed(); } ); reviewStage.appendChild( routing );
 			var selectedTemplate = template();
 			if ( ! destinationMode( draft ) && selectedTemplate && ( selectedTemplate.protected_slots || [] ).length ) { var protectedInfo = el( 'details', 'nmd-advanced' ); protectedInfo.hidden = ! workspace; protectedInfo.append( el( 'summary', '', 'Template protected regions' ), el( 'p', 'nmd-help', 'Keep these native components outside generated source bindings: ' + selectedTemplate.protected_slots.map( function ( slot ) { return slot.label || slot.key; } ).join( ', ' ) + '. Mark their discovered targets Keep existing above.' ) ); form.appendChild( protectedInfo ); }
-			var complete = el( 'section', 'nmd-stage nmd-complete' ); complete.hidden = workspace || journeyStep !== 4; complete.append( el( 'span', 'nmd-complete-mark', '✓' ), el( 'h4', '', 'Your layout setup is saved' ), el( 'p', '', 'You can reopen this setup from Layouts. Its field descriptions and choices are retained on this WordPress site.' ), el( 'p', 'nmd-help', destinationMode( draft ) ? 'Export the handover to share the existing-field descriptions. Incoming content does not use them automatically.' : 'Saving is complete. Synchronization and native writer approval are optional, separate delivery steps.' ), button( 'Open saved setup', openWorkspace ) ); body.appendChild( complete );
+			var complete = el( 'section', 'nmd-stage nmd-complete' ); complete.hidden = workspace || journeyStep !== 4; complete.append( el( 'span', 'nmd-complete-mark', '✓' ), el( 'h4', '', 'Your layout setup is saved' ), el( 'p', '', 'You can reopen this setup from Layouts. Its field descriptions and choices are retained on this WordPress site.' ), el( 'p', 'nmd-help', destinationMode( draft ) ? 'Open the saved setup to synchronize V3, approve its native profile and select it for deliveries.' : 'Saving is complete. Synchronization and native writer approval are optional, separate delivery steps.' ), button( 'Open saved setup', openWorkspace ) ); body.appendChild( complete );
 			var footer = el( 'div', 'nmd-savebar' );
 			var useReference = button( 'Use this reference', function () { advanceStep( 2 ); }, true ); useReference.hidden = workspace || journeyStep !== 1; footer.appendChild( useReference );
 			var back = button( journeyStep === 3 ? 'Back to fields' : 'Back to reference', function () { goStep( journeyStep - 1 ); } ); back.hidden = workspace || journeyStep < 2 || journeyStep > 3; footer.appendChild( back );
@@ -560,5 +579,5 @@
 		controller.ready = loadDraft().then( function () { if ( workspace ) { return loadIntegration(); } } );
 		return controller;
 	}
-	return { mount: mount, initialDraft: initialDraft, payload: payload, coverage: coverage, request: request, saveResult: saveResult, resolveTemplate: resolveTemplate, utf8Bytes: utf8Bytes, newSlotId: newSlotId, describeField: describeField, adaptField: adaptField, prepareDestination: prepareDestination, addDestinationSlot: addDestinationSlot, assignDestinationField: assignDestinationField, setupState: setupState, impactSummary: impactSummary, guidedFields: guidedFields };
+	return { mount: mount, initialDraft: initialDraft, payload: payload, coverage: coverage, request: request, saveResult: saveResult, resolveTemplate: resolveTemplate, utf8Bytes: utf8Bytes, newSlotId: newSlotId, describeField: describeField, adaptField: adaptField, prepareDestination: prepareDestination, addDestinationSlot: addDestinationSlot, assignDestinationField: assignDestinationField, setupState: setupState, impactSummary: impactSummary, guidedFields: guidedFields, mappingVersion: mappingVersion };
 } ) );

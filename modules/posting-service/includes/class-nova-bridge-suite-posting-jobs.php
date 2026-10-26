@@ -200,7 +200,8 @@ class Nova_Bridge_Suite_Posting_Jobs {
     public function claim( string $site_id, bool $paused = false ) {
         $now = time();
         $phase_filter = $paused ? " AND phase IN ('applying','committed','event_pending')" : '';
-        $id = $this->db->get_var( $this->db->prepare( "SELECT id FROM {$this->table} WHERE site_id = %s AND protocol=%s AND identity_conflict=0 AND state IN ('ready','running') AND next_attempt <= %d AND lease_until < %d{$phase_filter} ORDER BY id LIMIT 1", $site_id, self::PROTOCOL, $now, $now ) );
+        // Rechecking historical V3 results must not consume the worker budget before new deliveries or pending receipts.
+        $id = $this->db->get_var( $this->db->prepare( "SELECT id FROM {$this->table} WHERE site_id = %s AND protocol=%s AND identity_conflict=0 AND state IN ('ready','running') AND next_attempt <= %d AND lease_until < %d{$phase_filter} ORDER BY CASE WHEN phase='attempt_check' THEN 1 ELSE 0 END,id LIMIT 1", $site_id, self::PROTOCOL, $now, $now ) );
         if ( ! $id ) { return ! empty( $this->db->last_error ) ? $this->error() : null; }
         $token = wp_generate_uuid4();
         $changed = $this->db->query( $this->db->prepare( "UPDATE {$this->table} SET state='running',lease_token=%s,lease_until=%d,attempts=attempts+1,updated_at=%d WHERE id=%d AND protocol=%s AND identity_conflict=0 AND state IN ('ready','running') AND lease_until < %d", $token, $now + self::LEASE_SECONDS, $now, $id, self::PROTOCOL, $now ) );
