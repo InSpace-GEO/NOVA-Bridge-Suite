@@ -6,7 +6,7 @@ function is_wp_error( $value ) { return $value instanceof WP_Error; }
 function wp_parse_url( $url ) { return parse_url( $url ); }
 function current_user_can( $cap, ...$args ) { return ! $GLOBALS['denied']; }
 function sanitize_title( $value ) { return trim( preg_replace( '/[^a-z0-9]+/', '-', strtolower( $value ) ), '-' ); }
-function get_option( $key, $default = false ) { return $key === 'home' ? 'https://example.test' : $default; }
+function get_option( $key, $default = false ) { return $key === 'home' ? ( $GLOBALS['site_home'] ?? 'https://example.test' ) : $default; }
 function home_url( $path = '/' ) { return 'https://example.test' . $path; }
 function get_locale() { return 'de_DE'; }
 function update_option( ...$args ) { throw new RuntimeException( 'Persistent language settings must not change' ); }
@@ -19,10 +19,12 @@ function pll_get_post_language( $id, $field = 'slug' ) { $code = $GLOBALS['post_
 function pll_set_post_language( $id, $code ) { ++$GLOBALS['assignments']; $GLOBALS['post_languages'][$id] = $code; }
 function get_posts( $args ) { return array_slice( array_keys( $GLOBALS['links'] ), $args['offset'], $args['posts_per_page'] ); }
 function get_permalink( $id ) { return $GLOBALS['links'][$id] ?? ''; }
+function get_post( $id ) { return $GLOBALS['native_posts'][$id] ?? null; }
 class Language_Rewrite { public $structure = '/%pagename%/'; public function get_page_permastruct() { return $this->structure; } }
 class Nova_Bridge_Suite_Document_Mapping { public static function resources() { return [ [ 'id' => 'post_type:page', 'type' => 'post_type', 'post_type' => 'page', 'availability' => 'available', 'can_inspect_existing' => true ] ]; } }
 require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-mapped-content-target.php';
 require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-stored-layout-language.php';
+require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-stored-layout-writer.php';
 use Nova_Bridge_Suite_Stored_Layout_Language as Language;
 function check( $truth, $message ) { ++$GLOBALS['checks']; if ( ! $truth ) { throw new RuntimeException( $message ); } }
 function good( $value, $message ) { check( ! is_wp_error( $value ), $message . ( is_wp_error( $value ) ? ': ' . $value->get_error_message() : '' ) ); return $value; }
@@ -32,11 +34,31 @@ $homes = [ 'de-de' => 'https://example.test/', 'en' => 'https://example.test/en/
 $post_languages = []; $links = []; $assignments = 0; $denied = false; $default_language = 'de-de'; $wp_rewrite = new Language_Rewrite();
 $german = good( Language::creation( 'post_type:page', 'https://example.test/new-service/', 'de-DE' ), 'Default language page uses root without a synthetic parent' );
 check( $german['parent'] === 0 && $german['slug'] === 'new-service' && $german['native_language']['code'] === 'de-de', 'Configured German default resolves its nonstandard slug' );
+$target_url = new ReflectionMethod( Nova_Bridge_Suite_Stored_Layout_Writer::class, 'target_url' );
+foreach ( [ '/new-service/', 'new-service/', 'https://example.test/new-service/' ] as $url ) {
+    check( good( Language::creation( 'post_type:page', $target_url->invoke( null, $url ), 'nl-NL' ), 'Stored-writer URL resolution reaches native routing' ) === $german, 'Relative and full URLs retain exact native default-language routing' );
+}
+foreach ( [ '//example.test/new-service/', '//evil.test/new-service/', 'https://evil.test/new-service/', 'http://example.test/new-service/', '/new//service/', '../new-service/', '/%2e%2e/new-service/', '/new%2fservice/', "/new\tservice/", '/new-service/?x=1', '/new-service/#fragment', '?x=1', '#fragment' ] as $url ) {
+    bad( Language::creation( 'post_type:page', $target_url->invoke( null, $url ), 'nl-NL' ), 'Relative URL support does not bypass real canonical URL validation' );
+}
+$site_home = 'https://example.test/site/'; $homes['de-de'] = $site_home;
+$subdirectory = good( Language::creation( 'post_type:page', 'https://example.test/site/new-service/', 'nl-NL' ), 'Native default language can use a subdirectory home' );
+foreach ( [ 'new-service/', '/site/new-service/', 'https://example.test/site/new-service/' ] as $url ) {
+    check( good( Language::creation( 'post_type:page', $target_url->invoke( null, $url ), 'nl-NL' ), 'Resolve relative URL against its home or origin' ) === $subdirectory, 'Bare paths use the home prefix and root paths retain their exact origin path' );
+}
+bad( Language::creation( 'post_type:page', $target_url->invoke( null, '/new-service/' ), 'nl-NL' ), 'A root-relative path cannot escape the connected WordPress home prefix' );
+unset( $site_home ); $homes['de-de'] = 'https://example.test/';
 $dutch_content = good( Language::creation( 'post_type:page', 'https://example.test/new-service/', 'nl-NL' ), 'Dutch content metadata does not select a Dutch native destination' );
 check( $dutch_content === $german && $dutch_content['language'] === 'de_DE', 'Payload language does not change the default-language route or native assignment' );
 check( good( Language::creation( 'post_type:page', 'https://example.test/new-service/', 'nl' ), 'Generic content metadata does not require multilingual inference' ) === $german, 'Generic payload language also leaves native default unchanged' );
 foreach ( [ [ 'https://example.test/nl-nl/new/', 'nl-NL' ], [ 'https://example.test/en/new/', 'de-DE' ], [ 'https://example.test/nl-be/new/', 'nl-NL' ], [ 'https://evil.test/new/', 'nl-NL' ], [ 'https://example.test/new/?lang=nl-nl', 'nl-NL' ], [ 'https://example.test/', 'nl-NL' ] ] as $case ) { bad( Language::creation( 'post_type:page', $case[0], $case[1] ), 'Nondefault/foreign/noncanonical target fails without rewriting its URL' ); }
 $links[10] = 'https://example.test/services/'; $post_languages[10] = 'de-de';
+$native_posts[10] = (object) [ 'post_type' => 'page', 'post_name' => 'services', 'post_parent' => 42 ];
+$existing = good( Language::existing( 'post_type:page', 10, $links[10] ), 'An existing default-language page retains its exact canonical identity' );
+check( $existing['slug'] === 'services' && $existing['parent'] === 42 && $existing['native_language']['code'] === 'de-de', 'Existing native parent and default language are preserved without assigning a language' );
+bad( Language::existing( 'post_type:page', 10, 'https://example.test/another/' ), 'Existing replacement rejects aliases and different canonical paths' );
+$post_languages[10] = 'nl-be'; bad( Language::existing( 'post_type:page', 10, $links[10] ), 'A nondefault-language existing page cannot be adopted or relabeled' ); $post_languages[10] = 'de-de';
+$native_posts[10]->post_type = 'post'; bad( Language::existing( 'post_type:page', 10, $links[10] ), 'Saved Elementor page templates cannot adopt another native post type' ); $native_posts[10]->post_type = 'page';
 $nested = good( Language::creation( 'post_type:page', 'https://example.test/services/new/', 'nl-NL' ), 'An existing default-language native parent is supported' ); check( $nested['parent'] === 10, 'Parent resolves by exact native URL rather than guessed slug' );
 $post_languages[10] = 'nl-be'; bad( Language::creation( 'post_type:page', 'https://example.test/services/new/', 'nl-NL' ), 'A nondefault native parent is rejected despite its URL' ); $post_languages[10] = 'de-de';
 bad( Language::creation( 'post_type:page', $links[10], 'nl-NL' ), 'Existing native URL ownership cannot be taken over' );

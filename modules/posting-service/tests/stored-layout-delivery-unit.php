@@ -31,8 +31,9 @@ class Layout_Delivery_Client {
         return [ 'status' => 202, 'raw_body' => json_encode( nova_contract_fixture_event_accept( $bytes ) ) ];
     }
 }
-function delivery_setup( $version = 3 ) {
-    reset_native(); list( $content, $configuration ) = fixture( '501', $version, 'draft' );
+function delivery_setup( $version = 3, $target_url = null, $publication = 'draft' ) {
+    reset_native(); list( $content, $configuration ) = fixture( '501', $version, $publication );
+    if ( null !== $target_url ) { $content['url'] = $target_url; }
     if ( $version === 1 ) { $configuration['local']['template'] = [ 'id' => 'nova-delivery-fields-v1', 'revision' => '1' ]; }
     $wire = ok( Nova_Bridge_Suite_Writing_Adapter::template_input( $configuration['local'] ) ); unset( $wire['enabled'] );
     $configuration['template'] = [ 'id' => op( 99 ), 'revision' => 1 ] + $wire; $configuration['profile_digest'] = hash( 'sha256', Nova_Bridge_Suite_Writing_Adapter::canonical_json( $configuration['local'] ) );
@@ -61,6 +62,30 @@ foreach ( [ 1, 3 ] as $version ) {
     check( $client->events[1]['publication_ref'] === 'wordpress:post:10;operation:' . $f['job']['operation_id'], 'Receipt references the newly created post, never the example or target zero.' );
     check( $saved['payload']['content']['configuration']['definition']['version'] === $version && $source_reads === 0, 'Wire version remains unchanged and no source page is read.' );
     check( ! in_array( 'target:' . $f['job']['site_id'] . ':0', $store->lock_history, true ) && count( array_filter( $store->lock_history, static function ( $key ) { return str_starts_with( $key, 'layout-url:' ); } ) ) === 1 && $store->locks === [], 'Source-free creation locks the native URL and releases its locks.' );
+}
+foreach ( [ 1, 3 ] as $version ) {
+    list( $f, $store, $client, $worker ) = delivery_setup( $version, '/services/article/', 'preserve' );
+    existing_page( 20, 'services' ); existing_page( 15179, 'article', 'publish', 20 );
+    $saved = ok( $worker->process( $f['job'] ) );
+    check( $saved['state'] === 'complete' && $saved['phase'] === 'committed' && $saved['target_id'] === 15179 && $inserts === 0 && $saves === 1, 'Default dispatch applies the stored template to the existing page without a second insert.' );
+    check( $saved['payload']['selected_policy']['reference']['reference_id'] === 15179 && $saved['payload']['context']['target_post_id'] === 15179 && $saved['payload']['context']['operation'] === 'update', 'Existing-page policy and worker context retain the same concrete update target.' );
+    check( $saved['payload']['result']['url'] === 'https://example.test/services/article/' && get_post( 15179 )->post_parent === 20 && get_post( 15179 )->post_author === 7 && get_post_status( 15179 ) === 'publish', 'Existing-page replacement preserves canonical hierarchy, author and preserved publication state.' );
+    check( array_column( $client->events, 'kind' ) === [ 'received_complete', 'publication_succeeded' ] && $client->events[1]['publication_ref'] === 'wordpress:post:15179;operation:' . $f['job']['operation_id'], 'The final receipt identifies the updated page after its native commit.' );
+    check( $saved['payload']['content']['url'] === '/services/article/' && $saved['payload']['content']['configuration']['definition']['version'] === $version && $source_reads === 0, 'Relative target resolution leaves the authenticated snapshot and mapping version unchanged.' );
+}
+list( $f, $store, $client, $worker ) = delivery_setup( 3, '/services/article/', 'preserve' );
+existing_page( 20, 'services' ); existing_page( 15179, 'article', 'publish', 20 ); $client->lose_receipt = true;
+$pending = ok( $worker->process( $f['job'] ) ); $event_id = $pending['payload']['pending_event']['event_id'];
+check( $pending['phase'] === 'event_pending' && $pending['target_id'] === 15179 && $inserts === 0 && $saves === 1, 'A lost replacement receipt retains the existing target and completed native save.' );
+$pending['state'] = 'running'; $done = ok( ( new Nova_Bridge_Suite_Posting_Worker( $f['connection'], $store, $client ) )->process( $pending ) );
+check( $done['state'] === 'complete' && $done['target_id'] === 15179 && $inserts === 0 && $saves === 1 && $client->events[2]['event_id'] === $event_id, 'Replacement receipt retry neither reinserts nor rewrites the existing page.' );
+foreach ( [ 'crash_owner', 'crash_before_save', 'crash_save' ] as $crash ) {
+    list( $f, $store, $client, $worker ) = delivery_setup( 3, '/services/article/', 'publish' );
+    existing_page( 20, 'services' ); existing_page( 15179, 'article', 'draft', 20 ); $GLOBALS[$crash] = true;
+    $pending = ok( $worker->process( $f['job'] ) );
+    check( $pending['state'] === 'ready' && $pending['phase'] === 'applying' && $pending['target_id'] === 15179 && $inserts === 0, 'Interrupted replacement preserves its frozen plan and existing target for worker recovery.' );
+    $pending['state'] = 'running'; $done = ok( ( new Nova_Bridge_Suite_Posting_Worker( $f['connection'], $store, $client ) )->process( $pending ) );
+    check( $done['state'] === 'complete' && $done['target_id'] === 15179 && $inserts === 0 && $saves === 1 && $publication_changes === 1, 'A new worker recovers interrupted ownership and native saves without duplicate replacement or publication.' );
 }
 list( $f, $store, $client, $worker ) = delivery_setup(); $crash_insert = true; $first = ok( $worker->process( $f['job'] ) );
 check( $first['state'] === 'ready' && $first['phase'] === 'applying' && $first['payload']['native_writer'] === 'stored_layout_v3' && $inserts === 1, 'An uncertain insert retains the selected native writer and its frozen plan.' );

@@ -32,6 +32,22 @@ final class Nova_Bridge_Suite_Stored_Layout_Language {
         if ( is_wp_error( $site ) || $normalized['origin'] !== $site['origin'] || ( $site['path'] !== '/' && $normalized['path'] !== $site['path'] && strpos( $normalized['path'], $site['path'] . '/' ) !== 0 ) ) { return self::error( 'This stored-layout adapter supports language paths on the connected WordPress origin only.' ); }
         return [ 'provider' => 'polylang', 'code' => $context['code'], 'locale' => $context['locale'], 'home' => $normalized['identity'] ];
     }
+    /** Existing pages keep their native identity and must already belong to the site default. */
+    public static function existing( string $resource, int $id, string $url ) {
+        $post = get_post( $id );
+        if ( $resource !== 'post_type:page' || ! $post || $post->post_type !== 'page' ) { return self::error( 'The saved Elementor template can replace native pages only.' ); }
+        $wanted = Nova_Bridge_Suite_Mapped_Content_Target::normalize_url( $url ); $native = Nova_Bridge_Suite_Mapped_Content_Target::native_url( $resource, 'post', $id );
+        $actual = is_wp_error( $native ) ? $native : Nova_Bridge_Suite_Mapped_Content_Target::normalize_url( $native );
+        if ( is_wp_error( $wanted ) || is_wp_error( $actual ) || $wanted['identity'] !== $actual['identity'] || isset( wp_parse_url( $url )['query'] ) ) { return self::error( 'The existing page must own the exact canonical delivery URL.' ); }
+        if ( function_exists( 'pll_get_post_language' ) ) { $context = self::polylang(); if ( is_wp_error( $context ) ) { return $context; } $language = $context['locale']; }
+        else {
+            $language = self::native_default(); if ( is_wp_error( $language ) ) { return $language; }
+            $wpml = function_exists( 'has_filter' ) && ( has_filter( 'wpml_element_language_details' ) || defined( 'ICL_SITEPRESS_VERSION' ) );
+            $context = [ 'provider' => $wpml ? 'wpml' : 'core', 'code' => $wpml ? $language : self::locale( $language ) ];
+        }
+        $target = [ 'slug' => $post->post_name, 'parent' => (int) $post->post_parent, 'target_url' => $actual['identity'], 'language' => $language, 'native_language' => $context ];
+        $verified = self::verify( $resource, $id, $target ); return is_wp_error( $verified ) ? $verified : $target;
+    }
     public static function creation( string $resource, string $url, string $language ) {
         // The original delivery language remains in its content identity; native routing always uses the site default.
         if ( ! function_exists( 'pll_get_post_language' ) ) { $default = self::native_default(); return is_wp_error( $default ) ? $default : Nova_Bridge_Suite_Mapped_Content_Target::creation( $resource, $url, $default ); }
