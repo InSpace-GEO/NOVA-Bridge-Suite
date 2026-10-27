@@ -85,6 +85,33 @@ final class Nova_Bridge_Suite_Owned_CPT_Sync {
             $all['/meta/' . $key] = [ $type, ucwords( str_replace( '_', ' ', preg_replace( '/^(sp|blog)_/', '', $key ) ) ), $purpose ];
         }
         if ( 1 === count( $all ) ) { return self::error( 'context', 'No supported active editorial fields are available for this CPT.' ); }
+        $hints = []; $instructions = [];
+        if ( function_exists( 'post_type_supports' ) && post_type_supports( $post_type, 'thumbnail' ) ) {
+            $all['/featured_media'] = [ 'url', 'Featured image', 'The source image URL for the page or article featured image.' ];
+            $hints['/featured_media'] = [ 'image_url', 'image_urls' ];
+            $instructions['/featured_media'] = 'Use only an image URL from image_url or image_urls. Never use the page URL. Leave empty if no source image exists.';
+            $all['/image_alt'] = [ 'text', 'Featured image alternative text', 'The alternative text supplied for the source image.' ];
+            $hints['/image_alt'] = [ 'image_alt' ];
+            $instructions['/image_alt'] = 'Use only the supplied image_alt value, unchanged. Leave empty if it is missing.';
+        }
+        if ( $service ) {
+            foreach ( [ 'sp_image_1', 'sp_image_2' ] as $image_key ) {
+                if ( ! isset( $schema[$image_key], $descriptions[$image_key] ) || ! is_string( $descriptions[$image_key] ) || '' === trim( $descriptions[$image_key] ) ) { continue; }
+                $path = '/meta/' . $image_key;
+                $purpose = preg_replace( '/attachment\s+ID/i', 'source image URL', $descriptions[$image_key] );
+                $all[$path] = [ 'url', ucwords( str_replace( '_', ' ', $image_key ) ), $purpose . ' Use the URL of a supplied source image.' ];
+                $hints[$path] = [ 'image_url', 'image_urls' ];
+                $instructions[$path] = 'Use only an image URL from image_url or image_urls. Never use the page URL. Leave empty if no source image exists.';
+            }
+        }
+        if ( class_exists( 'Nova_Bridge_Suite_Owned_CPT_SEO' ) && Nova_Bridge_Suite_Owned_CPT_SEO::available() ) {
+            $all['/@nova/seo/title'] = [ 'text', 'SEO title', 'The original NOVA title used as the SEO title.' ];
+            $all['/@nova/seo/description'] = [ 'text', 'SEO description', 'The original NOVA meta description used as the SEO description.' ];
+            $hints['/@nova/seo/title'] = [ 'title' ];
+            $hints['/@nova/seo/description'] = [ 'meta_description' ];
+            $instructions['/@nova/seo/title'] = 'Use only the source title exactly as provided. Leave empty if it is missing.';
+            $instructions['/@nova/seo/description'] = 'Use only the source meta_description exactly as provided. Leave empty if it is missing.';
+        }
         if ( $has_faq ) {
             $group = [ 'id' => self::stable_uuid( $post_type . ':' . $faq ), 'label' => 'FAQ', 'slots' => [] ];
             for ( $i = 0; $i < 8; ++$i ) {
@@ -106,10 +133,11 @@ final class Nova_Bridge_Suite_Owned_CPT_Sync {
         }
         foreach ( $all as $path => $details ) {
             list( $type, $label, $purpose ) = $details;
-            $draft['fields'][ $path ] = [ 'mode' => 'adapt', 'source_path' => '', 'required' => '/title' === $path, 'instructions' => '', 'description' => [ 'label' => $label, 'purpose' => $purpose, 'value_type' => $type, 'constraints' => [] ] ];
+            $draft['fields'][ $path ] = [ 'mode' => 'adapt', 'source_path' => '', 'required' => '/title' === $path, 'instructions' => $instructions[$path] ?? '', 'description' => [ 'label' => $label, 'purpose' => $purpose, 'value_type' => $type, 'constraints' => [] ] ];
             $draft['target_descriptors'][ $path ] = [ 'path' => $path ];
             $local['fields'][ Nova_Bridge_Suite_Writing_Adapter::field_id( $path ) ] = [ 'target' => $path, 'value_type' => $type ];
         }
+        if ( $hints ) { $draft['source_hints'] = $hints; }
         $draft['revision'] = hash( 'sha256', self::json( $draft ) );
         $draft['signature'] = $draft['revision'];
         return [ 'draft' => $draft, 'local' => $local ];

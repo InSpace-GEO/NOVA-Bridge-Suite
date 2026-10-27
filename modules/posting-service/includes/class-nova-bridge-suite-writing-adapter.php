@@ -161,6 +161,22 @@ final class Nova_Bridge_Suite_Writing_Adapter {
             }
             $description = self::destination_description( self::adaptation_draft( $draft ) );
             if ( is_wp_error( $description ) ) { return $description; }
+            // Destination-mode authoring may provide advisory source hints. They do not
+            // constrain the fitter; native targets and their meaning remain local.
+            if ( isset( $draft['source_hints'] ) ) {
+                if ( 'destination' !== ( $draft['catalog_mode'] ?? '' ) || ! is_array( $draft['source_hints'] ) ) { return self::error( 'source_hint', 'Source hints require a destination draft.' ); }
+                $allowed = [ 'title', 'meta_description', 'h1', 'content', 'top_content', 'bottom_content', 'image_url', 'image_urls', 'image_alt', 'url' ];
+                $by_path = $draft['source_hints']; ksort( $by_path, SORT_STRING );
+                foreach ( $by_path as $path => $sources ) {
+                    if ( ! is_string( $path ) || 'adapt' !== ( $draft['fields'][$path]['mode'] ?? '' ) || ! isset( $draft['target_descriptors'][$path] ) || ! is_array( $sources ) || ! $sources || count( $sources ) > 10 || array_values( $sources ) !== $sources ) { return self::error( 'source_hint', 'Each source hint needs an adapted destination and a list of source fields.' ); }
+                    $seen_sources = [];
+                    foreach ( $sources as $source ) {
+                        if ( ! is_string( $source ) || ! in_array( $source, $allowed, true ) || isset( $seen_sources[$source] ) ) { return self::error( 'source_hint', 'Each hinted source must be unique and supported by V3.' ); }
+                        $seen_sources[$source] = true;
+                    }
+                    $hints[] = [ 'field_id' => self::field_id( $path ), 'source_fields' => $sources ];
+                }
+            }
             foreach ( $description['fields'] as $field ) {
                 if ( '' === trim( $field['purpose'] ) ) { return self::error( 'purpose_required', 'Describe the purpose of each V3 field before synchronization: ' . $field['label'] ); }
                 if ( ! in_array( $field['value_type'], [ 'text', 'rich_text', 'url', 'email' ], true ) ) { return self::error( 'scalar_only', 'V3 synchronization supports text, rich text, URL and email fields. Keep compound image, link and list descriptions local.', 409 ); }

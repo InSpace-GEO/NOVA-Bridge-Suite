@@ -5,6 +5,9 @@ function is_wp_error( $value ) { return $value instanceof WP_Error; }
 function wp_json_encode( $value, $flags = 0 ) { return json_encode( $value, $flags ); }
 class WP_REST_Request { public function __construct( $method ) {} }
 function post_type_exists( $type ) { return in_array( $type, [ 'service_page', 'blog', 'blog_two' ], true ); }
+$supports_thumbnail = false;
+function post_type_supports( $type, $feature ) { global $supports_thumbnail; return 'thumbnail' === $feature && $supports_thumbnail; }
+class Nova_Bridge_Suite_Owned_CPT_SEO { public static $enabled = false; public static function available() { return self::$enabled; } }
 $blog_types = [ 'blog' ];
 function nova_bridge_suite_get_managed_blog_post_types() { global $blog_types; return $blog_types; }
 function rest_get_server() {}
@@ -86,6 +89,10 @@ check( is_wp_error( Nova_Bridge_Suite_Owned_CPT_Sync::synchronize( [ 'enabled' =
 $before_defaults = $client->defaults; $before_writes = count( $client->writes );
 $explicit = Nova_Bridge_Suite_Owned_CPT_Sync::synchronize( [ 'enabled' => true ], 'service_page', 'service', $client, false );
 check( ! is_wp_error( $explicit ) && $client->defaults === $before_defaults && count( $client->writes ) === $before_writes, 'An explicitly selected URL profile can synchronize without reading or changing the unrelated default.' );
+$supports_thumbnail = true; Nova_Bridge_Suite_Owned_CPT_SEO::$enabled = true;
+$old_snapshot = [ 'site_id' => $client->site, 'configuration' => $frozen ];
+check( ! is_wp_error( Nova_Bridge_Suite_Owned_CPT_Sync::configuration_for_snapshot( $old_snapshot, $client->site ) ), 'Old frozen CPT profiles without source hints remain valid after new fields become available.' );
+$supports_thumbnail = false; Nova_Bridge_Suite_Owned_CPT_SEO::$enabled = false;
 $options = []; Nova_Bridge_Suite_Mapping_Sync::$states = []; Nova_Bridge_Suite_Mapping_Sync::$syncs = 0; Nova_Bridge_Suite_Posting_Client::$instances = [];
 Nova_Bridge_Suite_Posting_Settings::$connection = [ 'enabled' => false ];
 Nova_Bridge_Suite_Owned_CPT_Sync::refresh();
@@ -99,4 +106,23 @@ check( 3 === Nova_Bridge_Suite_Mapping_Sync::$syncs, 'Both ambiguous Blog profil
 foreach ( Nova_Bridge_Suite_Posting_Client::$instances as $used ) { check( [] === $used->writes && $used->defaults === Nova_Bridge_Suite_Posting_Client::$seed_defaults, 'Automatic provisioning does not change an existing Service default.' ); }
 $markers = array_filter( $options, static function ( $v, $k ) { return strpos( $k, 'nova_owned_cpt_refresh_' ) === 0; }, ARRAY_FILTER_USE_BOTH );
 check( count( $markers ) === 3 && count( array_filter( $markers, static function ( $v ) { return ($v['status'] ?? '') === 'unselected'; } ) ) === 3, 'Provisioned but unselected profiles are recorded accurately.' );
+$supports_thumbnail = true; Nova_Bridge_Suite_Owned_CPT_SEO::$enabled = true;
+$GLOBALS['wp_rest_additional_fields']['service_page']['meta_descriptions']['schema']['properties']['sp_image_1'] = [];
+// A real active-field callback includes the image description only when the layout supports it.
+function image_descriptions() { return descriptions() + [ 'sp_image_1' => 'First content image.' ]; }
+$GLOBALS['wp_rest_additional_fields']['service_page']['meta_descriptions']['get_callback'] = 'image_descriptions';
+$media = Nova_Bridge_Suite_Owned_CPT_Sync::build( 'service_page', 'service' );
+$media_wire = Nova_Bridge_Suite_Writing_Adapter::template_input( $media['draft'] );
+check( ! is_wp_error( $media_wire ) && isset( $media['draft']['fields']['/featured_media'], $media['draft']['fields']['/meta/sp_image_1'], $media['draft']['fields']['/image_alt'], $media['draft']['fields']['/@nova/seo/title'], $media['draft']['fields']['/@nova/seo/description'] ), 'Supported image, alt text and SEO fields are projected as scalar destinations.' );
+check( ! isset( $media['draft']['fields']['/meta/sp_image_2'] ), 'Inactive Service image slots are not projected.' );
+$hints_by_id = []; foreach ( $media_wire['mapping']['source_hints'] as $hint ) { $hints_by_id[$hint['field_id']] = $hint['source_fields']; }
+foreach ( [ '/featured_media' => ['image_url','image_urls'], '/meta/sp_image_1' => ['image_url','image_urls'], '/image_alt' => ['image_alt'], '/@nova/seo/title' => ['title'], '/@nova/seo/description' => ['meta_description'] ] as $path => $sources ) { check( ($hints_by_id[Nova_Bridge_Suite_Writing_Adapter::field_id($path)] ?? null) === $sources, 'The destination retains its correct advisory source hints.' ); }
+$media_blog = Nova_Bridge_Suite_Owned_CPT_Sync::build( 'blog', 'informative' );
+check( isset( $media_blog['draft']['fields']['/featured_media'], $media_blog['draft']['fields']['/@nova/seo/description'] ) && ! isset( $media_blog['draft']['fields']['/meta/sp_image_1'] ), 'Blog uses its own featured image and SEO fields, with no Service slots.' );
+$bad = $media['draft']; $bad['source_hints']['/featured_media'] = [ 'language' ];
+check( is_wp_error( Nova_Bridge_Suite_Writing_Adapter::template_input( $bad ) ), 'Unsupported V3 source hints are rejected.' );
+$bad = $media['draft']; $bad['source_hints']['/not-a-field'] = [ 'title' ];
+check( is_wp_error( Nova_Bridge_Suite_Writing_Adapter::template_input( $bad ) ), 'Hints cannot refer to a destination that is not saved.' );
+$bad = $media['draft']; $bad['source_hints']['/featured_media'] = [ 'image_url', 'image_url' ];
+check( is_wp_error( Nova_Bridge_Suite_Writing_Adapter::template_input( $bad ) ), 'Duplicate source hints are rejected.' );
 echo "owned CPT sync unit checks passed\n";
