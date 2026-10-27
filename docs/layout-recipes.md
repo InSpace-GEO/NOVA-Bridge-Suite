@@ -2,6 +2,8 @@
 
 Open **NOVA Settings → Layouts → Configure creation default** for an endpoint. Existing saved document mappings remain available in the older tools; installing this addition does not migrate or overwrite them.
 
+In **Destination & approach**, choose the WordPress destination and the **NOVA page type** whose content should use it. Pages start with Service, Posts with Informative, and WooCommerce product categories with Category. Category content can use Pages when WooCommerce is unavailable. These are initial suggestions: saved choices are retained, and selecting another NOVA page type does not silently discard an existing design. The layout card shows the saved selection separately from its posting-service synchronization result.
+
 Choose **Static template** or **Dynamic template**, then select the builder or declared custom fields. A static template always has the same fields and the same number of elements on every page or post. Optional content can be left empty, but its fixed place remains. A dynamic template can have different numbers of sections, FAQ items or nested rows on each page or post; declared optional parts can be omitted when empty. Dynamic templates can still keep fixed surrounding elements.
 
 A native starter needs no source page ID. Capturing an existing example copies its design into a local blueprint; later creation uses that saved blueprint rather than cloning the source item again. Existing `mixed` and `rules` recipes both appear as Dynamic template without rewriting their saved mode or revision history.
@@ -23,6 +25,7 @@ The authenticated base is `/wp-json/nova-bridge/v1/mapping/layout-recipes`. Thes
 | `POST /region` | Build an exact native pattern from the certified design or declared ACF layout; nested requests retain their full ancestor and variant context. |
 | `POST /preview` | Validate and compile sample content without creating an item; return a sanitized structure preview and exact preview receipt. |
 | `POST /save` | Save a reviewed immutable revision and set its endpoint default using both profile and default compare-and-swap checks. |
+| `POST /sync` | Retry synchronization of the exact saved revision for a supported publishing layout. |
 | `GET /profile?id=UUID` | Reload a profile and its editor metadata. |
 | `GET /blank?resource_id=post_type:page` | Export the exact current default, content schema, instructions and empty input object. |
 | `POST /translate` | Compile an exact saved `id`, `revision` and filled `content` into the native document and writer payload without writing. |
@@ -33,7 +36,9 @@ The recipe format is `nova-layout-recipe/v1`, with a builder, mode, complete nat
 
 Profiles live in the non-autoloaded `nova_bridge_layout_recipes_v1` option, with immutable history. Native draft requests use `nova_bridge_layout_recipe_operations_v1` plus private operation witnesses on created items. Lost journal entries with existing physical witnesses refuse another insertion; uncertain operations require recovery or reconciliation. Completed draft recovery preserves subsequent human edits and refuses to claim a published or deleted item is still a draft.
 
-This interface is preparation inside WordPress. It does not connect the plugin to a backend, synchronize these templates remotely, or replace the legacy contracted publishing protocol. Neither posting-service nor nova-agents-backend is modified. Their future integration must request the exact recipe revision and content schema, fill that contract, and consume the translated native payload through a supported publication path.
+With an enabled posting connection, supported static Elementor Page layouts and WooCommerce product-category defaults synchronize through the existing posting-service template/default APIs. Other builders and dynamic layouts remain local preparation. A selected NOVA page type alone does not enable an unsupported publishing path.
+
+Saving a supported Page layout synchronizes its template, verifies native writer readiness, and selects that template as the default for the saved NOVA page type. A successful result requires a read-back of that default. Concurrent or different existing defaults are not silently overwritten. A failed synchronization leaves the local layout saved and displays the error; it must not be presented as ready for delivery. Recorded synchronization results describe the last check for the exact saved revision and posting connection, not continuous remote monitoring. Existing frozen deliveries do not acquire a newly selected mapping.
 
 ## Verification and limits
 

@@ -232,7 +232,7 @@ final class Nova_Bridge_Suite_Endpoint_Mappings {
             if ( is_wp_error( $record ) ) { $item['native_mapping_available'] = false; $item['provider_status'] = 'needs_review'; $item['reasons'][] = $record->get_error_message(); $record = null; }
             elseif ( $item['system_managed'] ) { $item['native_mapping_available'] = true; $item['provider_status'] = 'mapped_by_nova'; }
             $item['default_mapping'] = $record ? [ 'id' => $record['mapping_id'], 'revision' => $record['revision'], 'label' => $record['label'], 'system_managed' => $item['system_managed'] ] : null;
-            $recipe_default = ! $item['system_managed'] && class_exists( 'Nova_Bridge_Suite_Layout_Recipes' ) ? ( Nova_Bridge_Suite_Layout_Recipes::defaults()[$resource['id']] ?? null ) : null;
+            $recipe_default = ! $item['system_managed'] && class_exists( 'Nova_Bridge_Suite_Layout_Recipes' ) ? Nova_Bridge_Suite_Layout_Recipes::default_metadata( $resource['id'] ) : null;
             if ( $recipe_default ) { $item['recipe_default'] = $recipe_default; $item['default_mapping'] = $recipe_default + [ 'format' => 'nova-layout-recipe/v1', 'system_managed' => false ]; $record = [ 'selected_fields' => [] ]; }
             $item['coverage'] = [ 'configured' => !! $record, 'selected_fields' => $record ? count( $record['selected_fields'] ) : 0, 'required' => $item['coverage_required'], 'system_managed' => $item['system_managed'] ];
             if ( $item['coverage_required'] ) { ++$required; if ( $record ) { ++$configured; if ( $item['system_managed'] ) { ++$managed_configured; } } } $result[] = $item;

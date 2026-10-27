@@ -5,6 +5,20 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 final class Nova_Bridge_Suite_Stored_Recipe_Sync {
     private static function error( string $code, string $message ): WP_Error { return new WP_Error( 'nova_stored_recipe_' . $code, $message, [ 'status' => 409 ] ); }
     private static function same( $a, $b ): bool { return Nova_Bridge_Suite_Writing_Adapter::canonical_json( $a ) === Nova_Bridge_Suite_Writing_Adapter::canonical_json( $b ); }
+    private static function status_key( array $connection, string $recipe_id ): string {
+        return 'nova_recipe_posting_sync_' . hash( 'sha256', (string) ( $connection['site_id'] ?? '' ) . "\n" . rtrim( (string) ( $connection['base_url'] ?? '' ), '/' ) . "\n" . $recipe_id );
+    }
+    /** Last observed result only: reading a layout never contacts posting service. */
+    public static function saved_status( array $connection, string $recipe_id, int $revision ): ?array {
+        if ( empty( $connection['enabled'] ) || empty( $connection['site_id'] ) || empty( $connection['base_url'] ) ) { return null; }
+        $status = get_option( self::status_key( $connection, $recipe_id ), null );
+        return is_array( $status ) && ( $status['recipe_revision'] ?? null ) === $revision ? $status : null;
+    }
+    private static function remember( array $connection, string $recipe_id, array $status ): bool {
+        $key = self::status_key( $connection, $recipe_id );
+        update_option( $key, $status, false );
+        return get_option( $key, null ) === $status;
+    }
     private static function defaults( $reply ) {
         if ( is_wp_error( $reply ) ) { return $reply; }
         $body = $reply['body'] ?? [];
@@ -23,10 +37,13 @@ final class Nova_Bridge_Suite_Stored_Recipe_Sync {
             $previous = $recipe_id ? Nova_Bridge_Suite_Mapping_Sync::scope_state( $client->site_id(), 'recipe:' . $recipe_id ) : null;
             if ( $saving && isset( $previous['pending'] ) ) { return self::error( 'sync_pending', 'Sync the saved revision to reconcile its pending remote operation before saving another revision.' ); }
             $saved = $load(); if ( is_wp_error( $saved ) ) { return $saved; }
+            $attempt = [ 'status' => 'pending', 'recipe_revision' => $saved['revision'], 'page_type' => $saved['posting_page_type'] ?? 'service', 'checked_at' => gmdate( 'Y-m-d\TH:i:s\Z' ), 'message' => 'Posting-service default confirmation has not completed.' ];
+            $remembered = self::remember( $connection, $saved['id'], $attempt );
             $record = Nova_Bridge_Suite_Layout_Recipes::delivery_record( $saved['id'], $saved['revision'] );
-            $result = is_wp_error( $record ) ? $record : self::synchronize( $connection, $client, $record, $recover_template_id );
-            $saved['posting_sync'] = is_wp_error( $result ) ? [ 'status' => 'failed', 'code' => $result->get_error_code(), 'message' => $result->get_error_message() ] : $result;
-            $saved['local_only'] = is_wp_error( $result );
+            $result = ! $remembered ? self::error( 'status_storage', 'The saved layout is local; its synchronization status could not be retained. Retry synchronization.' ) : ( is_wp_error( $record ) ? $record : self::synchronize( $connection, $client, $record, $recover_template_id ) );
+            $saved['posting_sync'] = ( is_wp_error( $result ) ? [ 'status' => 'failed', 'code' => $result->get_error_code(), 'message' => $result->get_error_message() ] : $result ) + $attempt;
+            if ( ! self::remember( $connection, $saved['id'], $saved['posting_sync'] ) ) { $saved['posting_sync'] = [ 'status' => 'failed', 'code' => 'nova_stored_recipe_status_storage', 'message' => 'The last synchronization result could not be retained. Review and sync this saved revision again.' ] + $attempt; }
+            $saved['local_only'] = 'synced' !== $saved['posting_sync']['status'];
             return $saved;
         } finally { $locks->unlock( $lock ); }
     }
@@ -52,6 +69,9 @@ final class Nova_Bridge_Suite_Stored_Recipe_Sync {
             if ( is_wp_error( $confirmed ) ) { return $confirmed; }
             if ( ! self::same( $confirmed, $defaults ) ) { return self::error( 'default_conflict', 'Posting service did not confirm the selected creation template.' ); }
         }
-        return [ 'status' => 'synced', 'verified' => true, 'template_id' => $id, 'template_revision' => $state['template']['revision'], 'local_revision' => $record['revision'], 'recipe_revision' => $record['revision'], 'mapping_version' => $state['template']['definition']['version'], 'page_type' => $page_type, 'message' => 'The saved layout and field instructions are ready for new-page delivery without reading the example page.' ];
+        $readback = $client->site_request( 'GET', '/template-defaults' );
+        $confirmed = self::defaults( $readback ); if ( is_wp_error( $confirmed ) ) { return $confirmed; }
+        if ( ( $confirmed[$page_type] ?? null ) !== $id ) { return self::error( 'default_conflict', 'Posting service no longer selects this layout for the chosen NOVA page type. Review its default before retrying.' ); }
+        return [ 'status' => 'synced', 'verified' => true, 'default_selected' => true, 'defaults_revision' => $readback['body']['revision'], 'template_id' => $id, 'template_revision' => $state['template']['revision'], 'local_revision' => $record['revision'], 'recipe_revision' => $record['revision'], 'mapping_version' => $state['template']['definition']['version'], 'page_type' => $page_type, 'message' => 'Posting service confirmed this saved layout as the default for ' . $page_type . ' content.' ];
     }
 }

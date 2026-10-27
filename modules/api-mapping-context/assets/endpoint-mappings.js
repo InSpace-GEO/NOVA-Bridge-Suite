@@ -12,6 +12,17 @@
 	function copy( value ) { return JSON.parse( JSON.stringify( value ) ); }
 	function same( left, right ) { return JSON.stringify( left ) === JSON.stringify( right ); }
 	function message( value ) { return typeof value === 'string' ? value : value && ( value.message || value.reason ) || 'This document needs review.'; }
+	function recipePostingSummary( resource ) {
+		var recipe = resource.recipe_default, type = recipe && recipe.posting_page_type;
+		if ( ! recipe || ! [ 'service', 'informative', 'category' ].includes( type ) ) { return []; }
+		var label = type === 'service' ? 'Service' : type === 'informative' ? 'Informative' : 'Category', sync = recipe.posting_sync;
+		var result = [ 'Default for NOVA page type: ' + label + ' → ' + resource.label + '.' ];
+		var confirmed = sync && sync.status === 'synced' && sync.verified === true && sync.default_selected === true && sync.recipe_revision === recipe.revision && sync.page_type === type && Number.isSafeInteger( sync.template_revision ) && sync.template_revision > 0 && typeof sync.template_id === 'string' && !! sync.template_id;
+		if ( confirmed ) { result.push( 'Posting-service default confirmed when saved or synchronized.' ); }
+		else if ( sync && sync.status === 'failed' && sync.recipe_revision === recipe.revision && sync.page_type === type ) { result.push( 'Saved locally · posting-service default not confirmed. ' + ( typeof sync.message === 'string' ? sync.message : 'Open the layout to retry synchronization.' ) ); }
+		else { result.push( resource.id === 'taxonomy:product_cat' && ! sync ? 'Saved locally · last posting-service confirmation is unavailable.' : 'Saved locally · posting-service default not confirmed.' ); }
+		return result;
+	}
 	function referenceType( resource ) { return resource.type === 'taxonomy' || resource.kind === 'term' ? 'term' : 'post'; }
 	function referenceKey( type, id ) { return type + ':' + id; }
 	function parseReference( key ) { var match = /^(post|term):(0|[1-9][0-9]*)$/.exec( key ); if ( ! match || ! Number.isSafeInteger( Number( match[2] ) ) ) { throw new Error( 'Choose a valid content item.' ); } return { reference_type: match[1], reference_id: Number( match[2] ) }; }
@@ -231,7 +242,7 @@
 				card.appendChild( el( 'span', 'nem-badge nem-card-status ' + ( item.default_mapping ? 'saved' : item.creation_supported ? 'pending' : 'blocked' ), item.default_mapping ? 'Default saved · revision ' + item.default_mapping.revision : item.creation_supported ? 'Default needed for new content' : 'Creation needs review' ) );
 				var setup = button( item.default_mapping ? 'Edit creation default' : 'Configure creation default', function () { if ( config.recipesUrl ) { var url = new URL( config.recipesUrl, window.location.href ); url.searchParams.set( 'resource_id', item.id ); if ( item.recipe_default ) { url.searchParams.set( 'recipe_id', item.recipe_default.id ); } window.location.assign( url.href ); } else { open( item.id, 'creation' ); } }, true ); setup.dataset.action = 'creation'; setup.disabled = state.busy || item.creation_supported !== true; actions.appendChild( setup );
 				var inspect = button( 'Inspect existing content', function () { open( item.id, 'inspect' ); } ); inspect.dataset.action = 'inspect'; inspect.disabled = state.busy || item.can_inspect_existing === false || ! item.targets.length; actions.appendChild( inspect );
-				var description = el( 'div', 'nem-card-description' ); description.appendChild( el( 'p', 'nem-help', 'Existing content uses its current filled native document.' ) );
+				var description = el( 'div', 'nem-card-description' ); recipePostingSummary( item ).forEach( function ( text ) { description.appendChild( el( 'p', 'nem-help nem-posting-summary', text ) ); } ); description.appendChild( el( 'p', 'nem-help', 'Existing content uses its current filled native document.' ) );
 				if ( ( item.creation_supported === false || item.can_inspect_existing === false ) && item.reasons && item.reasons.length ) { warnings( description, item.reasons ); }
 				var spacer = el( 'span', 'nem-card-spacer' ); spacer.setAttribute( 'aria-hidden', 'true' ); card.append( description, spacer, actions );
 				if ( item.endpoint || item.route ) { card.appendChild( el( 'code', 'nem-endpoint-address', item.endpoint || item.route ) ); } grid.appendChild( card );
