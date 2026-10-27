@@ -23,15 +23,25 @@ final class Nova_Bridge_Suite_Owned_CPT_Writer {
         $type = $local['routing']['post_type'] ?? ''; if ( ! is_string( $type ) || ! preg_match( '/^[a-z0-9_-]+$/D', $type ) || ( $local['resource_id'] ?? '' ) !== 'post_type:' . $type || ( $local['routing']['operation'] ?? '' ) !== 'create' || ! in_array( $local['routing']['publication'] ?? '', [ 'publish', 'draft', 'preserve' ], true ) || ! is_array( $local['fields'] ?? null ) ) { self::fail( 'configuration', 'The native CPT route is invalid.' ); }
         return $local;
     }
+    /** Resolve a site-relative path without changing the authenticated snapshot. */
+    private static function target_url( $url ) {
+        if ( ! is_string( $url ) || '' === $url || 0 === strpos( $url, '//' ) || preg_match( '/^[a-z][a-z0-9+.-]*:/i', $url ) || in_array( $url[0], [ '?', '#' ], true ) ) { return $url; }
+        $home = get_option( 'home', '' );
+        if ( ! is_string( $home ) || '' === $home ) { $home = home_url( '/' ); }
+        $site = self::checked( Nova_Bridge_Suite_Mapped_Content_Target::normalize_url( $home ) );
+        if ( '/' === $url[0] ) { return $site['origin'] . $url; }
+        return $site['origin'] . ( '/' === $site['path'] ? '/' : rtrim( $site['path'], '/' ) . '/' ) . $url;
+    }
     private static function target( array $content, array $local ): array {
         $association = self::assoc( $content ); $type = $local['routing']['post_type']; $resource = 'post_type:' . $type;
+        $url = self::target_url( $content['url'] ?? '' );
         if ( $association ) {
-            if ( ( $association['state'] ?? '' ) !== 'committed' || ( $association['content_item_id'] ?? '' ) !== $content['content_item_id'] || ( $association['template_id'] ?? '' ) !== ( $content['configuration']['id'] ?? null ) || ( $association['target']['target_url'] ?? '' ) !== self::checked( Nova_Bridge_Suite_Mapped_Content_Target::normalize_url( $content['url'] ?? '' ) )['identity'] ) { self::fail( 'association', 'This URL belongs to a different or unfinished native operation.' ); }
+            if ( ( $association['state'] ?? '' ) !== 'committed' || ( $association['content_item_id'] ?? '' ) !== $content['content_item_id'] || ( $association['template_id'] ?? '' ) !== ( $content['configuration']['id'] ?? null ) || ( $association['target']['target_url'] ?? '' ) !== self::checked( Nova_Bridge_Suite_Mapped_Content_Target::normalize_url( $url ) )['identity'] ) { self::fail( 'association', 'This URL belongs to a different or unfinished native operation.' ); }
             $previous = $association['content_item_version_id'] ?? ''; $current = $content['content_item_version_id']; if ( strlen( $current ) < strlen( $previous ) || ( strlen( $current ) === strlen( $previous ) && strcmp( $current, $previous ) <= 0 ) ) { self::fail( 'version', 'This content version is not newer than the retained version.' ); }
             return [ 'id' => (int) $association['post_id'], 'target' => $association['target'], 'association' => $association ];
         }
-        $found = Nova_Bridge_Suite_Mapped_Content_Target::resolve( $content['url'] ?? '', $resource );
-        if ( is_wp_error( $found ) ) { if ( 'nova_mapped_target_not_found' !== $found->get_error_code() ) { self::checked( $found ); } return [ 'id' => 0, 'target' => self::checked( Nova_Bridge_Suite_Mapped_Content_Target::creation( $resource, $content['url'] ?? '' ) ), 'association' => null ]; }
+        $found = Nova_Bridge_Suite_Mapped_Content_Target::resolve( $url, $resource );
+        if ( is_wp_error( $found ) ) { if ( 'nova_mapped_target_not_found' !== $found->get_error_code() ) { self::checked( $found ); } return [ 'id' => 0, 'target' => self::checked( Nova_Bridge_Suite_Mapped_Content_Target::creation( $resource, $url ) ), 'association' => null ]; }
         $id = (int) $found['reference_id']; $post = get_post( $id ); if ( ! $post || $post->post_type !== $type ) { self::fail( 'target', 'The resolved native item has a different post type.' ); }
         return [ 'id' => $id, 'target' => [ 'slug' => $post->post_name, 'parent' => (int) $post->post_parent, 'target_url' => $found['requested_url'] ], 'association' => null ];
     }
