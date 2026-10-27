@@ -59,14 +59,14 @@ final class Nova_Bridge_Suite_Rule_Writer {
             self::fail( 'builder_unavailable', 'Enable Elementor and the NOVA Elementor bridge before creating a content-rules draft.' );
         }
         $plugin = \Elementor\Plugin::instance();
-        if ( ! isset( $plugin->documents, $plugin->elements_manager ) || ! method_exists( $plugin->documents, 'get' ) || ! method_exists( $plugin->elements_manager, 'get_element' ) ) { self::fail( 'builder_unavailable', 'The installed Elementor version does not expose the supported native document lifecycle.' ); }
+        if ( ! isset( $plugin->documents ) || ! is_callable( [ $plugin->documents, 'get' ] ) || ! \SEOR_Elementor_Bridge\Element_Registry::available( $plugin ) ) { self::fail( 'builder_unavailable', 'The installed Elementor version does not expose the supported native document lifecycle.' ); }
         $type = get_post_type_object( $profile['post_type'] );
         if ( ! $type || ! current_user_can( $type->cap->create_posts ?? $type->cap->edit_posts ) ) { self::fail( 'permission', 'The publishing user cannot create this native post type.' ); }
         $supported = get_option( 'elementor_cpt_support', [ 'post', 'page' ] );
         if ( ! in_array( $profile['post_type'], is_array( $supported ) ? $supported : [], true ) && ( ! function_exists( 'post_type_supports' ) || ! post_type_supports( $profile['post_type'], 'elementor' ) ) ) { self::fail( 'post_type', 'Enable Elementor support for this post type before creating its draft.' ); }
         $walk = static function ( array $nodes ) use ( &$walk, $plugin ) {
             foreach ( $nodes as $node ) {
-                if ( ! is_array( $node ) || ! is_string( $node['id'] ?? null ) || ! $plugin->elements_manager->get_element( $node['elType'] ?? '', $node['widgetType'] ?? null ) ) { self::fail( 'element_unavailable', 'An element required by the local rules is unavailable in this Elementor installation.' ); }
+                if ( ! is_array( $node ) || ! is_string( $node['id'] ?? null ) || ! \SEOR_Elementor_Bridge\Element_Registry::contains( $plugin, $node['elType'] ?? '', $node['widgetType'] ?? null ) ) { self::fail( 'element_unavailable', 'An element required by the local rules is unavailable in this Elementor installation.' ); }
                 $walk( $node['elements'] ?? [] );
             }
         };

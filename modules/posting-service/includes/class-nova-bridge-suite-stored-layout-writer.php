@@ -73,8 +73,8 @@ final class Nova_Bridge_Suite_Stored_Layout_Writer {
         $post_type = get_post_type_object( $type );
         if ( ! $post_type || ! current_user_can( $post_type->cap->create_posts ?? $post_type->cap->edit_posts ) || ( 'publish' === $status && ! current_user_can( $post_type->cap->publish_posts ) ) ) { self::fail( 'permission', 'The configured actor cannot create or publish this post type.' ); }
         $plugin = \Elementor\Plugin::instance();
-        if ( ! isset( $plugin->documents, $plugin->elements_manager ) || ! method_exists( $plugin->documents, 'get' ) || ! method_exists( $plugin->elements_manager, 'get_element' ) ) { self::fail( 'builder_unavailable', 'The native Elementor document lifecycle is unavailable.' ); }
-        $walk = static function ( array $nodes ) use ( &$walk, $plugin ) { foreach ( $nodes as $node ) { if ( ! $plugin->elements_manager->get_element( $node['elType'] ?? '', $node['widgetType'] ?? null ) ) { self::fail( 'element_unavailable', 'A widget used by the stored layout is unavailable. No page was created.' ); } $walk( $node['elements'] ?? [] ); } };
+        if ( ! isset( $plugin->documents ) || ! is_callable( [ $plugin->documents, 'get' ] ) || ! \SEOR_Elementor_Bridge\Element_Registry::available( $plugin ) ) { self::fail( 'builder_unavailable', 'The native Elementor document lifecycle is unavailable.' ); }
+        $walk = static function ( array $nodes ) use ( &$walk, $plugin ) { foreach ( $nodes as $node ) { if ( ! \SEOR_Elementor_Bridge\Element_Registry::contains( $plugin, $node['elType'] ?? '', $node['widgetType'] ?? null ) ) { self::fail( 'element_unavailable', 'A widget used by the stored layout is unavailable. No page was created.' ); } $walk( $node['elements'] ?? [] ); } };
         $walk( $payload['elementor_data'] ?? [] );
         $support = get_option( 'elementor_cpt_support', [ 'post', 'page' ] );
         if ( ! in_array( $type, is_array( $support ) ? $support : [], true ) && ( ! function_exists( 'post_type_supports' ) || ! post_type_supports( $type, 'elementor' ) ) ) { self::fail( 'post_type', 'Enable Elementor for the selected post type.' ); }

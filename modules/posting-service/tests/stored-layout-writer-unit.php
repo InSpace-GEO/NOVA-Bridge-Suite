@@ -1,7 +1,7 @@
 <?php
 /** Real capture/compiler plus native lifecycle/response-loss tests; WordPress and Elementor are mocked. */
 namespace Elementor {
-    class Plugin { public $documents; public $elements_manager; public static function instance() { static $p; if ( ! $p ) { $p = new self(); $p->documents = new \Layout_Documents(); $p->elements_manager = new \Layout_Elements(); } return $p; } }
+    class Plugin { public $documents; public $elements_manager; public $widgets_manager; public static function instance() { static $p; if ( ! $p ) { $p = new self(); $p->documents = new \Layout_Documents(); $p->elements_manager = new \Layout_Elements(); $p->widgets_manager = new \Layout_Widgets(); } return $p; } }
 }
 namespace SEOR_Elementor_Bridge {
     class Elementor_Service {
@@ -16,7 +16,7 @@ namespace SEOR_Elementor_Bridge {
     }
 }
 namespace {
-define( 'ABSPATH', __DIR__ . '/' ); define( 'ELEMENTOR_VERSION', '3.35.1' ); define( 'NOVA_BRIDGE_SUITE_VERSION', '3.0.0' ); $wp_version = '6.8';
+define( 'ABSPATH', __DIR__ . '/' ); define( 'ELEMENTOR_VERSION', '3.30.3' ); define( 'NOVA_BRIDGE_SUITE_VERSION', '3.0.0' ); $wp_version = '6.8';
 class WP_Error { private $code; private $message; public function __construct( $code, $message = '', $data = [] ) { $this->code = $code; $this->message = $message; } public function get_error_code() { return $this->code; } public function get_error_message() { return $this->message; } }
 class WP_Post { public $ID; public $post_type; public $post_status; public $post_title = ''; public $post_excerpt = ''; public $post_name; public $post_parent = 0; public $post_author = 1; public $post_content = ''; public $post_content_filtered = ''; }
 function is_wp_error( $v ) { return $v instanceof WP_Error; }
@@ -50,9 +50,12 @@ function remove_filter( $key, $fn, ...$rest ) { $GLOBALS['filters'][$key] = arra
 function wp_insert_post( $data, $error = false ) { foreach ( $GLOBALS['filters']['wp_insert_post_data'] ?? [] as $fn ) { $data = $fn( $data, $data, $data ); } $post = new WP_Post(); $post->ID = 10 + count( $GLOBALS['posts'] ); foreach ( $data as $k => $v ) { $post->$k = is_string( $v ) ? stripslashes( $v ) : $v; } $GLOBALS['posts'][$post->ID] = $post; ++$GLOBALS['inserts']; if ( $GLOBALS['crash_insert'] ) { $GLOBALS['crash_insert'] = false; throw new RuntimeException( 'Lost insert response' ); } return $post->ID; }
 function wp_update_post( $data, $error = false ) { $post = get_post( $data['ID'] ); foreach ( $data as $k => $v ) { if ( $k !== 'ID' ) { $post->$k = is_string( $v ) ? stripslashes( $v ) : $v; } } ++$GLOBALS['publication_changes']; if ( $GLOBALS['crash_publish'] ) { $GLOBALS['crash_publish'] = false; throw new RuntimeException( 'Lost publication response' ); } return $post->ID; }
 class Layout_Documents { public function get( $id, $cache = false ) { return (object) []; } }
-class Layout_Elements { public function get_element( $type, $widget = null ) { return $GLOBALS['missing_widget'] ? null : (object) []; } }
+// Elementor before 3.34 exposes separate public registries, without get_element().
+class Layout_Elements { public function get_element_types( $type = null ) { $types = array_fill_keys( [ 'section', 'column', 'container' ], (object) [] ); return $type === null ? $types : ( $types[$type] ?? null ); } }
+class Layout_Widgets { public function get_widget_types( $type = null ) { $types = $GLOBALS['missing_widget'] ? [] : array_fill_keys( [ 'heading', 'text-editor' ], (object) [] ); return $type === null ? $types : ( $types[$type] ?? null ); } }
 class Layout_DB { public $posts = 'wp_posts'; public $last_error = ''; public function prepare( $q, ...$args ) { return [ $q, $args ]; } public function get_var( $q ) { return '1'; } public function get_col( $q ) { $ids = []; foreach ( $GLOBALS['posts'] as $post ) { if ( $post->post_content_filtered === $q[1][0] && $post->post_type === $q[1][1] ) { $ids[] = $post->ID; } } return $ids; } }
 $wpdb = new Layout_DB();
+require_once dirname( __DIR__, 2 ) . '/elementor/includes/class-element-registry.php';
 require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-posting-protocol.php';
 require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-writing-adapter.php';
 require_once dirname( __DIR__, 2 ) . '/api-mapping-context/includes/class-nova-bridge-suite-mapping-drafts.php';
@@ -99,6 +102,7 @@ function fixture( $civ = '501', $version = 3, $status = 'publish' ) {
 }
 function planned( $n = 1, $civ = '501', $version = 3, $status = 'publish' ) { list( $content, $configuration ) = fixture( $civ, $version, $status ); return ok( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $content, $configuration, [ 'operation_id' => op( $n ) ] ) ); }
 $checks = 0;
+check( ! method_exists( \Elementor\Plugin::instance()->elements_manager, 'get_element' ), 'Fixture exercises the Elementor 3.30.3 public registries without the newer shortcut.' );
 foreach ( [ [ 'publish', 'preserve', 'publish' ], [ 'draft', 'preserve', 'draft' ], [ 'draft', 'publish', 'publish' ], [ 'publish', 'draft', 'draft' ] ] as [ $initial, $publication, $desired ] ) {
     reset_native(); existing_page( 20, 'services' ); existing_page( 10, 'article', $initial, 20 );
     list( $content, $configuration ) = fixture( '501', 3, $publication ); $content['url'] = '/services/article/';
@@ -177,7 +181,7 @@ $meta[10]['_elementor_page_settings']['background_color'] = '#human'; list( $nex
 reset_native(); $plan = planned( 1, '501', 1, 'draft' ); $saved = ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $plan, op( 1 ) ) ); check( $saved['cms_post_status'] === 'draft' && $publication_changes === 0 && $saves === 1, 'V1 direct content creates the same stored layout without requiring an LLM or publication.' );
 reset_native(); list( $content, $config ) = fixture(); $policy = ok( Nova_Bridge_Suite_Stored_Layout_Writer::policy( $content, $config ) ); check( $policy['reference']['reference_id'] === 0 && $policy['routing']['operation'] === 'create', 'New URL policy contains no source native page dependency.' );
 check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::probe_mapping( $config['template'], $config['template']['mapping'], $config['local'] ) ), 'Activation requires the configured publishing actor.' );
-ok( Nova_Bridge_Suite_Stored_Layout_Writer::probe_mapping( $config['template'], $config['template']['mapping'], $config['local'], [ 'actor_user_id' => 2 ] ) ); check( get_current_user_id() === 1 && $source_reads === 0, 'Activation checks the configured actor using only the stored layout, then restores the administrator.' );
+ok( Nova_Bridge_Suite_Stored_Layout_Writer::probe_mapping( $config['template'], $config['template']['mapping'], $config['local'], [ 'actor_user_id' => 2 ] ) ); check( get_current_user_id() === 1 && $source_reads === 0, 'Mapping approval works on the older registries, checks the configured actor using only the stored layout, then restores the administrator.' );
 check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::probe_mapping( $config['template'], $config['template']['mapping'], $config['local'], [ 'actor_user_id' => 3 ] ) ) && get_current_user_id() === 1, 'An unprivileged publishing actor cannot borrow the approving administrator permissions.' );
 foreach ( [ 'url', 'language', 'permission', 'widget' ] as $case ) { reset_native(); list( $content, $config ) = fixture(); if ( $case === 'url' ) { $content['url'] = 'https://other.test/article/'; } if ( $case === 'language' ) { $content['language'] = 'nl-NL'; } if ( $case === 'permission' ) { $permission = false; } if ( $case === 'widget' ) { $missing_widget = true; } check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $content, $config, [ 'operation_id' => op( 1 ) ] ) ) && $inserts === 0, 'Invalid site/language/permission/provider fails before insertion.' ); }
 reset_native(); $plan = planned(); ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $plan, op( 1 ) ) ); list( $content, $config ) = fixture( '502' ); $content['url_id'] = '43'; check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $content, $config, [ 'operation_id' => op( 2 ) ] ) ) && $inserts === 1, 'An unrelated URL identity cannot take over an occupied native URL.' ); unset( $posts[10] ); check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::recover( $plan, op( 1 ) ) ) && $inserts === 1, 'Deletion does not silently recreate the generated page.' );

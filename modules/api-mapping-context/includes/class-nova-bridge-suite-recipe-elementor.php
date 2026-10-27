@@ -263,8 +263,8 @@ final class Nova_Bridge_Suite_Recipe_Elementor {
     public function write_draft( array $writer_payload, array $post_fields = [] ) {
         return $this->safe( function () use ( $writer_payload, $post_fields ) {
             $type = $post_fields['post_type'] ?? 'page'; $caps = $this->capabilities( $type ); if ( ! $caps['create'] ) { return $this->error( 'Enable the native Elementor bridge and target creation capability before draft review.' ); }
-            $plugin = \Elementor\Plugin::instance(); if ( ! isset( $plugin->elements_manager ) || ! method_exists( $plugin->elements_manager, 'get_element' ) ) { return $this->error( 'The installed native element registry is unavailable.' ); }
-            $this->walk( $writer_payload['elementor_data'] ?? [], function ( $node ) use ( $plugin ) { if ( ! $plugin->elements_manager->get_element( $node['elType'], $node['widgetType'] ?? null ) ) { Nova_Bridge_Suite_Recipe_Engine::fail( 'A required native Elementor element is unavailable; no draft was inserted.' ); } } );
+            $plugin = \Elementor\Plugin::instance(); if ( ! \SEOR_Elementor_Bridge\Element_Registry::available( $plugin ) ) { return $this->error( 'The installed native element registry is unavailable.' ); }
+            $this->walk( $writer_payload['elementor_data'] ?? [], function ( $node ) use ( $plugin ) { if ( ! \SEOR_Elementor_Bridge\Element_Registry::contains( $plugin, $node['elType'], $node['widgetType'] ?? null ) ) { Nova_Bridge_Suite_Recipe_Engine::fail( 'A required native Elementor element is unavailable; no draft was inserted.' ); } } );
             $service = new \SEOR_Elementor_Bridge\Elementor_Service(); $id = $service->create_page( array_merge( $post_fields, $writer_payload, [ 'post_type' => $type, 'status' => 'draft' ] ) ); if ( is_wp_error( $id ) ) { return $id; }
             $verified = $this->verify_saved( (int) $id, $writer_payload ); if ( is_wp_error( $verified ) ) { return $verified; }
             return [ 'id' => (int) $id, 'post_id' => (int) $id, 'status' => 'draft', 'url' => get_permalink( $id ), 'edit_url' => get_edit_post_link( $id, 'raw' ), 'native_digest' => $verified['native_digest'] ];

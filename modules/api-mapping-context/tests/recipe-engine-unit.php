@@ -1,7 +1,7 @@
 <?php
 /** Anonymous native fixtures: pure compilation must never touch WordPress storage. */
 namespace Elementor {
-    class Plugin { public $elements_manager; public static $instance; public static function instance() { return self::$instance; } }
+    class Plugin { public $elements_manager; public $widgets_manager; public static $instance; public static function instance() { return self::$instance; } }
 }
 namespace SEOR_Elementor_Bridge {
     class Elementor_Service {
@@ -15,7 +15,7 @@ namespace SEOR_Elementor_Bridge {
     }
 }
 namespace {
-define( 'ABSPATH', __DIR__ ); define( 'ELEMENTOR_VERSION', '3.35.0' );
+define( 'ABSPATH', __DIR__ ); define( 'ELEMENTOR_VERSION', '3.30.3' );
 $checks = 0; $writes = 0; $permissions = true; $metadata = []; $posts = []; $templates = []; $tamper_save = false; $registry_denied = [];
 class WP_Error { private $code; private $message; private $data; public function __construct( $code, $message, $data = [] ) { $this->code = $code; $this->message = $message; $this->data = $data; } public function get_error_message() { return $this->message; } public function get_error_code() { return $this->code; } public function get_error_data() { return $this->data; } }
 function is_wp_error( $value ) { return $value instanceof WP_Error; }
@@ -46,12 +46,15 @@ function binding( $target, $source, $format = 'html', $required = true, $instruc
 function region( $id, $target, $start, $count, $source, $native, $bindings, $nested = [] ) { return [ 'id' => $id, 'target' => $target, 'start' => $start, 'count' => $count, 'source' => $source, 'kind' => 'repeat', 'empty' => 'remove', 'max_items' => 500, 'prototype' => [ 'native' => $native, 'bindings' => $bindings, 'regions' => $nested ] ]; }
 function recipe( $blueprint, $bindings = [], $regions = [], $mode = 'mixed' ) { return [ 'format' => 'nova-layout-recipe/v1', 'mode' => $mode, 'builder' => 'elementor', 'blueprint' => $blueprint, 'bindings' => $bindings, 'regions' => $regions ]; }
 function flatten( $nodes ) { $result = []; foreach ( $nodes as $node ) { $result[] = $node; $result = array_merge( $result, flatten( $node['elements'] ?? [] ) ); } return $result; }
+require_once dirname( __DIR__, 2 ) . '/elementor/includes/class-element-registry.php';
 require_once __DIR__ . '/../includes/class-nova-bridge-suite-recipe-engine.php';
 require_once __DIR__ . '/../includes/class-nova-bridge-suite-recipe-elementor.php';
 use Nova_Bridge_Suite_Recipe_Engine as Engine;
 $adapter = new Nova_Bridge_Suite_Recipe_Elementor();
 \Elementor\Plugin::$instance = new \Elementor\Plugin();
-\Elementor\Plugin::$instance->elements_manager = new class { public function get_element( $type, $widget = null ) { return ! in_array( $widget ?? $type, $GLOBALS['registry_denied'], true ); } };
+\Elementor\Plugin::$instance->elements_manager = new class { public function get_element_types( $type = null ) { $types = array_fill_keys( array_diff( [ 'section', 'column', 'container' ], $GLOBALS['registry_denied'] ), (object) [] ); return $type === null ? $types : ( $types[$type] ?? null ); } };
+\Elementor\Plugin::$instance->widgets_manager = new class { public function get_widget_types( $type = null ) { $types = array_fill_keys( array_diff( [ 'heading', 'text-editor', 'image', 'table-of-contents', 'button', 'nested-tabs', 'third-party-logo-grid', 'google_maps' ], $GLOBALS['registry_denied'] ), (object) [] ); return $type === null ? $types : ( $types[$type] ?? null ); } };
+check( ! method_exists( \Elementor\Plugin::$instance->elements_manager, 'get_element' ), 'Recipe fixture uses Elementor 3.30.3 registries without get_element' );
 
 // Seven original desktop cards are replacements; one card supplies the pattern.
 $desktop_cards = []; $mobile_panels = []; $mobile_tabs = [];
@@ -197,7 +200,7 @@ $dynamic_fields = array_values( array_filter( $captured['fields'], static functi
 $reader_override = array_slice( $native['document'], 0, 1 ); bad( $adapter->capture( 9 ), 'Truncated provider reader cannot claim complete capture' ); unset( $reader_override );
 $permissions = false; bad( $adapter->capture( 9 ), 'Capture requires target edit permission' ); bad( $adapter->write_draft( $result['writer_payload'] ), 'Native draft creation requires create permission' ); $permissions = true;
 $registry_denied = [ 'third-party-logo-grid' ]; bad( $adapter->write_draft( $result['writer_payload'] ), 'Unavailable native widget fails before insertion' ); check( $writes === 0, 'Failed registry gate performs no draft write' ); $registry_denied = [];
-$saved = good( $adapter->write_draft( $result['writer_payload'], [ 'title' => 'Reviewed draft', 'status' => 'publish' ] ), 'Native draft bridge persists complete output' ); check( $inserted_payload['status'] === 'draft' && $saved['status'] === 'draft', 'Draft review cannot publish even if caller asks' );
+$saved = good( $adapter->write_draft( $result['writer_payload'], [ 'title' => 'Reviewed draft', 'status' => 'publish' ] ), 'Native draft bridge accepts registered third-party widgets through the older public registries' ); check( $inserted_payload['status'] === 'draft' && $saved['status'] === 'draft', 'Draft review cannot publish even if caller asks' );
 good( $adapter->verify_saved( $saved['post_id'], $result['writer_payload'] ), 'Saved full native output verifies' ); $metadata[$saved['post_id']]['_elementor_page_settings']['hide_title'] = 'no'; bad( $adapter->verify_saved( $saved['post_id'], $result['writer_payload'] ), 'Changed native page settings block recovery success' );
 $tamper_save = true; bad( $adapter->write_draft( $result['writer_payload'] ), 'Native bridge content drift is reported for reconciliation' );
 $media_blueprint = [ 'document' => [ widget( 'picture-id', 'image', [ 'image' => [ 'id' => 123, 'url' => 'https://example.test/original.jpg', 'alt' => 'Ignored attachment alt', 'opaque' => 'keep' ], 'link' => [ 'url' => '/original', 'is_external' => true ], 'link_to' => 'none', 'caption' => 'Original caption', 'caption_source' => 'none', 'width' => [ 'unit' => '%', 'size' => 80 ] ] ) ] ];

@@ -521,8 +521,7 @@ class Elementor_Service {
 					|| ! method_exists( $elementor_document, 'save' )
 					|| ! method_exists( $elementor_document, 'set_is_built_with_elementor' )
 					|| ! method_exists( $elementor_document, 'is_editable_by_current_user' )
-					|| ! isset( $plugin->elements_manager )
-					|| ! method_exists( $plugin->elements_manager, 'get_element' )
+					|| ! Element_Registry::available( $plugin )
 				) {
 					$failure_reason = 'elementor_api_unavailable';
 				} elseif ( ! $elementor_document->is_editable_by_current_user() ) {
@@ -535,7 +534,7 @@ class Elementor_Service {
 							? $save_data['elements']
 							: array();
 
-						if ( $saving_document === $elementor_document && ! $this->elementor_elements_are_registered( $elements, $plugin->elements_manager ) ) {
+						if ( $saving_document === $elementor_document && ! $this->elementor_elements_are_registered( $elements, $plugin ) ) {
 							$failure_reason = 'elementor_element_unavailable';
 							$failure_detail = 'Elementor could not instantiate every requested element.';
 							unset( $save_data['elements'] );
@@ -643,11 +642,11 @@ class Elementor_Service {
 	/**
 	 * Confirm Elementor can instantiate every element after save filters run.
 	 *
-	 * @param array  $elements         Elementor elements.
-	 * @param object $elements_manager Elementor elements manager.
+	 * @param array  $elements Elementor elements.
+	 * @param object $plugin   Elementor plugin instance.
 	 * @return bool
 	 */
-	private function elementor_elements_are_registered( array $elements, $elements_manager ) {
+	private function elementor_elements_are_registered( array $elements, $plugin ) {
 		foreach ( $elements as $element ) {
 			if ( ! is_array( $element ) ) {
 				return false;
@@ -656,14 +655,14 @@ class Elementor_Service {
 			$element_type = isset( $element['elType'] ) ? (string) $element['elType'] : '';
 			$widget_type  = isset( $element['widgetType'] ) ? (string) $element['widgetType'] : null;
 
-			if ( '' === $element_type || ! $elements_manager->get_element( $element_type, $widget_type ) ) {
+			if ( ! Element_Registry::contains( $plugin, $element_type, $widget_type ) ) {
 				return false;
 			}
 
 			if (
 				! empty( $element['elements'] )
 				&& is_array( $element['elements'] )
-				&& ! $this->elementor_elements_are_registered( $element['elements'], $elements_manager )
+				&& ! $this->elementor_elements_are_registered( $element['elements'], $plugin )
 			) {
 				return false;
 			}

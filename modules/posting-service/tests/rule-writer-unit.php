@@ -2,8 +2,8 @@
 /** Native lifecycle, response-loss and owned-URL tests. WordPress/Elementor/database are mocked. */
 namespace Elementor {
     class Plugin {
-        public $documents; public $elements_manager;
-        public static function instance() { static $instance; if ( ! $instance ) { $instance = new self(); $instance->documents = new \Rule_Documents(); $instance->elements_manager = new \Rule_Elements(); } return $instance; }
+        public $documents; public $elements_manager; public $widgets_manager;
+        public static function instance() { static $instance; if ( ! $instance ) { $instance = new self(); $instance->documents = new \Rule_Documents(); $instance->elements_manager = new \Rule_Elements(); $instance->widgets_manager = new \Rule_Widgets(); } return $instance; }
     }
 }
 namespace SEOR_Elementor_Bridge {
@@ -24,7 +24,7 @@ namespace SEOR_Elementor_Bridge {
     }
 }
 namespace {
-define( 'ABSPATH', __DIR__ . '/' ); define( 'OBJECT', 'OBJECT' ); define( 'ELEMENTOR_VERSION', '3.35.1' ); define( 'NOVA_BRIDGE_SUITE_VERSION', '3.0.0' );
+define( 'ABSPATH', __DIR__ . '/' ); define( 'OBJECT', 'OBJECT' ); define( 'ELEMENTOR_VERSION', '3.30.3' ); define( 'NOVA_BRIDGE_SUITE_VERSION', '3.0.0' );
 $wp_version = '6.8';
 class WP_Error {
     private $code; private $message; private $data;
@@ -72,7 +72,8 @@ function wp_insert_post( $data, $error = false ) {
 }
 class Rule_Document { public function save( $data ) {} public function set_is_built_with_elementor( $flag ) {} public function is_editable_by_current_user() { return true; } }
 class Rule_Documents { public function get( $id, $cache = false ) { return new Rule_Document(); } }
-class Rule_Elements { public function get_element( $type, $widget = null ) { return $GLOBALS['missing_element'] ? null : (object) []; } }
+class Rule_Elements { public function get_element_types( $type = null ) { $types = $GLOBALS['missing_element'] ? [] : array_fill_keys( [ 'section', 'column', 'container' ], (object) [] ); return $type === null ? $types : ( $types[$type] ?? null ); } }
+class Rule_Widgets { public function get_widget_types( $type = null ) { $types = array_fill_keys( [ 'heading', 'text-editor' ], (object) [] ); return $type === null ? $types : ( $types[$type] ?? null ); } }
 class Rule_DB {
     public $posts = 'wp_posts'; public $last_error = '';
     public function prepare( $sql, ...$args ) { return [ $sql, $args ]; }
@@ -80,6 +81,7 @@ class Rule_DB {
     public function get_col( $query ) { list( $sql, $args ) = $query; $ids = []; foreach ( $GLOBALS['posts'] as $post ) { if ( $post->post_content_filtered === $args[0] && $post->post_type === $args[1] ) { $ids[] = $post->ID; } } return $ids; }
 }
 $wpdb = new Rule_DB();
+require_once dirname( __DIR__, 2 ) . '/elementor/includes/class-element-registry.php';
 require_once dirname( __DIR__, 2 ) . '/api-mapping-context/includes/class-nova-bridge-suite-content-rules.php';
 require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-rule-writer.php';
 foreach ( [ 'posting-protocol', 'receipt-json', 'writing-adapter', 'mapping-sync', 'posting-worker' ] as $file ) { require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-' . $file . '.php'; }
@@ -95,6 +97,7 @@ function snapshot( $version = '501' ) { return [ 'site_id' => 'fb67968c-8fc7-418
 function config( $profile ) { return [ 'mode' => 'local_rules', 'site_id' => snapshot()['site_id'], 'profile' => $profile, 'profile_digest' => Nova_Bridge_Suite_Content_Rules::digest( $profile ) ]; }
 
 reset_native(); $p = profile(); $i = input(); $created = result( Nova_Bridge_Suite_Rule_Writer::create_draft( $p, $i, op( 1 ) ) );
+check( ! method_exists( \Elementor\Plugin::instance()->elements_manager, 'get_element' ), 'Native rule creation succeeds with Elementor 3.30.3 registries and no get_element shortcut.' );
 check( $inserts === 1 && $native_saves === 1 && $created['status'] === 'draft', 'Source-free creation uses one native draft and one save.' );
 check( get_post( $created['post_id'] )->post_title === $i['title'] && count( json_decode( get_post_meta( $created['post_id'], '_elementor_data' ), true )[0]['elements'] ) === 4, 'Unicode title and variable widget count survive native read-back.' );
 $again = result( Nova_Bridge_Suite_Rule_Writer::create_draft( $p, $i, op( 1 ) ) );
