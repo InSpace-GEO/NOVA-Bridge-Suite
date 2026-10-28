@@ -168,7 +168,7 @@ final class Nova_Bridge_Suite_Stored_Layout_Writer {
         if ( ! is_array( $elements ) ) { self::fail( 'native_data', 'The retained native Elementor document is unreadable.' ); }
         $state = [ 'post_id' => $id, 'type' => $post->post_type, 'status' => $post->post_status, 'title' => $post->post_title, 'excerpt' => $post->post_excerpt, 'slug' => $post->post_name, 'parent' => (int) $post->post_parent, 'author' => (int) $post->post_author, 'content' => $post->post_content, 'reservation' => $post->post_content_filtered, 'elements' => $elements, 'page_settings' => get_post_meta( $id, '_elementor_page_settings', true ), 'template' => get_page_template_slug( $id ), 'native_language' => function_exists( 'pll_get_post_language' ) ? pll_get_post_language( $id, 'slug' ) : null, 'owner' => get_post_meta( $id, self::OWNER, true ) ];
         if ( null !== $theme ) { $state['theme_presentation'] = self::checked( Nova_Bridge_Suite_Theme_Presentation::native_state( $id, $theme ) ); }
-        if ( null !== $document_settings ) { $state['document_presentation'] = self::checked( \SEOR_Elementor_Bridge\Document_Presentation::read_selected( $id, $document_settings ) ); }
+        if ( null !== $document_settings ) { $state['document_presentation'] = self::checked( \SEOR_Elementor_Bridge\Document_Presentation::read_state( $id, $document_settings ) ); }
         return $state;
     }
     private static function check_content( array $plan, int $id ): array {

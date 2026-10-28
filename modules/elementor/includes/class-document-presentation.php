@@ -133,7 +133,7 @@ final class Document_Presentation {
         }
         return $settings;
     }
-    private static function read_retained( $id, array $expected ) {
+    private static function read_retained( $id, array $expected, bool $allow_missing = false ) {
         $stored = get_post_meta( $id, '_elementor_page_settings', true );
         if ( '' === $stored ) { $stored = []; }
         if ( ! is_array( $stored ) ) { return self::error( 'Stored Elementor page settings are unreadable.' ); }
@@ -145,7 +145,10 @@ final class Document_Presentation {
                 if ( ! is_array( $globals ) ) { return self::error( 'Stored Elementor global style references are unreadable.' ); }
                 $selected[$key] = array_intersect_key( $globals, $value );
             } else {
-                if ( ! array_key_exists( $key, $stored ) ) { return self::error( 'The retained Elementor page setting is unavailable at ' . $key . '.' ); }
+                if ( ! array_key_exists( $key, $stored ) ) {
+                    if ( $allow_missing && ! isset( $stored['__dynamic__'][$key] ) && ! isset( $stored['__globals__'][$key] ) ) { continue; }
+                    return self::error( 'The retained Elementor page setting is unavailable at ' . $key . '.' );
+                }
                 $selected[$key] = $stored[$key];
                 if ( isset( $stored['__dynamic__'][$key] ) ) { return self::error( 'The retained Elementor page setting became dynamic at ' . $key . '.' ); }
                 // A newly attached global reference would override this frozen literal.
@@ -171,14 +174,18 @@ final class Document_Presentation {
         $actual = self::read_retained( $id, $retained ); if ( is_wp_error( $actual ) ) { return $actual; }
         return $actual === $retained ? true : self::error( 'Elementor did not persist the retained page settings exactly.' );
     }
-    public static function read_selected( $id, $expected ) {
+    /** Capture the current baseline before applying a template, including absent retained settings. */
+    public static function read_state( $id, $expected ) { return self::read( $id, $expected, true ); }
+    /** Strict readback used after saving: every retained setting must now exist. */
+    public static function read_selected( $id, $expected ) { return self::read( $id, $expected, false ); }
+    private static function read( $id, $expected, bool $allow_missing ) {
         $supported = self::assert_supported( $id, $expected ); if ( is_wp_error( $supported ) ) { return $supported; }
-        return self::with_post( $id, static function () use ( $id, $expected ) {
+        return self::with_post( $id, static function () use ( $id, $expected, $allow_missing ) {
             $parts = self::document( $id ); if ( is_wp_error( $parts ) ) { return $parts; }
             $actual = $parts[0]->get_settings(); if ( ! is_array( $actual ) ) { return self::error( 'Elementor did not return valid document settings.' ); }
             $selected = [];
             foreach ( $expected as $key => $value ) {
-                if ( self::RETAINED === $key ) { $selected[$key] = self::read_retained( $id, $value ); if ( is_wp_error( $selected[$key] ) ) { return $selected[$key]; } }
+                if ( self::RETAINED === $key ) { $selected[$key] = self::read_retained( $id, $value, $allow_missing ); if ( is_wp_error( $selected[$key] ) ) { return $selected[$key]; } }
                 elseif ( '__globals__' === $key ) {
                     if ( ! is_array( $actual[$key] ?? [] ) ) { return self::error( 'Elementor global style references are unreadable.' ); }
                     $selected[$key] = array_intersect_key( $actual[$key] ?? [], $value );

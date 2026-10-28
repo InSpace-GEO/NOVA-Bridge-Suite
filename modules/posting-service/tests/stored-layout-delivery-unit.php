@@ -31,8 +31,8 @@ class Layout_Delivery_Client {
         return [ 'status' => 202, 'raw_body' => json_encode( nova_contract_fixture_event_accept( $bytes ) ) ];
     }
 }
-function delivery_setup( $version = 3, $target_url = null, $publication = 'draft' ) {
-    reset_native(); list( $content, $configuration ) = fixture( '501', $version, $publication );
+function delivery_setup( $version = 3, $target_url = null, $publication = 'draft', $retained_settings = false ) {
+    reset_native(); if ( $retained_settings ) { retained_presentation_source(); } list( $content, $configuration ) = fixture( '501', $version, $publication );
     if ( null !== $target_url ) { $content['url'] = $target_url; }
     if ( $version === 1 ) { $configuration['local']['template'] = [ 'id' => 'nova-delivery-fields-v1', 'revision' => '1' ]; }
     $wire = ok( Nova_Bridge_Suite_Writing_Adapter::template_input( $configuration['local'] ) ); unset( $wire['enabled'] );
@@ -54,6 +54,17 @@ function delivery_setup( $version = 3, $target_url = null, $publication = 'draft
     return [ $base, $store, $client, $worker ];
 }
 $checks = 0;
+list( $f, $store, $client, $worker ) = delivery_setup( 3, null, 'publish', true ); $crash_insert = true;
+$pending = ok( $worker->process( $f['job'] ) );
+check( $pending['state'] === 'ready' && $pending['phase'] === 'applying' && $pending['last_error'] === 'native_commit_reconciliation', 'An interrupted native reservation retains the real worker reconciliation state.' );
+check( $inserts === 1 && $saves === 0 && get_post_status( 10 ) === 'draft' && get_post_meta( 10, '_elementor_data' ) === '' && array_column( $client->events, 'kind' ) === [ 'received_complete' ], 'The empty draft is reserved but neither published nor acknowledged as a successful save.' );
+$frozen_plan = $pending['payload']['plan']; $operation_key = 'nova_layout_operation_' . hash( 'sha256', $pending['operation_id'] );
+// Match the reservation retained by the pre-fix missing-setting failure.
+$options[$operation_key]['state'] = 'reserved'; $options[$operation_key]['post_id'] = 10;
+$pending['state'] = 'running'; $done = ok( $worker->process( $pending ) );
+check( $done['state'] === 'complete' && $done['phase'] === 'committed' && $done['target_id'] === 10 && $inserts === 1 && $saves === 1, 'The same real worker operation fills its reserved draft without creating another page.' );
+check( $done['operation_id'] === $pending['operation_id'] && $done['payload']['plan'] === $frozen_plan && $done['payload']['attempt_id'] === $pending['payload']['attempt_id'], 'Recovery preserves the frozen plan and delivery attempt rather than requesting a fresh mapping.' );
+check( get_post_status( 10 ) === 'publish' && get_post_meta( 10, '_elementor_page_settings' )['vendor_brand_color'] === '#123456' && array_column( $client->events, 'kind' ) === [ 'received_complete', 'publication_succeeded' ], 'Only verified content and retained settings produce the final success receipt.' );
 foreach ( [ 1, 3 ] as $version ) {
     list( $f, $store, $client, $worker ) = delivery_setup( $version ); $saved = ok( $worker->process( $f['job'] ) );
     check( $saved['state'] === 'complete' && $saved['target_id'] === 10 && $saved['payload']['native_writer'] === 'stored_layout_v3' && $inserts === 1 && $saves === 1, 'Default worker dispatch creates and retains exactly one native page.' );

@@ -77,6 +77,14 @@ $meta[99]['_elementor_page_settings'] = $retained + [ '__dynamic__' => [], 'post
 $with_retained = ok( Document_Presentation::capture( 99 ) );
 check( $with_retained[Document_Presentation::RETAINED] === $retained && ! isset( $with_retained['post_title'] ), 'Safe unregistered color, typography and global references retain their exact values without copying identity.' );
 check( $captured === array_diff_key( $with_retained, [ Document_Presentation::RETAINED => true ] ), 'Retained settings remain separate from registered effective controls.' );
+$before_retained = ok( Document_Presentation::read_state( 10, $with_retained ) );
+check( ! array_key_exists( 'astra_sites_main_color', $before_retained[Document_Presentation::RETAINED] ) && is_wp_error( Document_Presentation::read_selected( 10, $with_retained ) ), 'A pre-save baseline records missing retained settings without weakening strict readback.' );
+$meta[10]['_elementor_page_settings']['__dynamic__']['astra_sites_main_color'] = '[elementor-tag]';
+check( is_wp_error( Document_Presentation::read_state( 10, $with_retained ) ), 'A missing literal with a dynamic binding is not treated as an absent setting.' );
+unset( $meta[10]['_elementor_page_settings']['__dynamic__'] );
+$meta[10]['_elementor_page_settings']['__globals__']['astra_sites_main_color'] = 'globals/colors?id=other';
+check( is_wp_error( Document_Presentation::read_state( 10, $with_retained ) ), 'A missing literal with an active global binding is not treated as an absent setting.' );
+unset( $meta[10]['_elementor_page_settings']['__globals__'] );
 $native = Document_Presentation::native_settings( $with_retained );
 check( ! isset( $native[Document_Presentation::RETAINED] ) && $native['astra_sites_main_color'] === '#123456' && $native['__globals__'] === [ 'background_color' => 'globals/colors?id=primary', 'legacy_background' => 'globals/colors?id=secondary' ], 'Native settings flatten both global-reference namespaces and remove the snapshot marker.' );
 unset( $pages[99], $meta[99] );
@@ -84,6 +92,7 @@ $result = $persist->invoke( $service, 10, $elements, [ 'document_settings' => $w
 check( ! is_wp_error( $result ) && $save_input['settings'] === $native, 'Delivery remains source-free and provides retained literals to native provider hooks.' );
 check( $meta[10]['_elementor_page_settings']['astra_sites_main_color'] === '#123456' && $meta[10]['_elementor_page_settings']['legacy_font'] === $retained['legacy_font'] && $meta[10]['vendor_header'] === 'hidden' && ! isset( $meta[10]['_elementor_page_settings']['header_visibility'] ), 'Only retained settings are restored after hooks; provider-owned registered metadata is not overwritten.' );
 check( ! is_wp_error( Document_Presentation::verify( 10, $with_retained ) ), 'Readback verifies the retained literals and references after native hooks remove their raw input.' );
+check( ok( Document_Presentation::read_state( 10, $with_retained ) ) === ok( Document_Presentation::read_selected( 10, $with_retained ) ), 'Complete presentation baselines retain their previous shape for existing frozen journals.' );
 unset( $meta[10]['_elementor_page_settings']['astra_sites_main_color'] );
 check( is_wp_error( Document_Presentation::verify( 10, $with_retained ) ), 'Readback detects a missing retained setting.' );
 ok( Document_Presentation::persist_retained( 10, $with_retained ) );

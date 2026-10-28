@@ -12,6 +12,7 @@ namespace SEOR_Elementor_Bridge {
             ++$GLOBALS['saves']; $post = $GLOBALS['posts'][$id]; $post->post_title = stripslashes( $payload['title'] ); $post->post_excerpt = stripslashes( $payload['excerpt'] ?? '' );
             $data = json_decode( $payload['elementor_data'], true ); if ( $GLOBALS['partial'] ) { array_pop( $data[0]['elements'] ); }
             $GLOBALS['meta'][$id]['_elementor_data'] = json_encode( $data ); $GLOBALS['meta'][$id]['_elementor_page_settings'] = $payload['elementor_page_settings'] ?? []; $GLOBALS['meta'][$id]['_wp_page_template'] = $payload['template'] ?? ''; $GLOBALS['meta'][$id]['_elementor_edit_mode'] = 'builder';
+            if ( isset( $payload['elementor_document_settings']['__retained__'][$GLOBALS['drop_meta_write'] ?? ''] ) ) { unset( $GLOBALS['meta'][$id]['_elementor_page_settings'][$GLOBALS['drop_meta_write']] ); }
             if ( isset( $payload['elementor_document_settings'] ) ) { foreach ( [ 'vendor_width', 'vendor_header' ] as $key ) { if ( array_key_exists( $key, $payload['elementor_document_settings'] ) && $key !== ( $GLOBALS['drop_meta_write'] ?? null ) ) { $GLOBALS['meta'][$id][$key] = $payload['elementor_document_settings'][$key]; } } }
             if ( $GLOBALS['crash_save'] ) { $GLOBALS['crash_save'] = false; throw new \RuntimeException( 'Lost native save response' ); } return [ 'post_id' => $id ];
         }
@@ -221,6 +222,41 @@ $drop_meta_write = null;
 check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::recover( $plan, op( 1 ) ) ) && is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $plan, op( 1 ) ) ) && $inserts === 1 && $publication_changes === 0, 'An uncertain partial native theme save blocks blind replay and duplicate creation.' );
 reset_native(); presentation_source(); $plan = planned(); $crash_save = true; $drop_meta_write = 'vendor_width';
 check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $plan, op( 1 ) ) ) && is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::recover( $plan, op( 1 ) ) ) && $inserts === 1 && $publication_changes === 0, 'A lost Elementor save response before theme metadata is applied cannot be treated as completed.' );
+
+function retained_presentation_source() {
+    $GLOBALS['example_meta']['_elementor_page_settings'] = [ 'background_color' => '#445566', 'vendor_brand_color' => '#123456' ];
+}
+foreach ( [ false, true ] as $existing ) {
+    reset_native(); retained_presentation_source(); if ( $existing ) { existing_page(); }
+    $plan = planned();
+    if ( $existing ) { check( ! array_key_exists( 'vendor_brand_color', $plan['native_before']['document_presentation']['__retained__'] ), 'An existing target can lack a retained setting introduced by the saved template.' ); }
+    $result = ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $plan, op( 1 ) ) );
+    ok( Nova_Bridge_Suite_Stored_Layout_Writer::verify( $plan, $result ) );
+    check( $inserts === ( $existing ? 0 : 1 ) && $saves === 1 && $result['post_id'] === 10 && $result['cms_post_status'] === 'publish' && get_post_meta( 10, '_elementor_page_settings' )['vendor_brand_color'] === '#123456', 'New and existing pages receive generic retained settings before strict post-save verification.' );
+    unset( $meta[10]['_elementor_page_settings']['vendor_brand_color'] );
+    check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::verify( $plan, $result ) ), 'A missing retained setting after commit still invalidates publication verification.' );
+}
+reset_native(); retained_presentation_source(); $plan = planned(); $frozen_plan = $plan; $crash_insert = true;
+check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $plan, op( 1 ) ) ), 'A retained-setting operation keeps its original native reservation after interrupted creation.' );
+$operation_key = 'nova_layout_operation_' . hash( 'sha256', op( 1 ) );
+// The previous writer stopped at this exact checkpoint before the Elementor save.
+$options[$operation_key]['state'] = 'reserved'; $options[$operation_key]['post_id'] = 10;
+$proof = ok( Nova_Bridge_Suite_Stored_Layout_Writer::recover( $plan, op( 1 ) ) );
+check( $proof['post_id'] === 10 && $proof['safe_to_apply'] && ! $proof['no_native_commit'] && $saves === 0, 'A frozen reserved job resumes its known empty draft without claiming it was already saved.' );
+$result = ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $plan, op( 1 ) ) );
+check( $result['post_id'] === 10 && $inserts === 1 && $saves === 1 && $plan === $frozen_plan && $options[$operation_key]['plan'] === $frozen_plan, 'The previously reserved draft completes with the unchanged frozen plan and no duplicate page.' );
+foreach ( [ 'added', 'removed' ] as $change ) {
+    reset_native(); retained_presentation_source(); existing_page();
+    if ( 'removed' === $change ) { $meta[10]['_elementor_page_settings']['vendor_brand_color'] = '#original'; }
+    $plan = planned();
+    if ( 'removed' === $change ) { unset( $meta[10]['_elementor_page_settings']['vendor_brand_color'] ); }
+    else { $meta[10]['_elementor_page_settings']['vendor_brand_color'] = '#human'; }
+    check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $plan, op( 1 ) ) ) && $saves === 0 && $inserts === 0, 'Adding or removing a retained setting after planning still protects human edits.' );
+}
+reset_native(); retained_presentation_source(); $plan = planned(); $drop_meta_write = 'vendor_brand_color';
+check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $plan, op( 1 ) ) ) && $inserts === 1 && $saves === 1 && $publication_changes === 0, 'A native save that omits a retained setting cannot publish or report success.' );
+$drop_meta_write = null;
+check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::recover( $plan, op( 1 ) ) ) && $saves === 1 && $inserts === 1, 'An incomplete retained-setting save still requires reconciliation instead of blind replay.' );
 
 reset_native(); list( $legacy_content, $legacy_config ) = fixture();
 unset( $legacy_config['local']['stored_layout']['blueprint']['document_settings'], $legacy_config['local']['stored_layout']['digest'] );
