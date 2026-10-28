@@ -90,6 +90,10 @@ class Elementor_Service {
 	 * @return int|WP_Error
 	 */
 	public function create_page( array $payload ) {
+		if ( array_key_exists( 'elementor_document_settings', $payload ) ) {
+			$valid = Document_Presentation::validate( $payload['elementor_document_settings'] );
+			if ( is_wp_error( $valid ) ) { return $valid; }
+		}
 		$title = isset( $payload['title'] ) ? sanitize_text_field( $payload['title'] ) : '';
 
 		if ( '' === $title ) {
@@ -167,6 +171,7 @@ class Elementor_Service {
 					array(
 						'raw_json'      => $full_document['raw_json'],
 						'page_settings' => $page_settings,
+						'document_settings' => $payload['elementor_document_settings'] ?? null,
 					)
 				);
 			} else {
@@ -199,6 +204,7 @@ class Elementor_Service {
 					$elementor_data,
 					array(
 						'page_settings' => $page_settings,
+						'document_settings' => $payload['elementor_document_settings'] ?? null,
 					)
 				);
 			}
@@ -255,6 +261,10 @@ class Elementor_Service {
 
 		if ( ! current_user_can( 'edit_post', $post_id ) ) {
 			return new WP_Error( 'seor_eb_forbidden', __( 'You are not allowed to edit this page.', 'nova-bridge-suite' ) );
+		}
+		if ( array_key_exists( 'elementor_document_settings', $payload ) ) {
+			$valid = Document_Presentation::assert_supported( $post_id, $payload['elementor_document_settings'] );
+			if ( is_wp_error( $valid ) ) { return $valid; }
 		}
 
 		$post_fields = $this->prepare_wordpress_fields( $post->post_type, $payload );
@@ -329,6 +339,7 @@ class Elementor_Service {
 				array(
 					'raw_json'      => $full_document['raw_json'],
 					'page_settings' => $page_settings,
+					'document_settings' => $payload['elementor_document_settings'] ?? null,
 				)
 			);
 		} else {
@@ -358,6 +369,7 @@ class Elementor_Service {
 				$mutated,
 				array(
 					'page_settings' => $page_settings,
+					'document_settings' => $payload['elementor_document_settings'] ?? null,
 				)
 			);
 		}
@@ -488,6 +500,13 @@ class Elementor_Service {
 	 * @return true|WP_Error
 	 */
 	private function persist_elementor_document( $post_id, array $document, array $options = array() ) {
+		$document_settings = $options['document_settings'] ?? null;
+		$page_settings = isset( $options['page_settings'] ) && is_array( $options['page_settings'] ) ? $options['page_settings'] : array( 'present' => false );
+		if ( null !== $document_settings ) {
+			$valid = Document_Presentation::assert_supported( $post_id, $document_settings );
+			if ( is_wp_error( $valid ) ) { return $valid; }
+			// Elementor and provider hooks own raw settings persistence in this path.
+		}
 		$canonical_document = null;
 		$captured_save       = false;
 		$failure_reason      = '';
@@ -553,7 +572,10 @@ class Elementor_Service {
 
 					$lifecycle_started = true;
 					$elementor_document->set_is_built_with_elementor( true );
-					$save_result = $elementor_document->save( array( 'elements' => $document ) );
+					$save_data = array( 'elements' => $document );
+					if ( null !== $document_settings ) { $save_data['settings'] = $document_settings; }
+					$save_result = null === $document_settings ? $elementor_document->save( $save_data ) : Document_Presentation::with_post( $post_id, static function () use ( $elementor_document, $save_data ) { return $elementor_document->save( $save_data ); } );
+					if ( is_wp_error( $save_result ) ) { $failure_reason = 'elementor_save_exception'; $failure_detail = $save_result->get_error_message(); }
 				}
 			}
 		} catch ( \Throwable $e ) {
@@ -625,18 +647,16 @@ class Elementor_Service {
 			);
 		}
 
-		$page_settings = isset( $options['page_settings'] ) && is_array( $options['page_settings'] )
-			? $options['page_settings']
-			: array( 'present' => false );
-
-		$page_settings_result = $this->persist_elementor_page_settings( $post_id, $page_settings );
-		if ( is_wp_error( $page_settings_result ) ) {
-			return $page_settings_result;
+		if ( null === $document_settings ) {
+			$page_settings_result = $this->persist_elementor_page_settings( $post_id, $page_settings );
+			if ( is_wp_error( $page_settings_result ) ) { return $page_settings_result; }
 		}
 
 		clean_post_cache( $post_id );
 
-		return $this->verify_persisted_elementor_document( $post_id, $canonical_document, $page_settings );
+		$verified = $this->verify_persisted_elementor_document( $post_id, $canonical_document, null === $document_settings ? $page_settings : array( 'present' => false ) );
+		if ( is_wp_error( $verified ) ) { return $verified; }
+		return null === $document_settings ? $verified : Document_Presentation::verify( $post_id, $document_settings );
 	}
 
 	/**

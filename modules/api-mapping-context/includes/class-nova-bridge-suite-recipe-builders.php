@@ -30,9 +30,10 @@ final class Nova_Bridge_Suite_Recipe_Builders {
         return $result;
     }
 
-    public static function capture( string $builder, int $post_id ) {
+    public static function capture( string $builder, int $post_id, bool $include_document_settings = true ) {
         $adapter = self::adapter( $builder );
-        return is_wp_error( $adapter ) ? $adapter : $adapter->capture( $post_id );
+        if ( is_wp_error( $adapter ) ) { return $adapter; }
+        return 'elementor' === $builder ? $adapter->capture( $post_id, $include_document_settings ) : $adapter->capture( $post_id );
     }
 
     /** Report real native carriers, including disabled providers; never guess from rendered text. */

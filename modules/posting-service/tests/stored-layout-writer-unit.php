@@ -1,7 +1,8 @@
 <?php
 /** Real capture/compiler plus native lifecycle/response-loss tests; WordPress and Elementor are mocked. */
 namespace Elementor {
-    class Plugin { public $documents; public $elements_manager; public $widgets_manager; public static function instance() { static $p; if ( ! $p ) { $p = new self(); $p->documents = new \Layout_Documents(); $p->elements_manager = new \Layout_Elements(); $p->widgets_manager = new \Layout_Widgets(); } return $p; } }
+    class Base_Data_Control {}
+    class Plugin { public $documents; public $controls_manager; public $elements_manager; public $widgets_manager; public static function instance() { static $p; if ( ! $p ) { $p = new self(); $p->documents = new \Layout_Documents(); $p->controls_manager = new \Layout_Controls(); $p->elements_manager = new \Layout_Elements(); $p->widgets_manager = new \Layout_Widgets(); } return $p; } }
 }
 namespace SEOR_Elementor_Bridge {
     class Elementor_Service {
@@ -11,6 +12,7 @@ namespace SEOR_Elementor_Bridge {
             ++$GLOBALS['saves']; $post = $GLOBALS['posts'][$id]; $post->post_title = stripslashes( $payload['title'] ); $post->post_excerpt = stripslashes( $payload['excerpt'] ?? '' );
             $data = json_decode( $payload['elementor_data'], true ); if ( $GLOBALS['partial'] ) { array_pop( $data[0]['elements'] ); }
             $GLOBALS['meta'][$id]['_elementor_data'] = json_encode( $data ); $GLOBALS['meta'][$id]['_elementor_page_settings'] = $payload['elementor_page_settings'] ?? []; $GLOBALS['meta'][$id]['_wp_page_template'] = $payload['template'] ?? ''; $GLOBALS['meta'][$id]['_elementor_edit_mode'] = 'builder';
+            if ( isset( $payload['elementor_document_settings'] ) ) { foreach ( [ 'vendor_width', 'vendor_header' ] as $key ) { if ( array_key_exists( $key, $payload['elementor_document_settings'] ) && $key !== ( $GLOBALS['drop_meta_write'] ?? null ) ) { $GLOBALS['meta'][$id][$key] = $payload['elementor_document_settings'][$key]; } } }
             if ( $GLOBALS['crash_save'] ) { $GLOBALS['crash_save'] = false; throw new \RuntimeException( 'Lost native save response' ); } return [ 'post_id' => $id ];
         }
     }
@@ -30,6 +32,7 @@ function update_option( $key, $value, ...$rest ) { $GLOBALS['options'][$key] = $
 function current_user_can( $cap, $id = 0 ) { return $GLOBALS['permission'] && get_current_user_id() !== 3; }
 function get_current_user_id() { return $GLOBALS['current_user'] ?? 1; }
 function wp_set_current_user( $id ) { $GLOBALS['current_user'] = $id; }
+function get_template() { return $GLOBALS['active_theme'] ?? 'not-astra'; }
 function get_post_type_object( $type ) { return $type === 'page' ? (object) [ 'cap' => (object) [ 'create_posts' => 'edit_pages', 'edit_posts' => 'edit_pages', 'publish_posts' => 'publish_pages' ] ] : null; }
 function sanitize_text_field( $value ) { return trim( strip_tags( $value ) ); }
 function wp_strip_all_tags( $value ) { return strip_tags( $value ); }
@@ -38,9 +41,10 @@ function wp_slash( $value ) { if ( is_array( $value ) ) { return array_map( 'wp_
 function clean_post_cache( $id ) {}
 function get_post( $id ) { if ( $id === 99 ) { ++$GLOBALS['source_reads']; if ( empty( $GLOBALS['capturing'] ) ) { throw new RuntimeException( 'Example page no longer exists' ); } return (object) [ 'ID' => 99, 'post_type' => 'page', 'post_title' => 'Example page', 'post_excerpt' => '' ]; } return $GLOBALS['posts'][$id] ?? null; }
 function get_post_status( $id ) { return get_post( $id )->post_status ?? false; }
-function get_post_meta( $id, $key, $single = true ) { if ( $id === 99 ) { get_post( 99 ); return [ '_elementor_edit_mode' => 'builder', '_elementor_data' => json_encode( $GLOBALS['example_document'] ), '_elementor_page_settings' => [ 'background_color' => '#445566' ], '_wp_page_template' => 'elementor_canvas' ][$key] ?? ''; } return $GLOBALS['meta'][$id][$key] ?? ''; }
-function metadata_exists( $type, $id, $key ) { return get_post_meta( $id, $key, true ) !== ''; }
-function update_post_meta( $id, $key, $value ) { $GLOBALS['meta'][$id][$key] = $value; if ( $key === '_nova_stored_layout_owner' && $GLOBALS['crash_owner'] ) { $GLOBALS['crash_owner'] = false; throw new RuntimeException( 'Lost ownership marker response' ); } return true; }
+function get_post_meta( $id, $key, $single = true ) { if ( $id === 99 ) { get_post( 99 ); return ( $GLOBALS['example_meta'] ?? [] )[$key] ?? [ '_elementor_edit_mode' => 'builder', '_elementor_data' => json_encode( $GLOBALS['example_document'] ), '_elementor_page_settings' => [ 'background_color' => '#445566' ], '_wp_page_template' => 'elementor_canvas' ][$key] ?? ''; } return $GLOBALS['meta'][$id][$key] ?? ''; }
+function metadata_exists( $type, $id, $key ) { if ( $id === 99 ) { get_post( 99 ); return array_key_exists( $key, $GLOBALS['example_meta'] ?? [] ) || in_array( $key, [ '_elementor_edit_mode', '_elementor_data', '_elementor_page_settings', '_wp_page_template' ], true ); } return array_key_exists( $key, $GLOBALS['meta'][$id] ?? [] ); }
+function update_post_meta( $id, $key, $value ) { if ( $key === ( $GLOBALS['drop_meta_write'] ?? null ) ) { return false; } $GLOBALS['meta'][$id][$key] = $value; if ( $key === '_nova_stored_layout_owner' && $GLOBALS['crash_owner'] ) { $GLOBALS['crash_owner'] = false; throw new RuntimeException( 'Lost ownership marker response' ); } return true; }
+function delete_post_meta( $id, $key ) { unset( $GLOBALS['meta'][$id][$key] ); return true; }
 function get_page_template_slug( $id ) { return get_post_meta( $id, '_wp_page_template', true ); }
 function get_permalink( $id ) { $post = get_post( $id ); return ( $post->post_parent ? get_permalink( $post->post_parent ) : 'https://example.test/' ) . $post->post_name . '/'; }
 function get_sample_permalink( $id ) { $post = get_post( $id ); return [ ( $post->post_parent ? get_permalink( $post->post_parent ) : 'https://example.test/' ) . '%pagename%/', $post->post_name ]; }
@@ -49,7 +53,9 @@ function add_filter( $key, $fn, ...$rest ) { $GLOBALS['filters'][$key][] = $fn; 
 function remove_filter( $key, $fn, ...$rest ) { $GLOBALS['filters'][$key] = array_values( array_filter( $GLOBALS['filters'][$key] ?? [], static function ( $v ) use ( $fn ) { return $v !== $fn; } ) ); }
 function wp_insert_post( $data, $error = false ) { foreach ( $GLOBALS['filters']['wp_insert_post_data'] ?? [] as $fn ) { $data = $fn( $data, $data, $data ); } $post = new WP_Post(); $post->ID = 10 + count( $GLOBALS['posts'] ); foreach ( $data as $k => $v ) { $post->$k = is_string( $v ) ? stripslashes( $v ) : $v; } $GLOBALS['posts'][$post->ID] = $post; ++$GLOBALS['inserts']; if ( $GLOBALS['crash_insert'] ) { $GLOBALS['crash_insert'] = false; throw new RuntimeException( 'Lost insert response' ); } return $post->ID; }
 function wp_update_post( $data, $error = false ) { $post = get_post( $data['ID'] ); foreach ( $data as $k => $v ) { if ( $k !== 'ID' ) { $post->$k = is_string( $v ) ? stripslashes( $v ) : $v; } } ++$GLOBALS['publication_changes']; if ( $GLOBALS['crash_publish'] ) { $GLOBALS['crash_publish'] = false; throw new RuntimeException( 'Lost publication response' ); } return $post->ID; }
-class Layout_Documents { public function get( $id, $cache = false ) { return (object) []; } }
+class Layout_Controls { public function get_control( $type ) { return new \Elementor\Base_Data_Control(); } public function delete_stack( $document ) {} }
+class Layout_Document { private $id; public function __construct( $id ) { $this->id = $id; } public function get_controls() { $controls = [ 'background_color' => [ 'type' => 'color' ], 'vendor_width' => [ 'type' => 'choice' ], 'vendor_header' => [ 'type' => 'switcher' ] ]; if ( ! empty( $GLOBALS['missing_presentation_control'] ) ) { unset( $controls['vendor_width'] ); } return $controls; } public function get_settings() { $settings = get_post_meta( $this->id, '_elementor_page_settings', true ); $settings = is_array( $settings ) ? array_merge( [ 'background_color' => '' ], $settings ) : [ 'background_color' => '' ]; $settings['vendor_width'] = get_post_meta( $this->id, 'vendor_width', true ); $settings['vendor_header'] = get_post_meta( $this->id, 'vendor_header', true ); return $settings; } }
+class Layout_Documents { public function get( $id, $cache = false ) { return new Layout_Document( $id ); } }
 // Elementor before 3.34 exposes separate public registries, without get_element().
 class Layout_Elements { public function get_element_types( $type = null ) { $types = array_fill_keys( [ 'section', 'column', 'container' ], (object) [] ); return $type === null ? $types : ( $types[$type] ?? null ); } }
 class Layout_Widgets { public function get_widget_types( $type = null ) { $types = $GLOBALS['missing_widget'] ? [] : array_fill_keys( [ 'heading', 'text-editor' ], (object) [] ); return $type === null ? $types : ( $types[$type] ?? null ); } }
@@ -59,9 +65,10 @@ require_once dirname( __DIR__, 2 ) . '/elementor/includes/class-element-registry
 require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-posting-protocol.php';
 require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-writing-adapter.php';
 require_once dirname( __DIR__, 2 ) . '/api-mapping-context/includes/class-nova-bridge-suite-mapping-drafts.php';
+require_once dirname( __DIR__, 2 ) . '/api-mapping-context/includes/class-nova-bridge-suite-theme-presentation.php';
 require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-stored-layout.php';
 class Nova_Bridge_Suite_Recipe_Builders {
-    public static function verify_saved( $builder, $id, $payload ) { return json_decode( get_post_meta( $id, '_elementor_data', true ), true ) === $payload['elementor_data'] && get_post_meta( $id, '_elementor_page_settings', true ) === $payload['elementor_page_settings'] && get_page_template_slug( $id ) === $payload['template'] ? [ 'post_id' => $id ] : new WP_Error( 'readback', 'Native styling/content changed' ); }
+    public static function verify_saved( $builder, $id, $payload ) { if ( isset( $payload['elementor_document_settings'] ) && is_wp_error( \SEOR_Elementor_Bridge\Document_Presentation::verify( $id, $payload['elementor_document_settings'] ) ) ) { return new WP_Error( 'readback', 'Native presentation changed' ); } return json_decode( get_post_meta( $id, '_elementor_data', true ), true ) === $payload['elementor_data'] && get_post_meta( $id, '_elementor_page_settings', true ) === $payload['elementor_page_settings'] && get_page_template_slug( $id ) === $payload['template'] ? [ 'post_id' => $id ] : new WP_Error( 'readback', 'Native styling/content changed' ); }
 }
 class Nova_Bridge_Suite_Mapped_Content_Target {
     public static function normalize_url( $url ) { if ( ! is_string( $url ) || ! preg_match( '#^https://example\.test/(?:[a-z-]+(?:/[a-z-]+)*/?)?$#D', $url ) ) { return new WP_Error( 'foreign_url', 'Wrong site' ); } return [ 'origin' => 'https://example.test', 'path' => rtrim( parse_url( $url, PHP_URL_PATH ), '/' ) ?: '/', 'identity' => rtrim( $url, '/' ) ]; }
@@ -83,7 +90,7 @@ require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-stored-layo
 function check( $value, $why ) { ++$GLOBALS['checks']; if ( ! $value ) { throw new RuntimeException( $why ); } }
 function ok( $value ) { if ( is_wp_error( $value ) ) { throw new RuntimeException( $value->get_error_code() . ': ' . $value->get_error_message() ); } return $value; }
 function op( $n ) { return '11111111-1111-4111-8111-' . sprintf( '%012d', $n ); }
-function reset_native() { $GLOBALS['options'] = $GLOBALS['posts'] = $GLOBALS['meta'] = $GLOBALS['filters'] = []; $GLOBALS['inserts'] = $GLOBALS['saves'] = $GLOBALS['publication_changes'] = $GLOBALS['source_reads'] = 0; $GLOBALS['current_user'] = 1; $GLOBALS['permission'] = true; $GLOBALS['crash_insert'] = $GLOBALS['crash_save'] = $GLOBALS['crash_publish'] = $GLOBALS['crash_owner'] = $GLOBALS['crash_before_save'] = $GLOBALS['partial'] = $GLOBALS['missing_widget'] = false; }
+function reset_native() { $GLOBALS['options'] = $GLOBALS['posts'] = $GLOBALS['meta'] = $GLOBALS['filters'] = $GLOBALS['example_meta'] = []; $GLOBALS['active_theme'] = 'not-astra'; $GLOBALS['drop_meta_write'] = null; $GLOBALS['inserts'] = $GLOBALS['saves'] = $GLOBALS['publication_changes'] = $GLOBALS['source_reads'] = 0; $GLOBALS['current_user'] = 1; $GLOBALS['permission'] = true; $GLOBALS['crash_insert'] = $GLOBALS['crash_save'] = $GLOBALS['crash_publish'] = $GLOBALS['crash_owner'] = $GLOBALS['crash_before_save'] = $GLOBALS['partial'] = $GLOBALS['missing_widget'] = $GLOBALS['missing_presentation_control'] = false; }
 function existing_page( $id = 10, $slug = 'article', $status = 'publish', $parent = 0, $type = 'page' ) {
     $post = new WP_Post(); $post->ID = $id; $post->post_type = $type; $post->post_name = $slug; $post->post_status = $status; $post->post_parent = $parent; $post->post_author = 7; $post->post_title = 'Previous page'; $post->post_excerpt = 'Previous excerpt';
     $GLOBALS['posts'][$id] = $post; $GLOBALS['meta'][$id] = [ '_elementor_data' => json_encode( [ [ 'id' => 'old', 'elType' => 'container', 'settings' => [], 'elements' => [] ] ] ), '_elementor_page_settings' => [ 'background_color' => '#old' ], '_wp_page_template' => 'default' ];
@@ -185,5 +192,49 @@ ok( Nova_Bridge_Suite_Stored_Layout_Writer::probe_mapping( $config['template'], 
 check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::probe_mapping( $config['template'], $config['template']['mapping'], $config['local'], [ 'actor_user_id' => 3 ] ) ) && get_current_user_id() === 1, 'An unprivileged publishing actor cannot borrow the approving administrator permissions.' );
 foreach ( [ 'url', 'language', 'permission', 'widget' ] as $case ) { reset_native(); list( $content, $config ) = fixture(); if ( $case === 'url' ) { $content['url'] = 'https://other.test/article/'; } if ( $case === 'language' ) { $content['language'] = 'nl-NL'; } if ( $case === 'permission' ) { $permission = false; } if ( $case === 'widget' ) { $missing_widget = true; } check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $content, $config, [ 'operation_id' => op( 1 ) ] ) ) && $inserts === 0, 'Invalid site/language/permission/provider fails before insertion.' ); }
 reset_native(); $plan = planned(); ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $plan, op( 1 ) ) ); list( $content, $config ) = fixture( '502' ); $content['url_id'] = '43'; check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $content, $config, [ 'operation_id' => op( 2 ) ] ) ) && $inserts === 1, 'An unrelated URL identity cannot take over an occupied native URL.' ); unset( $posts[10] ); check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::recover( $plan, op( 1 ) ) ) && $inserts === 1, 'Deletion does not silently recreate the generated page.' );
+
+function presentation_source() {
+    $GLOBALS['example_meta'] = [ 'vendor_width' => 'full-width', 'vendor_header' => 'hidden' ];
+}
+reset_native(); presentation_source();
+list( $content, $config ) = fixture(); $captured_settings = $config['local']['stored_layout']['blueprint']['document_settings'] ?? null;
+check( is_array( $captured_settings ) && $captured_settings['vendor_width'] === 'full-width' && $captured_settings['vendor_header'] === 'hidden', 'Registered page presentation is captured into the frozen source-free mapping.' );
+$plan = ok( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $content, $config, [ 'operation_id' => op( 1 ) ] ) );
+check( ( $plan['payload']['elementor_document_settings'] ?? null ) === $captured_settings, 'The compiled writer payload retains the captured native presentation controls.' );
+$result = ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $plan, op( 1 ) ) );
+check( $source_reads === 0 && $result['post_id'] === 10 && get_post_meta( 10, 'vendor_width' ) === 'full-width' && get_post_meta( 10, 'vendor_header' ) === 'hidden', 'A source-free new page receives the saved width and header presentation through native controls.' );
+ok( Nova_Bridge_Suite_Stored_Layout_Writer::verify( $plan, $result ) );
+list( $next, $config ) = fixture( '502' );
+$update = ok( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $next, $config, [ 'operation_id' => op( 2 ) ] ) );
+ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $update, op( 2 ) ) );
+check( $inserts === 1 && $saves === 2 && $source_reads === 0 && get_post_meta( 10, 'vendor_width' ) === 'full-width' && get_post_meta( 10, 'vendor_header' ) === 'hidden', 'A newer source-free update preserves width and header without duplicating the page.' );
+list( $next, $config ) = fixture( '503' );
+$pending = ok( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $next, $config, [ 'operation_id' => op( 3 ) ] ) );
+$meta[10]['vendor_width'] = 'normal-width';
+check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $pending, op( 3 ) ) ) && $saves === 2, 'A human theme edit after planning blocks replacement before native save.' );
+check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::verify( $update, [ 'post_id' => 10 ] ) ), 'A human theme edit after commit prevents the saved state from being verified.' );
+check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $next, $config, [ 'operation_id' => op( 4 ) ] ) ), 'A human theme edit after commit blocks a later owned update.' );
+
+reset_native(); presentation_source(); $plan = planned(); $drop_meta_write = 'vendor_width';
+check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $plan, op( 1 ) ) ) && $inserts === 1 && $publication_changes === 0, 'An incomplete theme metadata save cannot be reported or published as success.' );
+$drop_meta_write = null;
+check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::recover( $plan, op( 1 ) ) ) && is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $plan, op( 1 ) ) ) && $inserts === 1 && $publication_changes === 0, 'An uncertain partial native theme save blocks blind replay and duplicate creation.' );
+reset_native(); presentation_source(); $plan = planned(); $crash_save = true; $drop_meta_write = 'vendor_width';
+check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $plan, op( 1 ) ) ) && is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::recover( $plan, op( 1 ) ) ) && $inserts === 1 && $publication_changes === 0, 'A lost Elementor save response before theme metadata is applied cannot be treated as completed.' );
+
+reset_native(); list( $legacy_content, $legacy_config ) = fixture();
+unset( $legacy_config['local']['stored_layout']['blueprint']['document_settings'], $legacy_config['local']['stored_layout']['digest'] );
+$legacy_config['local']['stored_layout']['digest'] = Nova_Bridge_Suite_Recipe_Engine::digest( $legacy_config['local']['stored_layout'] );
+$legacy_config['profile_digest'] = hash( 'sha256', Nova_Bridge_Suite_Writing_Adapter::canonical_json( $legacy_config['local'] ) );
+$legacy_plan = ok( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $legacy_content, $legacy_config, [ 'operation_id' => op( 1 ) ] ) );
+$legacy_result = ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $legacy_plan, op( 1 ) ) );
+check( ! isset( $legacy_plan['payload']['theme_presentation'], $legacy_plan['payload']['elementor_document_settings'] ) && ! array_key_exists( 'elementor_document_settings', $legacy_plan['payload'] ), 'A legacy layout carries neither of the new presentation fields.' );
+$active_theme = 'astra';
+ok( Nova_Bridge_Suite_Stored_Layout_Writer::verify( $legacy_plan, $legacy_result ) ); ok( Nova_Bridge_Suite_Stored_Layout_Writer::recover( $legacy_plan, op( 1 ) ) );
+check( $inserts === 1 && $saves === 1, 'Legacy journals remain verifiable and replay-safe after the theme presentation feature is enabled.' );
+list( $new_content, $new_config ) = fixture( '502' );
+$upgraded = ok( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $new_content, $new_config, [ 'operation_id' => op( 2 ) ] ) );
+ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $upgraded, op( 2 ) ) );
+check( $inserts === 1 && $saves === 2, 'An old association accepts a new mapped presentation scope without changing its legacy native digest.' );
 echo "Stored-layout writer checks: $checks passed.\n";
 }

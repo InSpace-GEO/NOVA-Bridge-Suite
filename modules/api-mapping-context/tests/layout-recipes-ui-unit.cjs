@@ -247,5 +247,39 @@ async function categoryMounted(settings={}){const current=categoryDesign(),choic
   await f.ctrl.init();assert.match(f.ctrl.state.feedback,/Service default confirmed/);assert(f.ctrl.selectResource('taxonomy:product_cat'));assert.equal(f.ctrl.state.feedback,'');assert.equal(f.ctrl.state.error,false);assert.equal(f.ctrl.state.postingSync,null);assert.equal(f.ctrl.state.id,'');
   await f.ctrl.init();assert.match(f.ctrl.state.feedback,/Service default confirmed/);assert(f.ctrl.selectMode('dynamic'));assert.equal(f.ctrl.state.feedback,'');assert.equal(f.ctrl.state.postingSync,null);assert.equal(f.ctrl.state.id,'');
  });
+ await test('fixed page setting selection keeps content rules and invalidates review', async()=>{
+  const f=fixture({request:async(path,payload)=>{
+   if(path==='/catalog')return clone(catalog);
+   if(path==='/design')return {...clone(design),presentation_choices:{inventory:{fields:{layout:{label:'Layout',present:true,value:'full-width'}}}},presentation_seal:'candidate-seal',source_reference:{reference_id:42},source_receipt:'source-seal'};
+   if(path==='/presentation'){assert.deepEqual(payload.selected_keys,['layout']);assert.equal(payload.presentation_seal,'candidate-seal');return {...clone(f.ctrl.state.design),blueprint:{...clone(design.blueprint),theme_presentation:{meta:{layout:{present:true,value:'full-width'}}}},seal:'new-seal'};}
+   if(path==='/preview')return {preview_document:{html:'review'},preview_receipt:'receipt'};
+   throw Error(path);
+  }});
+  await ready(f); const bindings=clone(f.ctrl.state.recipe.bindings); await f.ctrl.preview();
+  await f.ctrl.selectPresentation(['layout']);
+  assert.deepEqual(f.ctrl.state.recipe.bindings,bindings);assert.equal(f.ctrl.state.design.seal,'new-seal');
+  assert.equal(f.ctrl.state.recipe.blueprint.theme_presentation.meta.layout.value,'full-width');assert.equal(f.ctrl.state.preview,null);assert.equal(f.ctrl.state.previewSignature,'');
+ });
+ await test('failed page setting selection preserves the saved design and content rules',async()=>{
+  const f=fixture({request:async(path)=>{if(path==='/catalog')return clone(catalog);if(path==='/design')return {...clone(design),presentation_choices:{inventory:{fields:{}}},presentation_seal:'sealed'};if(path==='/presentation')throw Error('Source settings changed');throw Error(path);}});
+  await ready(f);const before=clone(f.ctrl.state.recipe);await f.ctrl.selectPresentation(['layout']);
+  assert.deepEqual(f.ctrl.state.recipe,before);assert.equal(f.ctrl.state.error,true);assert.match(f.ctrl.state.feedback,/Source settings changed/);
+ });
+ await test('mounted page setting checkbox retains the expanded settings panel after signed recapture',async()=>{
+  const t=await visualMounted({request:async(path,payload,current)=>{
+   if(path==='/design')return {...clone(current),presentation_choices:{inventory:{fields:{layout:{label:'Content layout',present:true,value:'full-width'}}}},presentation_seal:'captured-settings'};
+   if(path==='/presentation'){
+    assert.deepEqual(payload.selected_keys,['layout']);assert.equal(payload.presentation_seal,'captured-settings');
+    const result=clone(t.controller.state.design);result.blueprint.theme_presentation={meta:{layout:{present:true,value:'full-width'}}};result.seal='selected-design';result.source_reference.native_digest='b'.repeat(64);result.source_receipt='selected-source';result.visual_preview.digest=result.source_reference.native_digest;return result;
+   }
+  }});
+  t.controller.next();await t.controller.capture(42);choosePurpose(t,'title');const bindings=clone(t.controller.state.recipe.bindings);
+  detailsFor(t.host,'Page layout and template settings').open=true;
+  const checkbox=controlFor(t,'Content layout');checkbox.checked=true;checkbox.events.change();
+  await new Promise(resolve=>setImmediate(resolve));t.flushFrames();
+  assert.equal(t.controller.state.error,false);assert.equal(t.calls.filter(call=>call.path==='/presentation').length,1);
+  assert.equal(controlFor(t,'Content layout').checked,true);assert.equal(detailsFor(t.host,'Page layout and template settings').open,true);
+  assert.deepEqual(t.controller.state.recipe.bindings,bindings);assert.equal(t.controller.state.design.source_receipt,'selected-source');
+ });
  console.log('PASS '+checks+' layout recipe UI workflows.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

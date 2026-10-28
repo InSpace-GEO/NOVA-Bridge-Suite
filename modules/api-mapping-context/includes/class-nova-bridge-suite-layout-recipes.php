@@ -12,7 +12,7 @@ final class Nova_Bridge_Suite_Layout_Recipes {
         add_action( 'rest_api_init', [ __CLASS__, 'routes' ], 1005 );
     }
     public static function routes(): void {
-        foreach ( [ 'catalog' => [ 'GET', 'catalog' ], 'design' => [ 'POST', 'design' ], 'region' => [ 'POST', 'region' ], 'preview' => [ 'POST', 'preview' ], 'save' => [ 'POST', 'save' ], 'sync' => [ 'POST', 'sync' ], 'profile' => [ 'GET', 'profile' ], 'blank' => [ 'GET', 'blank' ], 'translate' => [ 'POST', 'translate' ] ] as $suffix => $operation ) {
+        foreach ( [ 'catalog' => [ 'GET', 'catalog' ], 'design' => [ 'POST', 'design' ], 'presentation' => [ 'POST', 'presentation' ], 'region' => [ 'POST', 'region' ], 'preview' => [ 'POST', 'preview' ], 'save' => [ 'POST', 'save' ], 'sync' => [ 'POST', 'sync' ], 'profile' => [ 'GET', 'profile' ], 'blank' => [ 'GET', 'blank' ], 'translate' => [ 'POST', 'translate' ] ] as $suffix => $operation ) {
             register_rest_route( 'nova-bridge/v1', '/mapping/layout-recipes/' . $suffix, [ 'methods' => $operation[0], 'callback' => self::callback( $operation[1] ), 'permission_callback' => [ __CLASS__, 'can_admin' ] ] );
         }
         register_rest_route( 'nova-bridge/v1', '/mapping/layout-recipes/draft', [ [ 'methods' => 'POST', 'callback' => self::callback( 'draft' ), 'permission_callback' => [ __CLASS__, 'can_admin' ] ], [ 'methods' => 'GET', 'callback' => self::callback( 'recover_draft' ), 'permission_callback' => [ __CLASS__, 'can_admin' ] ] ] );
@@ -213,7 +213,40 @@ final class Nova_Bridge_Suite_Layout_Recipes {
             if ( isset( $design['custom_fields_design'] ) ) { $design['custom_fields_design']['recipe_preset']['bindings'] = []; $design['custom_fields_design']['recipe_preset']['regions'] = []; $design['custom_fields_design']['sample'] = new stdClass(); }
         }
         if ( class_exists( 'Nova_Bridge_Suite_Recipe_Visual' ) ) { $design = Nova_Bridge_Suite_Recipe_Visual::enrich( $design, $resource, $id ); }
+        $design = self::presentation_choices( $design, $resource, $id );
         return self::response( $design );
+    }
+    /** Candidate values are signed, but none are included until explicitly selected. */
+    private static function presentation_choices( array $design, array $resource, int $id ): array {
+        if ( 'elementor' !== $design['builder'] || ! $id || empty( $resource['post_type'] ) || ! class_exists( 'Nova_Bridge_Suite_Theme_Presentation' ) ) { return $design; }
+        $inventory = Nova_Bridge_Suite_Theme_Presentation::candidates( $id );
+        if ( is_wp_error( $inventory ) ) { $design['presentation_notice'] = $inventory->get_error_message(); return $design; }
+        $base = $design['blueprint']; unset( $base['theme_presentation'] );
+        $ticket = [ 'reference_id' => $id, 'resource_id' => $resource['id'], 'base_digest' => Nova_Bridge_Suite_Recipe_Engine::digest( $base ), 'inventory' => $inventory ];
+        $design['presentation_choices'] = $ticket;
+        $design['presentation_seal'] = self::seal( 'presentation', $ticket );
+        return $design;
+    }
+    /** Pure capture selection: no page, mapping, option or delivery is written. */
+    public static function presentation( $request ) {
+        $body = self::body( $request ); if ( is_wp_error( $body ) ) { return $body; }
+        $resource = self::resource( $body['resource_id'] ?? '' ); if ( is_wp_error( $resource ) ) { return $resource; }
+        $design = $body['design'] ?? []; $ticket = $body['presentation_choices'] ?? []; $keys = $body['selected_keys'] ?? null;
+        if ( ( $design['builder'] ?? '' ) !== 'elementor' || ! is_array( $design['blueprint'] ?? null ) || ! is_array( $ticket ) || ! is_array( $keys ) || ! Nova_Bridge_Suite_Recipe_Engine::list_array( $keys ) || ! class_exists( 'Nova_Bridge_Suite_Recipe_Visual' ) ) { return self::error( 'presentation', 'Choose fixed page settings from the captured Elementor example.' ); }
+        $checked = self::certified( 'elementor', $design['blueprint'], $design['seal'] ?? '' ); if ( is_wp_error( $checked ) ) { return $checked; }
+        $checked = self::certified( 'presentation', $ticket, $body['presentation_seal'] ?? '' ); if ( is_wp_error( $checked ) ) { return $checked; }
+        $mode = $body['mode'] ?? 'static'; if ( ! in_array( $mode, [ 'static', 'mixed', 'rules' ], true ) ) { return self::error( 'presentation', 'Choose a supported template approach.' ); }
+        $source = Nova_Bridge_Suite_Recipe_Visual::validate_source( $body, [ 'builder' => 'elementor', 'mode' => $mode, 'blueprint' => $design['blueprint'] ], $resource );
+        if ( is_wp_error( $source ) ) { return $source; }
+        $base = $design['blueprint']; unset( $base['theme_presentation'] );
+        if ( ! $source || ( $ticket['reference_id'] ?? null ) !== $source['reference_id'] || ( $ticket['resource_id'] ?? '' ) !== $resource['id'] || ( $ticket['base_digest'] ?? '' ) !== Nova_Bridge_Suite_Recipe_Engine::digest( $base ) || ! is_array( $ticket['inventory'] ?? null ) ) { return self::error( 'presentation', 'These page settings belong to another captured design.', 409 ); }
+        $snapshot = Nova_Bridge_Suite_Theme_Presentation::select( $ticket['inventory'], $keys ); if ( is_wp_error( $snapshot ) ) { return $snapshot; }
+        if ( null !== $snapshot ) { $base['theme_presentation'] = $snapshot; }
+        $result = self::describe( 'elementor', $base ); if ( is_wp_error( $result ) ) { return $result; }
+        $result = self::decorate_design( 'elementor', $mode, $result );
+        $result = Nova_Bridge_Suite_Recipe_Visual::enrich( $result, $resource, $source['reference_id'] );
+        if ( ( $result['visual_preview']['status'] ?? '' ) === 'stale' ) { return self::error( 'presentation', 'The example settings changed. Capture the design again before selecting them.', 409 ); }
+        return self::response( self::presentation_choices( $result, $resource, $source['reference_id'] ) );
     }
     public static function region( $request ) {
         $body = self::body( $request ); if ( is_wp_error( $body ) ) { return $body; } $design = $body['design'] ?? []; $builder = $design['builder'] ?? '';
@@ -361,6 +394,7 @@ final class Nova_Bridge_Suite_Layout_Recipes {
         $design = self::describe( $record['builder'], $record['recipe']['blueprint'] ); if ( is_wp_error( $design ) ) { return $design; }
         $design = self::decorate_design( $record['builder'], $record['mode'], [ 'blueprint' => $record['recipe']['blueprint'] ] + $design ); $design['sample'] = $record['sample']; $design['recipe_preset'] = $record['recipe'];
         if ( class_exists( 'Nova_Bridge_Suite_Recipe_Visual' ) ) { $resource = self::resource( $record['resource_id'] ); if ( ! is_wp_error( $resource ) ) { $design = Nova_Bridge_Suite_Recipe_Visual::enrich( $design, $resource, 0, $record['source_reference'] ?? null, $record['source_receipt'] ?? '' ); } } $record['design'] = $design;
+        if ( ! empty( $record['source_reference']['reference_id'] ) && isset( $resource ) && ! is_wp_error( $resource ) && ( $record['design']['visual_preview']['status'] ?? '' ) === 'available' ) { $record['design'] = self::presentation_choices( $record['design'], $resource, $record['source_reference']['reference_id'] ); }
         if ( isset( $record['recipe']['custom_fields'] ) ) { $custom = $record['recipe']['custom_fields']; $record['custom_fields_design'] = self::decorate_design( 'acf', $custom['mode'], [ 'blueprint' => $custom['blueprint'] ] + Nova_Bridge_Suite_Recipe_ACF::describe( $custom['blueprint'] ) ); }
         return $record;
     }

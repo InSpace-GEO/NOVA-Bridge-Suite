@@ -45,10 +45,10 @@ final class Nova_Bridge_Suite_Recipe_Visual {
         $post = get_post( $id );
         return $post && function_exists( 'has_blocks' ) && has_blocks( $post->post_content ) ? 'gutenberg' : 'core';
     }
-    private static function capture( array $resource, int $id, string $builder, string $mode, array $declared_fields = [] ) {
+    private static function capture( array $resource, int $id, string $builder, string $mode, array $declared_fields = [], bool $include_document_settings = true ) {
         if ( 'core' === $builder ) { return Nova_Bridge_Suite_Recipe_Core::design( $resource, $id, $mode, $declared_fields ); }
         if ( 'acf' === $builder ) { return Nova_Bridge_Suite_Recipe_ACF::design( $resource['post_type'] ?? '', $id, 'taxonomy' === $resource['type'] ? '' : (string) get_page_template_slug( $id ), $resource['taxonomy'] ?? '' ); }
-        return Nova_Bridge_Suite_Recipe_Builders::capture( $builder, $id );
+        return Nova_Bridge_Suite_Recipe_Builders::capture( $builder, $id, $include_document_settings );
     }
     private static function source( array $resource, int $id, string $builder, array $blueprint ) {
         $entity = self::entity( $resource, $id ); if ( is_wp_error( $entity ) ) { return $entity; }
@@ -64,7 +64,15 @@ final class Nova_Bridge_Suite_Recipe_Visual {
         }
         $canonical = self::source( $resource, $source['reference_id'], $recipe['builder'], $recipe['blueprint'] ); if ( is_wp_error( $canonical ) ) { return $canonical; }
         if ( $fresh ) {
-            $current = self::capture( $resource, $source['reference_id'], $recipe['builder'], $recipe['mode'], $recipe['blueprint']['term_fields']['local_declarations'] ?? [] );
+            // An older signed recipe did not include document controls in its
+            // receipt. Read the same scope until the user captures it again.
+            $include_settings = 'elementor' !== $recipe['builder'] || array_key_exists( 'document_settings', $recipe['blueprint'] );
+            $current = self::capture( $resource, $source['reference_id'], $recipe['builder'], $recipe['mode'], $recipe['blueprint']['term_fields']['local_declarations'] ?? [], $include_settings );
+            if ( ! is_wp_error( $current ) && isset( $recipe['blueprint']['theme_presentation'] ) ) {
+                $snapshot = Nova_Bridge_Suite_Theme_Presentation::capture( $source['reference_id'], array_keys( $recipe['blueprint']['theme_presentation']['meta'] ?? [] ) );
+                if ( is_wp_error( $snapshot ) ) { return $snapshot; }
+                if ( null !== $snapshot ) { $current['blueprint']['theme_presentation'] = $snapshot; }
+            }
             if ( is_wp_error( $current ) || Nova_Bridge_Suite_Recipe_Engine::digest( $current['blueprint'] ?? [] ) !== $source['native_digest'] ) {
                 return self::error( 'The example page or native field schema changed after capture. Capture it again and review your mappings before saving.' );
             }

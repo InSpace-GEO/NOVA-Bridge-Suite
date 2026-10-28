@@ -1,6 +1,8 @@
 <?php
 /** Native Elementor prototypes and protected complete-frame compilation. */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
+require_once __DIR__ . '/class-nova-bridge-suite-theme-presentation.php';
+require_once dirname( __DIR__, 2 ) . '/elementor/includes/class-document-presentation.php';
 
 final class Nova_Bridge_Suite_Recipe_Elementor {
     public const VERSION = 'nova-elementor-prototype-adapter-v1';
@@ -18,6 +20,8 @@ final class Nova_Bridge_Suite_Recipe_Elementor {
     public function validate_blueprint( array $blueprint ) {
         return $this->safe( function () use ( $blueprint ) {
             if ( ! Nova_Bridge_Suite_Recipe_Engine::list_array( $blueprint['document'] ?? null ) || ( isset( $blueprint['meta'] ) && ! is_array( $blueprint['meta'] ) ) || ( isset( $blueprint['template'] ) && ! is_string( $blueprint['template'] ) ) ) { Nova_Bridge_Suite_Recipe_Engine::fail( 'Elementor needs a complete document list and optional native page settings/template.' ); }
+            if ( array_key_exists( 'theme_presentation', $blueprint ) ) { $check = Nova_Bridge_Suite_Theme_Presentation::validate( $blueprint['theme_presentation'] ); if ( is_wp_error( $check ) ) { return $check; } }
+            if ( array_key_exists( 'document_settings', $blueprint ) ) { $check = \SEOR_Elementor_Bridge\Document_Presentation::validate( $blueprint['document_settings'] ); if ( is_wp_error( $check ) ) { return $check; } }
             Nova_Bridge_Suite_Recipe_Engine::json( $blueprint ); $ids = []; $anchors = []; $count = 0;
             $this->walk( $blueprint['document'], function ( $node ) use ( &$ids, &$anchors, &$count ) {
                 if ( ++$count > 2000 || isset( $ids[ $node['id'] ] ) ) { Nova_Bridge_Suite_Recipe_Engine::fail( 'The complete Elementor tree exceeds 2000 nodes or contains duplicate native identities.' ); } $ids[ $node['id'] ] = true;
@@ -178,8 +182,11 @@ final class Nova_Bridge_Suite_Recipe_Elementor {
             if ( isset( $context['recipe']['blueprint']['document'] ) ) { $old = $this->anchors_and_links( $context['recipe']['blueprint']['document'] ); $current = $this->anchors_and_links( $blueprint['document'] ); foreach ( $current['links'] as $anchor ) { if ( isset( $old['anchors'][ $anchor ] ) && ! isset( $current['anchors'][ $anchor ] ) ) { return $this->error( 'A fixed native link still targets the removed example anchor #' . $anchor . '. Bind that navigation link to canonical content or remove the stale sample link before creating a draft.' ); } } }
             $blueprint['document'] = $this->provider_flags( $this->rebase( $blueprint['document'], $seed . '/document', false, $identity ) );
             if ( isset( $blueprint['meta']['custom_css'] ) && is_string( $blueprint['meta']['custom_css'] ) ) { $blueprint['meta']['custom_css'] = $this->native_selectors( $blueprint['meta']['custom_css'], $identity['nodes'] ); }
+            if ( isset( $blueprint['document_settings']['custom_css'] ) && is_string( $blueprint['document_settings']['custom_css'] ) ) { $blueprint['document_settings']['custom_css'] = $this->native_selectors( $blueprint['document_settings']['custom_css'], $identity['nodes'] ); }
             $check = $this->validate_blueprint( $blueprint ); if ( is_wp_error( $check ) ) { return $check; }
             $payload = [ 'elementor_data' => $blueprint['document'] ]; if ( array_key_exists( 'meta', $blueprint ) ) { $payload['elementor_page_settings'] = $blueprint['meta']; } if ( isset( $blueprint['template'] ) ) { $payload['template'] = $blueprint['template']; }
+            if ( array_key_exists( 'theme_presentation', $blueprint ) ) { $payload['theme_presentation'] = $blueprint['theme_presentation']; }
+            if ( array_key_exists( 'document_settings', $blueprint ) ) { $payload['elementor_document_settings'] = $blueprint['document_settings']; }
             $count = 0; $this->walk( $blueprint['document'], static function () use ( &$count ) { ++$count; } );
             return [ 'native_document' => $blueprint, 'writer_payload' => $payload, 'preview_html' => $this->preview( $blueprint['document'] ), 'warnings' => [ 'Structure preview preserves content grouping; native global styles, responsive widgets and dynamic site bindings are verified in the native draft.' ], 'summary' => [ 'nodes' => $count ], 'adapter_version' => self::VERSION ];
         } );
@@ -210,14 +217,16 @@ final class Nova_Bridge_Suite_Recipe_Elementor {
         $create = $provider && $type && current_user_can( $type->cap->create_posts ?? $type->cap->edit_posts ) && current_user_can( $type->cap->edit_posts );
         return [ 'id' => 'elementor', 'builder' => 'elementor', 'provider' => 'elementor', 'version' => defined( 'ELEMENTOR_VERSION' ) ? (string) ELEMENTOR_VERSION : '', 'available' => $provider, 'source_free' => true, 'modes' => [ 'static', 'mixed', 'rules' ], 'capture' => $provider, 'starter' => $provider, 'draft' => $create, 'create' => $create, 'preview' => true, 'native_prototypes' => true, 'responsive_projection' => true, 'reason' => $provider ? '' : 'Enable Elementor and its NOVA bridge before creating a native test draft.', 'warnings' => [] ];
     }
-    public function capture( int $id ) {
-        return $this->safe( function () use ( $id ) {
+    public function capture( int $id, bool $include_document_settings = true ) {
+        return $this->safe( function () use ( $id, $include_document_settings ) {
             if ( ! current_user_can( 'edit_post', $id ) || ! class_exists( '\SEOR_Elementor_Bridge\Elementor_Service' ) ) { return $this->error( 'An editable native Elementor example and the installed bridge reader are required.' ); }
             $post = get_post( $id ); if ( ! $post || 'builder' !== get_post_meta( $id, '_elementor_edit_mode', true ) ) { return $this->error( 'The example does not have an unambiguous active Elementor document.' ); }
             $service = new \SEOR_Elementor_Bridge\Elementor_Service(); $payload = $service->get_page_payload( $id, [ 'include_document' => true, 'include_fields' => false, 'include_element_map' => false ] ); if ( is_wp_error( $payload ) ) { return $payload; }
             $raw = get_post_meta( $id, '_elementor_data', true ); $stored = is_array( $raw ) ? $raw : json_decode( (string) $raw, true );
             if ( ! is_array( $stored ) || Nova_Bridge_Suite_Recipe_Engine::digest( $stored ) !== Nova_Bridge_Suite_Recipe_Engine::digest( $payload['document'] ?? null ) ) { return $this->error( 'The provider reader did not return the complete stored native tree.' ); }
             $blueprint = [ 'document' => $stored ]; if ( metadata_exists( 'post', $id, '_elementor_page_settings' ) ) { $blueprint['meta'] = get_post_meta( $id, '_elementor_page_settings', true ); } $blueprint['template'] = (string) get_page_template_slug( $id );
+            $theme = Nova_Bridge_Suite_Theme_Presentation::capture( $id ); if ( is_wp_error( $theme ) ) { return $theme; } if ( null !== $theme ) { $blueprint['theme_presentation'] = $theme; }
+            if ( $include_document_settings ) { $settings = \SEOR_Elementor_Bridge\Document_Presentation::capture( $id ); if ( is_wp_error( $settings ) ) { return $settings; } $blueprint['document_settings'] = $settings; }
             return $this->describe( $blueprint );
         } );
     }
@@ -263,9 +272,11 @@ final class Nova_Bridge_Suite_Recipe_Elementor {
     public function write_draft( array $writer_payload, array $post_fields = [] ) {
         return $this->safe( function () use ( $writer_payload, $post_fields ) {
             $type = $post_fields['post_type'] ?? 'page'; $caps = $this->capabilities( $type ); if ( ! $caps['create'] ) { return $this->error( 'Enable the native Elementor bridge and target creation capability before draft review.' ); }
+            if ( array_key_exists( 'theme_presentation', $writer_payload ) ) { $check = Nova_Bridge_Suite_Theme_Presentation::assert_current( $writer_payload['theme_presentation'] ); if ( is_wp_error( $check ) ) { return $check; } }
             $plugin = \Elementor\Plugin::instance(); if ( ! \SEOR_Elementor_Bridge\Element_Registry::available( $plugin ) ) { return $this->error( 'The installed native element registry is unavailable.' ); }
             $this->walk( $writer_payload['elementor_data'] ?? [], function ( $node ) use ( $plugin ) { if ( ! \SEOR_Elementor_Bridge\Element_Registry::contains( $plugin, $node['elType'], $node['widgetType'] ?? null ) ) { Nova_Bridge_Suite_Recipe_Engine::fail( 'A required native Elementor element is unavailable; no draft was inserted.' ); } } );
             $service = new \SEOR_Elementor_Bridge\Elementor_Service(); $id = $service->create_page( array_merge( $post_fields, $writer_payload, [ 'post_type' => $type, 'status' => 'draft' ] ) ); if ( is_wp_error( $id ) ) { return $id; }
+            if ( array_key_exists( 'theme_presentation', $writer_payload ) ) { $applied = Nova_Bridge_Suite_Theme_Presentation::apply( (int) $id, $writer_payload['theme_presentation'] ); if ( is_wp_error( $applied ) ) { return $applied; } }
             $verified = $this->verify_saved( (int) $id, $writer_payload ); if ( is_wp_error( $verified ) ) { return $verified; }
             return [ 'id' => (int) $id, 'post_id' => (int) $id, 'status' => 'draft', 'url' => get_permalink( $id ), 'edit_url' => get_edit_post_link( $id, 'raw' ), 'native_digest' => $verified['native_digest'] ];
         } );
@@ -275,9 +286,13 @@ final class Nova_Bridge_Suite_Recipe_Elementor {
             if ( ! current_user_can( 'edit_post', $id ) ) { return $this->error( 'The saved native draft cannot be inspected with this permission.' ); }
             $raw = get_post_meta( $id, '_elementor_data', true ); $stored = is_array( $raw ) ? $raw : json_decode( (string) $raw, true );
             if ( ! is_array( $stored ) || Nova_Bridge_Suite_Recipe_Engine::digest( $stored ) !== Nova_Bridge_Suite_Recipe_Engine::digest( $writer_payload['elementor_data'] ?? null ) || 'on' === get_post_meta( $id, '_et_pb_use_builder', true ) || 'builder' !== get_post_meta( $id, '_elementor_edit_mode', true ) ) { return $this->error( 'The complete native Elementor draft was not retained; reconcile this existing draft before retrying.' ); }
-            if ( array_key_exists( 'elementor_page_settings', $writer_payload ) && Nova_Bridge_Suite_Recipe_Engine::digest( get_post_meta( $id, '_elementor_page_settings', true ) ) !== Nova_Bridge_Suite_Recipe_Engine::digest( $writer_payload['elementor_page_settings'] ) ) { return $this->error( 'Native Elementor page settings changed during persistence.' ); }
+            if ( array_key_exists( 'elementor_document_settings', $writer_payload ) ) { $verified = \SEOR_Elementor_Bridge\Document_Presentation::verify( $id, $writer_payload['elementor_document_settings'] ); if ( is_wp_error( $verified ) ) { return $verified; } }
+            elseif ( array_key_exists( 'elementor_page_settings', $writer_payload ) && Nova_Bridge_Suite_Recipe_Engine::digest( get_post_meta( $id, '_elementor_page_settings', true ) ) !== Nova_Bridge_Suite_Recipe_Engine::digest( $writer_payload['elementor_page_settings'] ) ) { return $this->error( 'Native Elementor page settings changed during persistence.' ); }
             if ( isset( $writer_payload['template'] ) && (string) get_page_template_slug( $id ) !== $writer_payload['template'] ) { return $this->error( 'The native WordPress page template changed during persistence.' ); }
-            return [ 'post_id' => $id, 'native_digest' => Nova_Bridge_Suite_Recipe_Engine::digest( [ $stored, get_post_meta( $id, '_elementor_page_settings', true ), get_page_template_slug( $id ) ] ) ];
+            $state = [ $stored, get_post_meta( $id, '_elementor_page_settings', true ), get_page_template_slug( $id ) ];
+            if ( array_key_exists( 'elementor_document_settings', $writer_payload ) ) { $state[] = \SEOR_Elementor_Bridge\Document_Presentation::read_selected( $id, $writer_payload['elementor_document_settings'] ); }
+            if ( array_key_exists( 'theme_presentation', $writer_payload ) ) { $verified = Nova_Bridge_Suite_Theme_Presentation::verify( $id, $writer_payload['theme_presentation'] ); if ( is_wp_error( $verified ) ) { return $verified; } $state[] = Nova_Bridge_Suite_Theme_Presentation::native_state( $id, $writer_payload['theme_presentation'] ); }
+            return [ 'post_id' => $id, 'native_digest' => Nova_Bridge_Suite_Recipe_Engine::digest( $state ) ];
         } );
     }
 }

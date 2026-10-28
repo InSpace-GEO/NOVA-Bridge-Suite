@@ -1,7 +1,8 @@
 <?php
 /** Anonymous native fixtures: pure compilation must never touch WordPress storage. */
 namespace Elementor {
-    class Plugin { public $elements_manager; public $widgets_manager; public static $instance; public static function instance() { return self::$instance; } }
+    class Base_Data_Control {}
+    class Plugin { public $elements_manager; public $widgets_manager; public $documents; public $controls_manager; public static $instance; public static function instance() { return self::$instance; } }
 }
 namespace SEOR_Elementor_Bridge {
     class Elementor_Service {
@@ -36,6 +37,9 @@ if ( ! function_exists( 'mb_substr' ) ) { function mb_substr( $value, $offset, $
 function wp_insert_post( ...$args ) { throw new \RuntimeException( 'Pure compilation may not insert posts.' ); }
 function update_option( ...$args ) { throw new \RuntimeException( 'Pure compilation may not persist options.' ); }
 function update_post_meta( ...$args ) { throw new \RuntimeException( 'Pure compilation may not persist metadata.' ); }
+class Recipe_Test_Controls { public function get_control( $type ) { return new \Elementor\Base_Data_Control(); } public function delete_stack( $document ) {} }
+class Recipe_Test_Documents { public function get( $id, $cache = false ) { return new Recipe_Test_Document( $id ); } }
+class Recipe_Test_Document { private $id; public function __construct( $id ) { $this->id = $id; } public function get_controls() { return [ 'hide_title' => [ 'type' => 'switcher' ], 'custom_css' => [ 'type' => 'text' ], 'colors' => [ 'type' => 'color' ] ]; } public function get_settings() { $settings = get_post_meta( $this->id, '_elementor_page_settings', true ); return array_merge( [ 'colors' => '' ], is_array( $settings ) ? $settings : [] ); } }
 function check( $truth, $label ) { ++$GLOBALS['checks']; if ( ! $truth ) { throw new \RuntimeException( 'FAILED: ' . $label ); } }
 function good( $value, $label ) { check( ! is_wp_error( $value ), $label . ( is_wp_error( $value ) ? ': ' . $value->get_error_message() : '' ) ); return $value; }
 function bad( $value, $label ) { check( is_wp_error( $value ), $label ); }
@@ -52,6 +56,8 @@ require_once __DIR__ . '/../includes/class-nova-bridge-suite-recipe-elementor.ph
 use Nova_Bridge_Suite_Recipe_Engine as Engine;
 $adapter = new Nova_Bridge_Suite_Recipe_Elementor();
 \Elementor\Plugin::$instance = new \Elementor\Plugin();
+\Elementor\Plugin::$instance->documents = new Recipe_Test_Documents();
+\Elementor\Plugin::$instance->controls_manager = new Recipe_Test_Controls();
 \Elementor\Plugin::$instance->elements_manager = new class { public function get_element_types( $type = null ) { $types = array_fill_keys( array_diff( [ 'section', 'column', 'container' ], $GLOBALS['registry_denied'] ), (object) [] ); return $type === null ? $types : ( $types[$type] ?? null ); } };
 \Elementor\Plugin::$instance->widgets_manager = new class { public function get_widget_types( $type = null ) { $types = array_fill_keys( array_diff( [ 'heading', 'text-editor', 'image', 'table-of-contents', 'button', 'nested-tabs', 'third-party-logo-grid', 'google_maps' ], $GLOBALS['registry_denied'] ), (object) [] ); return $type === null ? $types : ( $types[$type] ?? null ); } };
 check( ! method_exists( \Elementor\Plugin::$instance->elements_manager, 'get_element' ), 'Recipe fixture uses Elementor 3.30.3 registries without get_element' );
@@ -180,7 +186,12 @@ $too_many = $rules; $too_many['regions'][0]['max_items'] = 2; bad( Engine::compi
 
 // Capture/recovery reads full document, and draft writer preflights provider registry.
 $metadata[9] = [ '_elementor_data' => json_encode( $native['document'] ), '_elementor_page_settings' => $native['meta'], '_elementor_edit_mode' => 'builder' ]; $posts[9] = (object) [ 'ID' => 9 ]; $templates[9] = $native['template'];
-$captured = good( $adapter->capture( 9 ), 'Full native example capture' ); check( $captured['blueprint'] === $native && ! isset( $captured['suggested_regions'] ), 'Capture preserves full document without guessing repeatability' );
+$captured = good( $adapter->capture( 9 ), 'Full native example capture' ); $expected_native = $native; $expected_native['document_settings'] = [ 'hide_title' => 'yes', 'custom_css' => '.elementor-element-hero {width:100%;}', 'colors' => '', '__globals__' => [ 'colors' => 'theme-color' ] ]; check( $captured['blueprint'] === $expected_native && ! isset( $captured['suggested_regions'] ), 'Capture preserves the complete document and effective registered page controls without guessing repeatability' );
+$metadata[9]['_elementor_page_settings']['unregistered_fixture'] = 'existing';
+bad( $adapter->capture( 9 ), 'Fresh capture requires review of unsupported stored page settings' );
+$legacy_capture = good( $adapter->capture( 9, false ), 'Legacy scope can still read an unchanged original document' );
+check( ! array_key_exists( 'document_settings', $legacy_capture['blueprint'] ) && $legacy_capture['blueprint']['meta']['unregistered_fixture'] === 'existing', 'Legacy capture keeps the original raw page settings in scope without silently dropping them' );
+unset( $metadata[9]['_elementor_page_settings']['unregistered_fixture'] );
 $heading_field = array_values( array_filter( $captured['fields'], static function ( $field ) { return '/document/0/elements/0/settings/title' === $field['target']; } ) )[0];
 check( $heading_field['format'] === 'text' && $heading_field['allowed_formats'] === [ 'text', 'html' ], 'Elementor headings default to plain text while retaining explicit inline HTML support' );
 $body_field = array_values( array_filter( $captured['fields'], static function ( $field ) { return '/document/0/elements/1/settings/editor' === $field['target']; } ) )[0];

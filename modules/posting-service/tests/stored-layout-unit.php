@@ -1,5 +1,9 @@
 <?php
 /** A deleted example cannot affect a retained V3 creation layout. */
+namespace Elementor {
+    class Base_Data_Control {}
+    class Plugin { public $documents; public $controls_manager; public static function instance() { static $p; if ( ! $p ) { $p = new self(); $p->documents = new \Stored_Test_Documents(); $p->controls_manager = new \Stored_Test_Controls(); } return $p; } }
+}
 namespace SEOR_Elementor_Bridge {
     class Elementor_Service {
         public function get_page_payload( $id, $args ) { return [ 'document' => json_decode( $GLOBALS['meta'][ $id ]['_elementor_data'], true ) ]; }
@@ -25,6 +29,9 @@ function get_page_template_slug( $id ) { source_read(); return 'elementor_canvas
 function wp_insert_post( ...$args ) { throw new \RuntimeException( 'Pure compilation cannot insert a page.' ); }
 function update_option( ...$args ) { throw new \RuntimeException( 'Pure compilation cannot save settings.' ); }
 function update_post_meta( ...$args ) { throw new \RuntimeException( 'Pure compilation cannot write native data.' ); }
+class Stored_Test_Controls { public function get_control( $type ) { return new \Elementor\Base_Data_Control(); } public function delete_stack( $document ) {} }
+class Stored_Test_Documents { public function get( $id, $cache = false ) { return new Stored_Test_Document( $id ); } }
+class Stored_Test_Document { private $id; public function __construct( $id ) { $this->id = $id; } public function get_controls() { return [ 'custom_css' => [ 'type' => 'text' ], 'background_color' => [ 'type' => 'color' ] ]; } public function get_settings() { return array_merge( [ 'background_color' => '' ], get_post_meta( $this->id, '_elementor_page_settings', true ) ); } }
 require_once dirname( __DIR__, 2 ) . '/api-mapping-context/includes/class-nova-bridge-suite-mapping-drafts.php';
 require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-writing-adapter.php';
 require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-stored-layout.php';
@@ -65,6 +72,7 @@ check( $out[0]['elements'][4]['settings']['tabs'][1]['tab_content'] === '<p>Seco
 check( $out[0]['id'] !== 'aaaaaaa' && $out[0]['elements'][0]['id'] !== 'bbbbbbb', 'New page elements receive new identities' );
 check( strpos( $out[0]['elements'][1]['settings']['custom_css'], 'elementor-element-' . $out[0]['elements'][0]['id'] ) !== false, 'Widget CSS selectors follow rebased IDs' );
 check( $compiled['writer_payload']['template'] === 'elementor_canvas' && $compiled['writer_payload']['elementor_page_settings']['__globals__'] === [ 'background_color' => 'globals/colors?id=primary' ], 'Page template and site global style bindings are retained' );
+check( $compiled['writer_payload']['elementor_document_settings']['custom_css'] === $compiled['writer_payload']['elementor_page_settings']['custom_css'] && strpos( $compiled['writer_payload']['elementor_document_settings']['custom_css'], 'elementor-element-' . $out[0]['elements'][0]['id'] ) !== false, 'Effective document settings use the same rebased native CSS selectors as the page settings snapshot.' );
 check( $compiled['post_fields']['title'] === 'Fresh service' && $compiled['post_fields']['excerpt'] === 'Static excerpt', 'Mapped native title and protected static excerpt survive' );
 check( $compiled['writer_payload']['elementor_data'][0]['settings']['opacity'] === 0.75 && $compiled['writer_payload']['elementor_data'][0]['elements'][0]['settings']['typography_font_size']['size'] === 48.5, 'Fractional native styling remains exact' );
 $direct_out = good( Layout::compile( $direct, $values, 'direct-operation' ), 'Direct-source values converted by the caller use the same frozen builder' );
