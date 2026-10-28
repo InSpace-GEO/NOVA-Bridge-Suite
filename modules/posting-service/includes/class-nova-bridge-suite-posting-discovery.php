@@ -24,7 +24,7 @@ class Nova_Bridge_Suite_Posting_Discovery {
         return Nova_Bridge_Suite_Posting_Protocol::uuid( $site );
     }
 
-    /** A small strict boundary also protects independent storage callers and offline tests. */
+    /** Retained V3 journals use the old status identity; new feed items have four keys. */
     public static function validate_item( array $item ) {
         if ( Nova_Bridge_Suite_Posting_Protocol::DESTINATION === ( $item['contract'] ?? null ) ) {
             $keys = [ 'id', 'content_item_version_id', 'source_sha256', 'contract', 'job_id', 'run_id', 'source_event_id', 'client_id', 'content_item_id', 'version_number' ];
@@ -110,56 +110,6 @@ class Nova_Bridge_Suite_Posting_Discovery {
         $state['next_attempt'] = $next_attempt;
         $saved = $this->jobs->save_discovery_state( $site, $state );
         return is_wp_error( $saved ) ? $saved : $error;
-    }
-
-    /** V3 sweeps use their own UUID cursor; a ready webhook restarts completed sweeps.
-     * Pending work is revisited on the next wake, never treated as a raw delivery.
-     * The local monotonically increasing scan number only requests an attempt check;
-     * it never replaces the service-issued attempt or authorizes another native write.
-     */
-    public function run_destinations( int $max_pages = 2 ) {
-        if ( empty( $this->connection['enabled'] ) ) { return [ 'state' => 'disabled', 'items' => 0 ]; }
-        $site = (string) ( $this->connection['site_id'] ?? '' );
-        if ( ! self::valid_site( $site ) ) { return self::error( 'discovery_site' ); }
-        $lock = 'discovery:' . $site; $owned = $this->jobs->lock( $lock );
-        if ( is_wp_error( $owned ) ) { return $owned; }
-        try {
-            $state = $this->jobs->discovery_state( $site ); if ( is_wp_error( $state ) ) { return $state; }
-            $origin = hash( 'sha256', wp_json_encode( [ $site, $this->connection['base_url'] ?? '' ] ) );
-            $feed = $state['destination'] ?? [];
-            if ( ( $feed['origin'] ?? null ) !== $origin ) { $feed = [ 'origin' => $origin, 'cursor' => null, 'scan' => 0, 'active' => false, 'wake' => -1 ]; }
-            if ( empty( $feed['active'] ) ) {
-                if ( $feed['wake'] === $state['wake_sequence'] ) { return [ 'state' => 'idle', 'items' => 0 ]; }
-                if ( ! is_int( $feed['scan'] ) || $feed['scan'] < 0 || $feed['scan'] >= PHP_INT_MAX ) { return self::error( 'discovery_checkpoint' ); }
-                $feed['cursor'] = null; ++$feed['scan']; $feed['active'] = true; $feed['wake'] = $state['wake_sequence'];
-                $state['destination'] = $feed; $saved = $this->jobs->save_discovery_state( $site, $state ); if ( is_wp_error( $saved ) ) { return $saved; }
-            }
-            $items = 0; $started = microtime( true );
-            for ( $page = 0; $page < max( 1, min( 5, $max_pages ) ) && microtime( true ) - $started < 20; ++$page ) {
-                if ( null !== $feed['cursor'] && ! Nova_Bridge_Suite_Posting_Protocol::uuid( $feed['cursor'] ) ) { return self::error( 'discovery_checkpoint' ); }
-                $path = '/adaptations?contract=' . Nova_Bridge_Suite_Posting_Protocol::DESTINATION . '&limit=100';
-                if ( null !== $feed['cursor'] ) { $path .= '&cursor=' . rawurlencode( $feed['cursor'] ); }
-                $reply = $this->client->site_request( 'GET', $path ); if ( is_wp_error( $reply ) ) { return $reply; }
-                $wire = json_decode( $reply['raw_body'] ?? '', false, 64 );
-                if ( 200 !== (int) ( $reply['status'] ?? 0 ) || is_wp_error( Nova_Bridge_Suite_Posting_Protocol::validate( $wire, 'AdaptationStatusPage' ) ) || count( $wire->items ) > 100 ) { return self::error( 'discovery_schema', 502 ); }
-                $ready = []; $previous = $feed['cursor'];
-                foreach ( $wire->items as $status ) {
-                    if ( is_wp_error( Nova_Bridge_Suite_Posting_Protocol::validate( $status, 'DestinationAdaptationStatus' ) ) || $status->site_id !== $site || ( null !== $previous && strcmp( strtolower( $status->job_id ), strtolower( $previous ) ) <= 0 ) || ( 'ready' === $status->status && null === $status->delivery_id ) ) { return self::error( 'discovery_identity', 502 ); }
-                    $previous = $status->job_id;
-                    if ( 'ready' !== $status->status ) { continue; }
-                    $item = [ 'id' => $status->delivery_id, 'content_item_version_id' => $status->content_item_version_id, 'source_sha256' => $status->source_sha256, 'contract' => Nova_Bridge_Suite_Posting_Protocol::DESTINATION,
-                        'job_id' => $status->job_id, 'run_id' => $status->run_id, 'source_event_id' => $status->source_event_id, 'client_id' => $status->tenant_id, 'content_item_id' => $status->content_item_id, 'version_number' => $status->version_number ];
-                    $valid = self::validate_item( $item ); if ( is_wp_error( $valid ) ) { return $valid; } $ready[] = $item;
-                }
-                // The API uses null at the end, including a non-empty final page.
-                if ( null !== $wire->next_cursor && ( ! $wire->items || $wire->next_cursor !== $previous ) ) { return self::error( 'discovery_checkpoint', 502 ); }
-                foreach ( $ready as $item ) { $accepted = $this->jobs->enqueue_discovered( $site, $item, (string) $feed['scan'] ); if ( is_wp_error( $accepted ) ) { return $accepted; } ++$items; }
-                $feed['cursor'] = $wire->next_cursor; $feed['active'] = null !== $feed['cursor'];
-                $state['destination'] = $feed; $saved = $this->jobs->save_discovery_state( $site, $state ); if ( is_wp_error( $saved ) ) { return $saved; }
-                if ( ! $feed['active'] ) { break; }
-            }
-            return [ 'state' => $feed['active'] ? 'continuing' : 'complete', 'items' => $items ];
-        } finally { $this->jobs->unlock( $lock ); }
     }
 
     /** At most two pages by default; a restart resumes only a durably saved cursor. */

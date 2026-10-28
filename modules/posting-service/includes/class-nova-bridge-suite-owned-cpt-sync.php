@@ -190,7 +190,8 @@ final class Nova_Bridge_Suite_Owned_CPT_Sync {
         if ( ( $snapshot['site_id'] ?? null ) !== $site_id || ! is_array( $remote ) || ! Nova_Bridge_Suite_Posting_Protocol::uuid( $remote['id'] ?? null ) || ! is_int( $remote['revision'] ?? null ) || $remote['revision'] < 1 ) { return null; }
         $profile = get_option( self::profile_key( $site_id, $remote['id'], $remote['revision'] ), null );
         if ( null === $profile ) { return null; }
-        if ( ! is_array( $profile ) || ( $profile['mode'] ?? '' ) !== 'owned_cpt_v3' || ( $profile['site_id'] ?? '' ) !== $site_id || ! self::same( $profile['template'] ?? null, $remote ) || ! is_array( $profile['local'] ?? null ) || ! is_array( $profile['draft'] ?? null ) || ! hash_equals( hash( 'sha256', self::json( $profile['local'] ) ), $profile['profile_digest'] ?? '' ) ) { return self::error( 'profile_mismatch', 'The frozen template does not match its native CPT profile.' ); }
+        if ( ! is_array( $profile ) || ( $profile['mode'] ?? '' ) !== 'owned_cpt_v3' || ( $profile['site_id'] ?? '' ) !== $site_id || ! Nova_Bridge_Suite_Posting_Protocol::configuration_matches( $remote, $profile['template'] ?? null ) || ! is_array( $profile['local'] ?? null ) || ! is_array( $profile['draft'] ?? null ) || ! hash_equals( hash( 'sha256', self::json( $profile['local'] ) ), $profile['profile_digest'] ?? '' ) ) { return self::error( 'profile_mismatch', 'The frozen template does not match its native CPT profile.' ); }
+        $remote = $profile['template'];
         $input = Nova_Bridge_Suite_Writing_Adapter::template_input( $profile['draft'], 3 ); if ( is_wp_error( $input ) ) { return $input; }
         unset( $input['enabled'] );
         foreach ( $input as $key => $value ) { if ( ! array_key_exists( $key, $remote ) || ! self::same( $value, $remote[ $key ] ) ) { return self::error( 'profile_mismatch', 'The retained draft does not match the frozen template.' ); } }

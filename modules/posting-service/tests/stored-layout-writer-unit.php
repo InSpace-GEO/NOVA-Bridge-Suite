@@ -236,5 +236,23 @@ list( $new_content, $new_config ) = fixture( '502' );
 $upgraded = ok( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $new_content, $new_config, [ 'operation_id' => op( 2 ) ] ) );
 ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $upgraded, op( 2 ) ) );
 check( $inserts === 1 && $saves === 2, 'An old association accepts a new mapped presentation scope without changing its legacy native digest.' );
+foreach ( [ 1, 3 ] as $version ) {
+    reset_native(); list( $content, $config ) = fixture( '501', $version );
+    $config['template']['name'] = 'Stored fixture'; $config['template']['page_type'] = 'service'; $config['template']['definition']['fields'] = [];
+    foreach ( [ '/title' => 'text', '/body' => 'rich_text' ] as $path => $type ) { $config['template']['definition']['fields'][] = [ 'id' => Nova_Bridge_Suite_Writing_Adapter::field_id( $path ), 'label' => $path, 1 === $version ? 'kind' : 'value_type' => $type, 'required' => true ]; }
+    if ( 3 === $version ) { $config['template']['definition']['groups'] = []; $config['template']['mapping'] = [ 'version' => 3 ]; }
+    $wire = $content; unset( $wire['kind'], $wire['schema_version'], $wire['destination_values'] );
+    $wire['configuration'] = Nova_Bridge_Suite_Posting_Protocol::public_configuration( $config['template'] );
+    $wire['page_type_frontend'] = $config['template']['page_type'];
+    $wire['content'] = [ Nova_Bridge_Suite_Writing_Adapter::field_id( '/title' ) => $content['content']['title'], Nova_Bridge_Suite_Writing_Adapter::field_id( '/body' ) => $content['content']['content'] ];
+    $before = json_encode( $wire );
+    $native = ok( Nova_Bridge_Suite_Posting_Protocol::writer_snapshot( $wire, $config ) );
+    $plan = ok( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $native, $config, [ 'operation_id' => op( 1 ) ] ) );
+    $result = ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $plan, op( 1 ) ) );
+    ok( Nova_Bridge_Suite_Stored_Layout_Writer::verify( $plan, $result ) );
+    check( $inserts === 1 && $saves === 1 && $source_reads === 0 && $result['cms_post_status'] === 'publish', 'Unified V' . $version . ' creates and verifies the saved Elementor layout without the source page.' );
+    $saved_body = json_decode( get_post_meta( 10, '_elementor_data' ), true )[0]['elements'][1]['settings']['editor'];
+    check( json_encode( $wire ) === $before && $posts[10]->post_title === $content['content']['title'] && $saved_body === $content['content']['content'], 'Unified V' . $version . ' retains resolved title/body values and leaves wire data untouched.' );
+}
 echo "Stored-layout writer checks: $checks passed.\n";
 }

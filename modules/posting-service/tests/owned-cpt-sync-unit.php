@@ -18,7 +18,7 @@ $options = [];
 function get_option( $key, $default = false ) { global $options; return array_key_exists( $key, $options ) ? $options[$key] : $default; }
 function add_option( $key, $value, $deprecated = '', $autoload = false ) { global $options; if ( array_key_exists( $key, $options ) ) { return false; } $options[$key] = $value; return true; }
 function update_option( $key, $value, $autoload = false ) { global $options; $options[$key] = $value; return true; }
-class Nova_Bridge_Suite_Posting_Protocol { public static function uuid( $id ) { return is_string( $id ) && (bool) preg_match( '/^[a-f0-9-]{36}$/', $id ); } public static function validate( $v, $type ) { return true; } }
+require __DIR__ . '/../includes/class-nova-bridge-suite-posting-protocol.php';
 function sanitize_text_field( $text ) { return trim( $text ); }
 require __DIR__ . '/../../api-mapping-context/includes/class-nova-bridge-suite-mapping-drafts.php';
 require __DIR__ . '/../includes/class-nova-bridge-suite-writing-adapter.php';
@@ -41,7 +41,7 @@ class Nova_Bridge_Suite_Mapping_Sync {
         ++self::$syncs; $key = $this->client->site_id() . ':' . $this->scope; $old = self::$states[$key] ?? null;
         $input = Nova_Bridge_Suite_Writing_Adapter::template_input( $draft ); if ( is_wp_error( $input ) ) { return $input; }
         $h = md5( $this->scope ); $id = substr($h,0,8) . '-' . substr($h,8,4) . '-4' . substr($h,13,3) . '-8' . substr($h,17,3) . '-' . substr($h,20,12);
-        $record = $input + [ 'id' => $id, 'revision' => $old ? $old['template']['revision'] + (int) ($old['local_revision'] !== $draft['revision']) : 1, 'retired_at' => null ];
+        $record = $input + [ 'id' => $id, 'revision' => $old ? $old['template']['revision'] + (int) ($old['local_revision'] !== $draft['revision']) : 1, 'created_at' => '2026-10-28T10:00:00Z', 'updated_at' => '2026-10-28T10:00:00Z', 'retired_at' => null ];
         return self::$states[$key] = [ 'template' => $record, 'local_revision' => $draft['revision'] ];
     }
 }
@@ -76,6 +76,10 @@ $frozen = array_intersect_key( $record, array_flip( [ 'id', 'name', 'page_type',
 $snapshot = [ 'site_id' => $client->site, 'configuration' => $frozen ];
 $profile = Nova_Bridge_Suite_Owned_CPT_Sync::configuration_for_snapshot( $snapshot, $client->site );
 check( ! is_wp_error( $profile ) && $profile['mode'] === 'owned_cpt_v3', 'Exact frozen revision resolves its native profile.' );
+$public_snapshot = $snapshot; $public_snapshot['configuration'] = Nova_Bridge_Suite_Posting_Protocol::public_configuration( $frozen );
+check( $profile === Nova_Bridge_Suite_Owned_CPT_Sync::configuration_for_snapshot( $public_snapshot, $client->site ), 'Unified public fields resolve the same approved native CPT revision.' );
+$public_snapshot['configuration']['fields'][0]['label'] .= ' altered';
+check( is_wp_error( Nova_Bridge_Suite_Owned_CPT_Sync::configuration_for_snapshot( $public_snapshot, $client->site ) ), 'Changed public CPT fields cannot borrow retained native authority.' );
 check( null === Nova_Bridge_Suite_Owned_CPT_Sync::configuration_for_snapshot( $snapshot, '55555555-5555-4555-8555-555555555555' ), 'A different site cannot use this profile.' );
 $same = Nova_Bridge_Suite_Owned_CPT_Sync::synchronize( [ 'enabled' => true ], 'service_page', 'service', $client );
 check( ! is_wp_error( $same ) && count( $client->writes ) === 1, 'Unchanged synchronization retains the already selected default.' );

@@ -121,4 +121,16 @@ $snapshot = nova_contract_fixture()['snapshot']; $snapshot['configuration'] = ar
 $f = nova_contract_fixture( [ 'content' => $snapshot ] ); $GLOBALS['server'] = $server = new Contract_Test_Server( $f ); $store = new Contract_Test_Store(); $GLOBALS['terms'] = []; $GLOBALS['insertions'] = 0;
 $worker = new Nova_Bridge_Suite_Posting_Worker( $f['connection'], $store ); $result = $worker->process( $f['job'] );
 delivery_check( $result['state'] === 'complete' && $GLOBALS['insertions'] === 1 && json_decode( $server->posts[1], true )['kind'] === 'publication_succeeded', 'A delivery frozen with the editor-created mapping publishes one category and emits success.' );
+
+// The unified API resolves V1 category bindings before delivery; native category
+// publication still uses the exact approved recipe and its original source keys.
+[ $c, $client, $locks ] = first_editor_fixture(); editor_sync( $c, $client, $locks );
+$snapshot = nova_contract_fixture()['snapshot']; $snapshot['configuration'] = array_intersect_key( $client->remote, array_flip( [ 'id', 'name', 'page_type', 'definition', 'mapping', 'revision' ] ) ); $snapshot['page_type_frontend'] = 'category'; $snapshot['url'] = home_url( '/product-category/unified-created/' ); $snapshot['content']['top_content'] = '<p>Unified top.</p>'; $snapshot['content']['bottom_content'] = '<p>Unified bottom.</p>';
+$f = nova_contract_fixture( [ 'content' => $snapshot ] ); $source = array_merge( $snapshot['content'], array_intersect_key( $snapshot, array_flip( [ 'url', 'page_type_frontend', 'language' ] ) ) );
+$wire = $snapshot; unset( $wire['attempt_id'] ); $wire['configuration'] = Nova_Bridge_Suite_Posting_Protocol::public_configuration( $snapshot['configuration'] ); $wire['content'] = [];
+foreach ( $snapshot['configuration']['mapping']['fields'] as $binding ) { if ( isset( $source[$binding['source_field']] ) ) { $wire['content'][$binding['field_id']] = $source[$binding['source_field']]; } }
+$f['snapshot'] = $wire; $f['raw'] = json_encode( $wire, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ); $f['etag'] = '"' . hash( 'sha256', $f['raw'] ) . '"';
+$GLOBALS['server'] = $server = new Contract_Test_Server( $f ); $store = new Contract_Test_Store(); $GLOBALS['terms'] = []; $GLOBALS['insertions'] = 0;
+$worker = new Nova_Bridge_Suite_Posting_Worker( $f['connection'], $store ); $result = $worker->process( $f['job'] );
+delivery_check( $result['state'] === 'complete' && $GLOBALS['insertions'] === 1 && json_decode( $server->posts[1], true )['kind'] === 'publication_succeeded' && $result['payload']['content'] === $wire, 'Unified V1 values publish one approved category and retain the exact public journal body.' );
 echo 'PASS ' . $checks . " static category editor synchronization checks.\n";

@@ -294,4 +294,32 @@ $priority_jobs->save( $new_delivery, [ 'state' => 'complete', 'phase' => 'commit
 $old_result = $priority_jobs->claim( $site );
 journal_check( 1 === $old_result['id'] && 'attempt_check' === $old_result['phase'], 'Historical results still receive their authenticated attempt check after new work.' );
 
+// Upgrading from the retired status feed must preserve completed V3 evidence.
+$unified = journal_item();
+$legacy_destination = array_diff_key( $unified, [ 'created_at' => true ] ) + [
+    'contract' => Nova_Bridge_Suite_Posting_Protocol::DESTINATION, 'job_id' => wp_generate_uuid4(), 'run_id' => wp_generate_uuid4(),
+    'source_event_id' => 'posting-source-v1-' . str_repeat( 'a', 64 ), 'client_id' => '217', 'content_item_id' => '42', 'version_number' => 2,
+];
+$upgrade_db = new Posting_Jobs_Database(); $upgrade_jobs = new Nova_Bridge_Suite_Posting_Jobs( $upgrade_db );
+$upgrade_jobs->enqueue_discovered( $site, $legacy_destination, '9000' ); $upgrade = $upgrade_jobs->claim( $site );
+$upgrade_payload = journal_success_payload( $upgrade );
+$upgrade_jobs->save( $upgrade, [ 'state' => 'complete', 'phase' => 'committed', 'payload' => $upgrade_payload ] );
+$before_upgrade = $upgrade_db->rows[1];
+$observed = $upgrade_jobs->enqueue_discovered( $site, $unified, '10' );
+journal_check( 'complete' === $observed['state'] && $before_upgrade === $upgrade_db->rows[1] && null === $upgrade_jobs->claim( $site ), 'Unified discovery leaves an acknowledged legacy V3 success byte-for-byte unchanged and schedules no GET.' );
+foreach ( [ 'content_item_version_id' => '999', 'source_sha256' => str_repeat( 'f', 64 ) ] as $key => $value ) {
+    $upgrade_db->rows[1] = $before_upgrade; $different = $unified; $different[$key] = $value;
+    journal_check( is_wp_error( $upgrade_jobs->enqueue_discovered( $site, $different, '11' ) ), 'Unified discovery still rejects a different retained V3 identity: ' . $key );
+}
+$upgrade_db->rows[1] = $before_upgrade;
+$unproven = $upgrade_payload; unset( $unproven['events'] ); $unproven['snapshot_raw'] = 'unchanged legacy bytes';
+$upgrade_db->rows[1]['payload'] = wp_json_encode( $unproven );
+$observed = $upgrade_jobs->enqueue_discovered( $site, $unified, '10' );
+journal_check( 'attempt_check' === $observed['phase'] && '10' === $observed['payload']['discovery_checkpoint'] && 'unified' === $observed['payload']['discovery_feed'], 'The first unified cursor is not compared with the unrelated larger legacy scan counter.' );
+journal_check( $legacy_destination === $observed['payload']['discovery'] && 'unchanged legacy bytes' === $observed['payload']['snapshot_raw'] && $upgrade_payload['attempt_id'] === $observed['payload']['attempt_id'], 'Feed migration never replaces old identity, raw bytes or attempt authority.' );
+$active = $upgrade_jobs->claim( $site );
+$upgrade_jobs->enqueue_discovered( $site, $unified, '11' );
+$saved = $upgrade_jobs->save( $active, [ 'last_error' => 'fixture_retry' ] );
+journal_check( 'unified' === $saved['payload']['discovery_feed'] && '11' === $saved['payload']['pending_discovery_checkpoint'], 'A stale worker cannot erase the unified sequence marker or latest observation.' );
+
 echo 'PASS ' . $checks . " contracted journal checks.\n";

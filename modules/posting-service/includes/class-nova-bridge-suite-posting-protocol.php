@@ -96,12 +96,15 @@ final class Nova_Bridge_Suite_Posting_Protocol {
         $object = json_decode( $raw, false, 64 );
         if ( JSON_ERROR_NONE !== json_last_error() ) { return self::error( 'snapshot_json', 'The exact snapshot is not valid JSON.' ); }
         $destination = self::DESTINATION === ( $item['contract'] ?? null );
-        $valid = self::validate( $object, $destination ? 'AdaptationDeliveryV2' : 'DeliverySnapshot' );
+        $unified = ! is_wp_error( self::validate( $object, 'Delivery' ) );
+        $valid = $unified ? true : self::validate( $object, $destination ? 'AdaptationDeliveryV2' : 'DeliverySnapshot' );
         if ( is_wp_error( $valid ) ) { return $valid; }
         $snapshot = json_decode( $raw, true, 64 );
         foreach ( [ 'id', 'content_item_version_id', 'source_sha256' ] as $key ) { if ( $snapshot[ $key ] !== ( $item[ $key ] ?? null ) ) { return self::error( 'snapshot_identity', 'The snapshot identity differs from authenticated discovery.' ); } }
         if ( $destination ) {
-            foreach ( [ 'job_id', 'run_id', 'source_event_id', 'client_id', 'content_item_id', 'version_number' ] as $key ) {
+            // Historical discovery also pins source identity. Internal adaptation IDs are
+            // no longer public, but their removal must not weaken the remaining pins.
+            foreach ( $unified ? [ 'client_id', 'content_item_id', 'version_number' ] : [ 'job_id', 'run_id', 'source_event_id', 'client_id', 'content_item_id', 'version_number' ] as $key ) {
                 if ( $snapshot[ $key ] !== ( $item[ $key ] ?? null ) ) { return self::error( 'snapshot_identity', 'The fitted result differs from its authenticated adaptation status.' ); }
             }
         }
@@ -111,6 +114,79 @@ final class Nova_Bridge_Suite_Posting_Protocol {
         // source_sha256 covers backend source content, not these delivery bytes. Do not equate
         // the two hashes or replace the original body attempt_id with current header authority.
         return $snapshot;
+    }
+
+    private static function canonical( $value ): string {
+        $sort = static function ( $item ) use ( &$sort ) {
+            if ( is_object( $item ) ) { $item = (array) $item; }
+            if ( ! is_array( $item ) ) { return $item; }
+            if ( array_values( $item ) !== $item ) { ksort( $item, SORT_STRING ); }
+            foreach ( $item as &$child ) { $child = $sort( $child ); } unset( $child );
+            return $item;
+        };
+        return json_encode( $sort( $value ), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR );
+    }
+
+    /** The v0.8 public projection of a frozen, locally approved publishing template. */
+    public static function public_configuration( array $template ) {
+        $version = $template['definition']['version'] ?? null;
+        if ( ! in_array( $version, [ 1, 3 ], true ) || ! is_array( $template['definition']['fields'] ?? null ) || ( 1 === $version && ( $template['mapping']['version'] ?? null ) !== 1 ) ) { return self::error( 'configuration_projection', 'The retained template has no supported public delivery projection.' ); }
+        $public = array_intersect_key( $template, array_flip( [ 'id', 'name', 'page_type', 'revision' ] ) );
+        $public['fields'] = [];
+        foreach ( $template['definition']['fields'] as $field ) {
+            $projected = [ 'id' => $field['id'], 'label' => $field['label'], 'value_type' => $field[ 1 === $version ? 'kind' : 'value_type' ], 'required' => $field['required'] ];
+            if ( 3 === $version && array_key_exists( 'constraints', $field ) ) { $projected['constraints'] = $field['constraints']; }
+            $public['fields'][] = $projected;
+        }
+        $public['groups'] = 3 === $version ? ( $template['definition']['groups'] ?? [] ) : [];
+        return $public;
+    }
+
+    /** Private mapping/native authority must come from the exact retained revision. */
+    public static function configuration_matches( $remote, $template ): bool {
+        if ( ! is_array( $remote ) || ! is_array( $template ) ) { return false; }
+        if ( array_key_exists( 'definition', $remote ) ) { return self::canonical( $remote ) === self::canonical( $template ); }
+        $public = self::public_configuration( $template );
+        return ! is_wp_error( $public ) && self::canonical( $remote ) === self::canonical( $public );
+    }
+
+    /**
+     * Transient native-writer view only; never replace the journal's raw public bytes.
+     * The service already resolves V1 bindings. Reverse them only when a strict
+     * forward round-trip proves no value, omission or duplicate binding is changed.
+     */
+    public static function writer_snapshot( array $snapshot, array $profile ) {
+        $remote = $snapshot['configuration'] ?? null;
+        if ( null === $remote || array_key_exists( 'definition', $remote ) ) { return $snapshot; }
+        $template = $profile['template'] ?? null;
+        if ( ! self::configuration_matches( $remote, $template ) || ( $snapshot['site_id'] ?? null ) !== ( $profile['site_id'] ?? null ) || ( $snapshot['page_type_frontend'] ?? null ) !== ( $template['page_type'] ?? null ) ) { return self::error( 'configuration_projection', 'The public delivery differs from its approved local template revision or scope.' ); }
+        $view = $snapshot; $view['configuration'] = $template;
+        if ( 3 === $template['definition']['version'] ) {
+            $allowed = array_column( $template['definition']['fields'], 'id' );
+            if ( array_diff( array_keys( $snapshot['content'] ), $allowed ) ) { return self::error( 'destination_values', 'The delivery contains an unknown destination field.' ); }
+            $view['kind'] = 'adaptation.delivery'; $view['schema_version'] = 2;
+            $view['destination_values'] = $snapshot['content'];
+            return $view;
+        }
+        $sources = []; $values = $snapshot['content'];
+        foreach ( $template['mapping']['fields'] as $binding ) {
+            $field = $binding['field_id']; $source = $binding['source_field'];
+            if ( ! array_key_exists( $field, $values ) ) { continue; }
+            $value = $values[ $field ];
+            if ( array_key_exists( $source, $sources ) && $sources[ $source ] !== $value ) { return self::error( 'destination_values', 'Duplicate destination bindings disagree about their frozen source value.' ); }
+            if ( in_array( $source, [ 'url', 'page_type_frontend', 'language' ], true ) && ( $snapshot[ $source ] ?? null ) !== $value ) { return self::error( 'destination_values', 'A destination binding disagrees with the delivery scope.' ); }
+            $sources[ $source ] = $value;
+        }
+        // Native V1 writers also expose these immutable top-level sources. Include
+        // them in the proof so an omitted metadata binding cannot be invented later.
+        $forward_sources = array_merge( $sources, array_intersect_key( $snapshot, array_flip( [ 'url', 'page_type_frontend', 'language' ] ) ) );
+        $roundtrip = [];
+        foreach ( $template['mapping']['fields'] as $binding ) {
+            if ( isset( $forward_sources[ $binding['source_field'] ] ) ) { $roundtrip[ $binding['field_id'] ] = $forward_sources[ $binding['source_field'] ]; }
+        }
+        if ( self::canonical( $roundtrip ) !== self::canonical( $values ) ) { return self::error( 'destination_values', 'Resolved destination values cannot be represented by the approved V1 bindings without changes.' ); }
+        $view['content'] = $sources;
+        return $view;
     }
 
     /** The schema describes conditional evidence in prose; enforce it before any event POST. */

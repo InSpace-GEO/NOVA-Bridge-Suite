@@ -41,4 +41,18 @@ function seo_fixture(){[$c,$cfg]=fixture();foreach(['/\x40nova/seo/title'=>'SEO 
 reset_fake();$options['active_plugins']=['wp-seopress/seopress.php'];[$c,$cfg]=seo_fixture();$p=ok(Nova_Bridge_Suite_Owned_CPT_Writer::plan($c,$cfg,['operation_id'=>uuid(1)]));$r=ok(Nova_Bridge_Suite_Owned_CPT_Writer::apply($p,uuid(1)));check(get_post_meta(10,'_seopress_titles_title')==='SEO page title'&&get_post_meta(10,'_seopress_titles_desc')==='SEO description','SEO metadata written to active provider');ok(Nova_Bridge_Suite_Owned_CPT_Writer::verify($p,$r));
 reset_fake();$options['active_plugins']=['wp-seopress/seopress.php'];[$c,$cfg]=seo_fixture();$p=ok(Nova_Bridge_Suite_Owned_CPT_Writer::plan($c,$cfg,['operation_id'=>uuid(1)]));$crash_save=true;check(is_wp_error(Nova_Bridge_Suite_Owned_CPT_Writer::apply($p,uuid(1))),'Interrupted native save exposes uncertainty');$r=ok(Nova_Bridge_Suite_Owned_CPT_Writer::recover($p,uuid(1)));check(get_post_meta(10,'_seopress_titles_desc')==='SEO description'&&$r['state']==='complete','SEO is applied on native save recovery');
 reset_fake();$options['active_plugins']=['wp-seopress/seopress.php'];[$c,$cfg]=seo_fixture();$posts[23]=(object)['ID'=>23,'post_type'=>'service_page','post_status'=>'publish','post_title'=>'Original','post_name'=>'article','post_parent'=>0,'post_content_filtered'=>''];$meta[23]=['_seopress_titles_desc'=>'Original SEO'];$p=ok(Nova_Bridge_Suite_Owned_CPT_Writer::plan($c,$cfg,['operation_id'=>uuid(1)]));$meta[23]['_seopress_titles_desc']='Human edited SEO';check(is_wp_error(Nova_Bridge_Suite_Owned_CPT_Writer::apply($p,uuid(1)))&&get_post_meta(23,'_seopress_titles_desc')==='Human edited SEO','SEO edits made after planning are not overwritten');
+foreach ( [ 'service_page', 'blog' ] as $type ) {
+    reset_fake(); [ $legacy, $cfg ] = fixture( $type );
+    $template = $cfg['template'] + [ 'name' => 'Owned CPT fixture', 'page_type' => $type === 'blog' ? 'informative' : 'service', 'mapping' => [ 'version' => 3 ] ];
+    $template['definition']['fields'] = []; $template['definition']['groups'] = [];
+    foreach ( $cfg['local']['fields'] as $id => $field ) { $template['definition']['fields'][] = [ 'id' => $id, 'label' => $field['target'], 'value_type' => $field['value_type'], 'required' => $field['target'] === '/title' ]; }
+    $cfg['template'] = $template;
+    $wire = $legacy; unset( $wire['kind'], $wire['schema_version'], $wire['destination_values'] );
+    $wire['page_type_frontend'] = $template['page_type']; $wire['configuration'] = Nova_Bridge_Suite_Posting_Protocol::public_configuration( $template ); $wire['content'] = $legacy['destination_values'];
+    $native = ok( Nova_Bridge_Suite_Posting_Protocol::writer_snapshot( $wire, $cfg ) );
+    $p = ok( Nova_Bridge_Suite_Owned_CPT_Writer::plan( $native, $cfg, [ 'operation_id' => uuid( 1 ) ] ) );
+    $r = ok( Nova_Bridge_Suite_Owned_CPT_Writer::apply( $p, uuid( 1 ) ) ); ok( Nova_Bridge_Suite_Owned_CPT_Writer::verify( $p, $r ) );
+    $intro = $type === 'blog' ? 'blog_intro' : 'sp_intro';
+    check( $inserts === 1 && $saves === 1 && $r['cms_post_status'] === 'publish' && $posts[10]->post_title === 'My title 501' && $meta[10][$intro] === '<p>Fresh content 501</p>', 'Unified destination fields publish exactly one native ' . $type . ' with expected title/body.' );
+}
 echo "Owned CPT writer: $checks checks passed\n";

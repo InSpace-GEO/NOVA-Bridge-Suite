@@ -15,7 +15,7 @@ $f['raw'] = json_encode( $f['snapshot'], JSON_UNESCAPED_SLASHES ); $f['etag'] = 
 class V3_Test_Server extends Contract_Test_Server {
     public function request( $url, $args ) {
         if ( 'GET' === $args['method'] ) {
-            delivery_check( str_ends_with( $url, '/adaptation-deliveries/' . $this->fixture['item']['id'] ), 'V3 uses its result endpoint, never legacy snapshot GET.' );
+            delivery_check( str_ends_with( $url, '/deliveries/' . $this->fixture['item']['id'] ), 'Retained V3 journals use the unified delivery endpoint.' );
             return self::reply( 200, $this->raw, [ 'etag' => $this->etag, 'x-nova-attempt-id' => $this->attempt ] );
         }
         return parent::request( $url, $args );

@@ -110,7 +110,9 @@ class Nova_Bridge_Suite_Posting_Jobs {
                 if ( self::PROTOCOL !== ( $job['protocol'] ?? '' ) || self::PROTOCOL !== ( $job['payload']['protocol'] ?? '' ) ) {
                     return new WP_Error( 'nova_posting_legacy_job_conflict', 'An older protocol journal owns this identity; reconcile it explicitly.', [ 'status' => 409 ] );
                 }
-                if ( ! empty( $job['identity_conflict'] ) || ! self::same_value( $job['payload']['discovery'] ?? null, $item ) ) {
+                $retained = $job['payload']['discovery'] ?? null;
+                $unified_observation = self::legacy_destination_observation( $retained, $item );
+                if ( ! empty( $job['identity_conflict'] ) || ( ! self::same_value( $retained, $item ) && ! $unified_observation ) ) {
                     // Never replace retained evidence. A current owner loses its next journal CAS.
                     $changed = $this->db->query( $this->db->prepare( "UPDATE {$this->table} SET identity_conflict=1,state='blocked',lease_until=0,last_error='discovery_identity_conflict',updated_at=%d WHERE id=%d", time(), $job['id'] ) );
                     if ( false === $changed ) { return $this->error(); }
@@ -130,6 +132,13 @@ class Nova_Bridge_Suite_Posting_Jobs {
                 }
                 // A new announcement may be an operator retry. Only GET's attempt header
                 // decides that; the checkpoint never authorizes a CMS write.
+                // The retired V3 scan counter and the unified feed cursor are different
+                // sequences. Start the new sequence without replacing identity or receipts.
+                if ( $unified_observation && null !== $checkpoint && 'unified' !== ( $job['payload']['discovery_feed'] ?? null ) ) {
+                    $job['payload']['discovery_feed'] = 'unified';
+                    $job['payload']['discovery_checkpoint'] = null;
+                    unset( $job['payload']['pending_discovery_checkpoint'] );
+                }
                 $previous_checkpoint = $job['payload']['pending_discovery_checkpoint'] ?? ( $job['payload']['discovery_checkpoint'] ?? null );
                 $new_checkpoint = self::newer_checkpoint( $checkpoint, $previous_checkpoint );
                 if ( $new_checkpoint && 'complete' === $job['state'] ) {
@@ -171,6 +180,13 @@ class Nova_Bridge_Suite_Posting_Jobs {
 
     private static function newer_checkpoint( ?string $next, ?string $previous ): bool {
         return null !== $next && ( null === $previous || strlen( $next ) > strlen( $previous ) || ( strlen( $next ) === strlen( $previous ) && strcmp( $next, $previous ) > 0 ) );
+    }
+
+    /** The authenticated unified feed omits private adaptation metadata; retain it locally. */
+    private static function legacy_destination_observation( $retained, array $item ): bool {
+        if ( ! is_array( $retained ) || Nova_Bridge_Suite_Posting_Protocol::DESTINATION !== ( $retained['contract'] ?? null ) || isset( $item['contract'] ) || is_wp_error( Nova_Bridge_Suite_Posting_Discovery::validate_item( $retained ) ) || is_wp_error( Nova_Bridge_Suite_Posting_Discovery::validate_item( $item ) ) ) { return false; }
+        foreach ( [ 'id', 'content_item_version_id', 'source_sha256' ] as $key ) { if ( $retained[$key] !== $item[$key] ) { return false; } }
+        return true;
     }
 
     /** A terminal journal can contain a failure; only an acknowledged success for this attempt is final. */
@@ -267,7 +283,7 @@ class Nova_Bridge_Suite_Posting_Jobs {
         if ( ! $stored || 'running' !== $stored['state'] || ! empty( $stored['identity_conflict'] ) || $stored['lease_until'] < time() ) { return $this->error( 'lease_lost' ); }
         // Only admission owns these observations. An older worker payload cannot erase
         // a concurrently discovered attempt hint or fabricate an ordering authority.
-        foreach ( [ 'discovery_checkpoint', 'pending_discovery_checkpoint' ] as $key ) {
+        foreach ( [ 'discovery_checkpoint', 'pending_discovery_checkpoint', 'discovery_feed' ] as $key ) {
             unset( $next['payload'][ $key ] );
             if ( array_key_exists( $key, $stored['payload'] ) ) { $next['payload'][ $key ] = $stored['payload'][ $key ]; }
         }
