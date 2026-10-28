@@ -116,6 +116,18 @@ class Nova_Bridge_Suite_Posting_Jobs {
                     if ( false === $changed ) { return $this->error(); }
                     return new WP_Error( 'nova_posting_discovery_identity_conflict', 'Discovery disagrees with the retained exact snapshot identity. Reconciliation is required.', [ 'status' => 409 ] );
                 }
+                if ( self::has_publication_receipt( $job ) ) {
+                    if ( 'complete' === $job['state'] && 'committed' === $job['phase'] ) { return $job; }
+                    // Older versions reopened acknowledged successes during discovery. Restore
+                    // only their idle attempt check; never supersede a worker or another failure.
+                    if ( 'attempt_check' === $job['phase'] && 0 === $job['lease_until'] &&
+                        ( 'ready' === $job['state'] || ( 'blocked' === $job['state'] && 'remote_identity_conflict' === $job['last_error'] ) ) ) {
+                        $changed = $this->db->query( $this->db->prepare( "UPDATE {$this->table} SET state='complete',phase='committed',next_attempt=0,last_error='',updated_at=%d,journal_revision=journal_revision+1 WHERE id=%d AND protocol=%s AND identity_conflict=0 AND state=%s AND phase='attempt_check' AND last_error=%s AND lease_until=0", time(), $job['id'], self::PROTOCOL, $job['state'], $job['last_error'] ) );
+                        if ( false === $changed ) { return $this->error(); }
+                        if ( 1 === $changed ) { $job['state'] = 'complete'; $job['phase'] = 'committed'; $job['next_attempt'] = 0; $job['last_error'] = ''; }
+                        return $job;
+                    }
+                }
                 // A new announcement may be an operator retry. Only GET's attempt header
                 // decides that; the checkpoint never authorizes a CMS write.
                 $previous_checkpoint = $job['payload']['pending_discovery_checkpoint'] ?? ( $job['payload']['discovery_checkpoint'] ?? null );
@@ -159,6 +171,28 @@ class Nova_Bridge_Suite_Posting_Jobs {
 
     private static function newer_checkpoint( ?string $next, ?string $previous ): bool {
         return null !== $next && ( null === $previous || strlen( $next ) > strlen( $previous ) || ( strlen( $next ) === strlen( $previous ) && strcmp( $next, $previous ) > 0 ) );
+    }
+
+    /** A terminal journal can contain a failure; only an acknowledged success for this attempt is final. */
+    private static function has_publication_receipt( array $job ): bool {
+        $payload = $job['payload']; $receipt = $payload['events']['publication_succeeded'] ?? [];
+        $bytes = $receipt['bytes'] ?? null; $digest = $receipt['sha256'] ?? null;
+        if ( ! is_string( $bytes ) || ! is_string( $digest ) || ! hash_equals( hash( 'sha256', $bytes ), $digest ) ) { return false; }
+        $event = json_decode( $bytes, true );
+        if ( ! is_array( $event ) || 'publication_succeeded' !== ( $event['kind'] ?? '' ) || is_wp_error( Nova_Bridge_Suite_Posting_Protocol::event_input( $event ) ) ) { return false; }
+        $discovery = $payload['discovery'] ?? []; $snapshot = $payload['content'] ?? [];
+        foreach ( [ 'site_id' => $job['site_id'], 'delivery_id' => $job['content_id'],
+            'content_item_version_id' => $discovery['content_item_version_id'] ?? null,
+            'source_sha256' => $discovery['source_sha256'] ?? null, 'version_number' => $snapshot['version_number'] ?? null,
+            'attempt_id' => $payload['attempt_id'] ?? null, 'delivery_etag' => $payload['delivery_etag'] ?? null ] as $key => $expected ) {
+            if ( $expected === null || ( $event[$key] ?? null ) !== $expected ) { return false; }
+        }
+        if ( ( $discovery['id'] ?? null ) !== $event['delivery_id'] ) { return false; }
+        foreach ( [ 'id' => 'delivery_id', 'site_id' => 'site_id', 'content_item_version_id' => 'content_item_version_id', 'source_sha256' => 'source_sha256' ] as $key => $event_key ) {
+            if ( ( $snapshot[$key] ?? null ) !== $event[$event_key] ) { return false; }
+        }
+        $accepted = wp_json_encode( $receipt['accepted'] ?? null );
+        return is_string( $accepted ) && ! is_wp_error( Nova_Bridge_Suite_Posting_Protocol::accepted( [ 'status' => 202, 'raw_body' => $accepted ], $event ) );
     }
 
     private static function same_value( $left, $right ): bool {
@@ -240,7 +274,9 @@ class Nova_Bridge_Suite_Posting_Jobs {
         if ( 'complete' === $next['state'] && self::newer_checkpoint( $next['payload']['pending_discovery_checkpoint'] ?? null, $next['payload']['discovery_checkpoint'] ?? null ) ) {
             $next['payload']['discovery_checkpoint'] = $next['payload']['pending_discovery_checkpoint'];
             unset( $next['payload']['pending_discovery_checkpoint'] );
-            $next['state'] = 'ready'; $next['phase'] = 'attempt_check'; $next['next_attempt'] = 0; $next['attempts'] = 0; $next['last_error'] = '';
+            if ( ! self::has_publication_receipt( $next ) ) {
+                $next['state'] = 'ready'; $next['phase'] = 'attempt_check'; $next['next_attempt'] = 0; $next['attempts'] = 0; $next['last_error'] = '';
+            }
         }
         if ( ! is_int( $next['attempts'] ) || $next['attempts'] < 0 || $next['attempts'] > 4294967295 ) { return $this->error( 'journal_state' ); }
         $payload = wp_json_encode( $next['payload'], JSON_UNESCAPED_SLASHES );

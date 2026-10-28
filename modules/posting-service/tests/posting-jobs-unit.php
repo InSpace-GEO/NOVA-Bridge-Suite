@@ -15,7 +15,7 @@ require dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-posting-discover
 require dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-posting-jobs.php';
 
 class Posting_Jobs_Database {
-    public $prefix = 'fixture_'; public $last_error = ''; public $rows = []; public $discovery = []; public $queries = []; public $fail_query = false; public $deny_lock = false; public $count_override = null;
+    public $prefix = 'fixture_'; public $last_error = ''; public $rows = []; public $discovery = []; public $queries = []; public $fail_query = false; public $deny_lock = false; public $count_override = null; public $before_restore = null;
     public function prepare( $sql, ...$args ) { return [ $sql, $args ]; }
     private function unpack( $query ) { $this->queries[] = $query; $this->last_error = ''; return is_array( $query ) ? $query : [ $query, [] ]; }
     private function guard( $sql, $required ) { if ( false === strpos( $sql, $required ) ) { throw new RuntimeException( 'Missing SQL concurrency boundary: ' . $required ); } }
@@ -82,6 +82,13 @@ class Posting_Jobs_Database {
             if ( $row['identity_conflict'] || 'complete' === $row['state'] ) { return 0; }
             $this->rows[ $a[2] ]['payload'] = $a[0]; $this->rows[ $a[2] ]['updated_at'] = $a[1]; return 1;
         }
+        if ( false !== strpos( $sql, "SET state='complete',phase='committed'" ) ) {
+            $this->guard( $sql, "protocol=%s AND identity_conflict=0 AND state=%s AND phase='attempt_check' AND last_error=%s AND lease_until=0" );
+            if ( is_callable( $this->before_restore ) ) { call_user_func( $this->before_restore, $this ); }
+            $row = $this->rows[ $a[1] ];
+            if ( $row['protocol'] !== $a[2] || $row['identity_conflict'] || $row['state'] !== $a[3] || 'attempt_check' !== $row['phase'] || $row['last_error'] !== $a[4] || $row['lease_until'] ) { return 0; }
+            $this->rows[ $a[1] ] = array_merge( $row, [ 'state' => 'complete', 'phase' => 'committed', 'next_attempt' => 0, 'last_error' => '', 'updated_at' => $a[0] ] ); return 1;
+        }
         if ( false !== strpos( $sql, "phase='attempt_check'" ) ) {
             $this->guard( $sql, "state='complete' AND identity_conflict=0" );
             $row = $this->rows[ $a[2] ];
@@ -100,6 +107,17 @@ class Posting_Jobs_Database {
 $checks = 0;
 function journal_check( $condition, $message ) { ++$GLOBALS['checks']; if ( ! $condition ) { throw new RuntimeException( $message ); } }
 function journal_item( $id = '10' ) { return [ 'id' => '22222222-2222-4222-8222-' . str_pad( $id, 12, '0', STR_PAD_LEFT ), 'content_item_version_id' => '901', 'source_sha256' => str_repeat( 'b', 64 ), 'created_at' => '2026-10-02T12:00:00.123Z' ]; }
+function journal_success_payload( array $job ): array {
+    $payload = $job['payload']; $item = $payload['discovery'];
+    $payload['content'] = [ 'id' => $item['id'], 'site_id' => $job['site_id'], 'content_item_version_id' => $item['content_item_version_id'], 'source_sha256' => $item['source_sha256'], 'version_number' => 2 ];
+    $payload['attempt_id'] = '33333333-3333-4333-8333-333333333333'; $payload['delivery_etag'] = '"' . str_repeat( 'a', 64 ) . '"';
+    $payload['result'] = [ 'post_id' => 41, 'cms_post_status' => 'publish', 'operation_id' => $job['operation_id'] ];
+    $event = [ 'event_id' => wp_generate_uuid4(), 'kind' => 'publication_succeeded', 'site_id' => $job['site_id'], 'delivery_id' => $item['id'], 'content_item_version_id' => $item['content_item_version_id'], 'source_sha256' => $item['source_sha256'], 'version_number' => 2, 'attempt_id' => $payload['attempt_id'], 'delivery_etag' => $payload['delivery_etag'], 'published_at' => '2026-10-28T08:36:52.000Z', 'publication_ref' => 'wordpress:post:41;operation:' . $job['operation_id'] ];
+    $bytes = wp_json_encode( $event );
+    $accepted = array_intersect_key( $event, array_flip( [ 'event_id', 'kind', 'site_id', 'delivery_id', 'attempt_id' ] ) ) + [ 'accepted_at' => '2026-10-28T08:36:53.000Z', 'status' => 'pending' ];
+    $payload['events']['publication_succeeded'] = [ 'bytes' => $bytes, 'sha256' => hash( 'sha256', $bytes ), 'accepted' => $accepted ];
+    return $payload;
+}
 $site = '11111111-1111-4111-8111-111111111111';
 $db = new Posting_Jobs_Database(); $jobs = new Nova_Bridge_Suite_Posting_Jobs( $db );
 $one = $jobs->enqueue_discovered( $site, journal_item() );
@@ -192,6 +210,69 @@ journal_check( '9007199254740995' === $terminal['payload']['discovery_checkpoint
 journal_check( is_wp_error( $flight_jobs->save( $flight, [ 'state' => 'complete' ] ) ), 'The old owner cannot erase the queued attempt check.' );
 $checking = $flight_jobs->claim( $site ); $finished = $flight_jobs->save( $checking, [ 'state' => 'complete', 'phase' => 'committed' ] );
 journal_check( 'complete' === $finished['state'], 'The checked observation does not cause an endless re-announcement loop.' );
+
+$success_db = new Posting_Jobs_Database(); $success_jobs = new Nova_Bridge_Suite_Posting_Jobs( $success_db );
+$success_jobs->enqueue_discovered( $site, journal_item(), '1' ); $success = $success_jobs->claim( $site );
+$success_payload = journal_success_payload( $success );
+$success = $success_jobs->save( $success, [ 'state' => 'complete', 'phase' => 'committed', 'payload' => $success_payload, 'target_id' => 41 ] );
+$successful_row = $success_db->rows[1];
+foreach ( [ '2', '3', null ] as $checkpoint ) {
+    $observed = $success_jobs->enqueue_discovered( $site, journal_item(), $checkpoint );
+    journal_check( 'complete' === $observed['state'] && 'committed' === $observed['phase'] && null === $success_jobs->claim( $site ), 'A later ready scan cannot schedule a GET for an acknowledged successful delivery.' );
+}
+journal_check( $successful_row === $success_db->rows[1], 'Rediscovery leaves the original success receipt, CMS result and journal unchanged.' );
+
+// A new scan arriving while the success receipt is awaiting ACK must not reopen it after ACK.
+$success_flight_db = new Posting_Jobs_Database(); $success_flight_jobs = new Nova_Bridge_Suite_Posting_Jobs( $success_flight_db );
+$success_flight_jobs->enqueue_discovered( $site, journal_item(), '1' ); $success_flight = $success_flight_jobs->claim( $site );
+$pending_success = journal_success_payload( $success_flight ); unset( $pending_success['events'] );
+$success_flight = $success_flight_jobs->save( $success_flight, [ 'phase' => 'event_pending', 'payload' => $pending_success ] );
+$success_flight_jobs->enqueue_discovered( $site, journal_item(), '2' ); $success_flight_jobs->enqueue_discovered( $site, journal_item(), '3' );
+$success_ack = journal_success_payload( $success_flight );
+$success_terminal = $success_flight_jobs->save( $success_flight, [ 'state' => 'complete', 'phase' => 'committed', 'payload' => $success_ack ] );
+journal_check( 'complete' === $success_terminal['state'] && 'committed' === $success_terminal['phase'] && null === $success_flight_jobs->claim( $site ), 'A concurrent announcement cannot reopen a newly acknowledged successful receipt.' );
+journal_check( '3' === $success_terminal['payload']['discovery_checkpoint'] && ! isset( $success_terminal['payload']['pending_discovery_checkpoint'] ) && $success_terminal['payload']['events'] === $success_ack['events'], 'The final success ACK consumes the pending checkpoint while preserving its exact receipt.' );
+
+foreach ( [ 'ready' => '', 'blocked' => 'remote_identity_conflict' ] as $old_state => $old_error ) {
+    $success_db->rows[1] = array_merge( $successful_row, [ 'state' => $old_state, 'phase' => 'attempt_check', 'last_error' => $old_error, 'next_attempt' => time() + 60 ] );
+    $restored = $success_jobs->enqueue_discovered( $site, journal_item(), '1' );
+    journal_check( 'complete' === $restored['state'] && 'committed' === $restored['phase'] && '' === $restored['last_error'] && 0 === $restored['next_attempt'] && null === $success_jobs->claim( $site ), 'An idle historical success recheck is restored without a network request: ' . $old_state );
+    journal_check( $successful_row['payload'] === $success_db->rows[1]['payload'], 'Historical restoration preserves original publication evidence.' );
+}
+foreach ( [ [ 'blocked', 'attempt_check', 'discovery_identity_conflict', 0 ], [ 'blocked', 'applying', 'remote_identity_conflict', 0 ], [ 'running', 'attempt_check', '', time() + 60 ] ] as [ $old_state, $old_phase, $old_error, $lease ] ) {
+    $success_db->rows[1] = array_merge( $successful_row, [ 'state' => $old_state, 'phase' => $old_phase, 'last_error' => $old_error, 'lease_until' => $lease ] );
+    $before = $success_db->rows[1]; $success_jobs->enqueue_discovered( $site, journal_item(), '1' );
+    journal_check( $before === $success_db->rows[1], 'Historical cleanup cannot override another failure, mutation phase or active worker.' );
+}
+$success_db->rows[1] = array_merge( $successful_row, [ 'state' => 'ready', 'phase' => 'attempt_check' ] );
+$success_db->before_restore = static function ( $db ) { $db->rows[1]['state'] = 'running'; $db->rows[1]['lease_until'] = time() + 60; $db->rows[1]['lease_token'] = 'concurrent-owner'; };
+$success_jobs->enqueue_discovered( $site, journal_item(), '2' );
+journal_check( 'running' === $success_db->rows[1]['state'] && 'concurrent-owner' === $success_db->rows[1]['lease_token'], 'Restoration CAS cannot supersede a lease claimed after the journal was read.' );
+$success_db->before_restore = null;
+
+// Terminal labels, a pending send, and another attempt's receipt are not success proof.
+$invalid_receipts = [
+    'no receipt' => static function ( &$p ) { unset( $p['events'] ); },
+    'unacknowledged receipt' => static function ( &$p ) { unset( $p['events']['publication_succeeded']['accepted'] ); },
+    'wrong digest' => static function ( &$p ) { $p['events']['publication_succeeded']['sha256'] = str_repeat( '0', 64 ); },
+    'different ACK attempt' => static function ( &$p ) { $p['events']['publication_succeeded']['accepted']['attempt_id'] = wp_generate_uuid4(); },
+    'different current attempt' => static function ( &$p ) { $p['attempt_id'] = wp_generate_uuid4(); },
+    'different ETag' => static function ( &$p ) { $p['delivery_etag'] = '"' . str_repeat( 'c', 64 ) . '"'; },
+    'different snapshot source' => static function ( &$p ) { $p['content']['source_sha256'] = str_repeat( 'c', 64 ); },
+    'different snapshot version' => static function ( &$p ) { $p['content']['version_number'] = 3; },
+    'failure stored under success key' => static function ( &$p ) { $r = &$p['events']['publication_succeeded']; $e = json_decode( $r['bytes'], true ); $e['kind'] = 'publication_failed'; unset( $e['published_at'], $e['publication_ref'] ); $e['reason'] = 'fixture_failure'; $r['bytes'] = wp_json_encode( $e ); $r['sha256'] = hash( 'sha256', $r['bytes'] ); $r['accepted']['kind'] = 'publication_failed'; },
+];
+foreach ( $invalid_receipts as $label => $mutate ) {
+    $bad = $success_payload; $mutate( $bad );
+    $success_db->rows[1] = array_merge( $successful_row, [ 'payload' => wp_json_encode( $bad ) ] );
+    $observed = $success_jobs->enqueue_discovered( $site, journal_item(), '2' );
+    journal_check( 'ready' === $observed['state'] && 'attempt_check' === $observed['phase'], 'Unproven terminal work still requires the existing authenticated attempt check: ' . $label );
+    $success_db->rows[1] = array_merge( $successful_row, [ 'state' => 'blocked', 'phase' => 'attempt_check', 'last_error' => 'remote_identity_conflict', 'payload' => wp_json_encode( $bad ) ] );
+    $observed = $success_jobs->enqueue_discovered( $site, journal_item(), '1' );
+    journal_check( 'blocked' === $observed['state'], 'Historical cleanup does not invent success from incomplete evidence: ' . $label );
+}
+$success_db->rows[1] = $successful_row; $different = journal_item(); $different['source_sha256'] = str_repeat( 'c', 64 );
+journal_check( is_wp_error( $success_jobs->enqueue_discovered( $site, $different, '2' ) ) && 1 === $success_db->rows[1]['identity_conflict'], 'A successful receipt never hides conflicting authenticated discovery identity.' );
 
 $counter_db = new Posting_Jobs_Database(); $counter_jobs = new Nova_Bridge_Suite_Posting_Jobs( $counter_db ); $counter_jobs->enqueue_discovered( $site, journal_item() );
 $counter = $counter_jobs->claim( $site ); $counter = $counter_jobs->save( $counter, [ 'attempts' => 0 ] );
