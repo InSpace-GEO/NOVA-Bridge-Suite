@@ -505,7 +505,7 @@ class Elementor_Service {
 		if ( null !== $document_settings ) {
 			$valid = Document_Presentation::assert_supported( $post_id, $document_settings );
 			if ( is_wp_error( $valid ) ) { return $valid; }
-			// Elementor and provider hooks own raw settings persistence in this path.
+			// Registered controls use native hooks; unregistered stored literals retain their snapshot values.
 		}
 		$canonical_document = null;
 		$captured_save       = false;
@@ -573,7 +573,7 @@ class Elementor_Service {
 					$lifecycle_started = true;
 					$elementor_document->set_is_built_with_elementor( true );
 					$save_data = array( 'elements' => $document );
-					if ( null !== $document_settings ) { $save_data['settings'] = $document_settings; }
+					if ( null !== $document_settings ) { $save_data['settings'] = Document_Presentation::native_settings( $document_settings ); }
 					$save_result = null === $document_settings ? $elementor_document->save( $save_data ) : Document_Presentation::with_post( $post_id, static function () use ( $elementor_document, $save_data ) { return $elementor_document->save( $save_data ); } );
 					if ( is_wp_error( $save_result ) ) { $failure_reason = 'elementor_save_exception'; $failure_detail = $save_result->get_error_message(); }
 				}
@@ -650,6 +650,9 @@ class Elementor_Service {
 		if ( null === $document_settings ) {
 			$page_settings_result = $this->persist_elementor_page_settings( $post_id, $page_settings );
 			if ( is_wp_error( $page_settings_result ) ) { return $page_settings_result; }
+		} else {
+			$retained_result = Document_Presentation::persist_retained( $post_id, $document_settings );
+			if ( is_wp_error( $retained_result ) ) { return $retained_result; }
 		}
 
 		clean_post_cache( $post_id );

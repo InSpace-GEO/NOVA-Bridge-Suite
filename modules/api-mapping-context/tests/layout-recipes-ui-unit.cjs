@@ -281,5 +281,14 @@ async function categoryMounted(settings={}){const current=categoryDesign(),choic
   assert.equal(controlFor(t,'Content layout').checked,true);assert.equal(detailsFor(t.host,'Page layout and template settings').open,true);
   assert.deepEqual(t.controller.state.recipe.bindings,bindings);assert.equal(t.controller.state.design.source_receipt,'selected-source');
  });
+ await test('stored Elementor literals remain distinct from registered controls through capture and save',async()=>{
+  const settings={layout_width:'full',background_color:'',__globals__:{background_color:'globals/colors?id=primary'},__retained__:{legacy_theme_color:'#123456',legacy_spacing:{unit:'px',size:12},__globals__:{legacy_theme_color:'globals/colors?id=secondary'}}};
+  const t=await visualMounted({request:async(path,payload,current)=>{if(path==='/design')return {...clone(current),blueprint:{...clone(current.blueprint),document_settings:clone(settings)}};}});
+  t.controller.next();await t.controller.capture(42);choosePurpose(t,'title');
+  assert(t.host.textContent.includes('2 registered Elementor page settings'));
+  assert(t.host.textContent.includes('2 additional stored Elementor settings are retained as fixed values'));
+  t.controller.next();await t.controller.preview();await t.controller.save();
+  const saved=t.calls.find(call=>call.path==='/save');assert(saved);assert.deepEqual(saved.payload.recipe.blueprint.document_settings,settings);
+ });
  console.log('PASS '+checks+' layout recipe UI workflows.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -183,6 +183,7 @@ final class Nova_Bridge_Suite_Recipe_Elementor {
             $blueprint['document'] = $this->provider_flags( $this->rebase( $blueprint['document'], $seed . '/document', false, $identity ) );
             if ( isset( $blueprint['meta']['custom_css'] ) && is_string( $blueprint['meta']['custom_css'] ) ) { $blueprint['meta']['custom_css'] = $this->native_selectors( $blueprint['meta']['custom_css'], $identity['nodes'] ); }
             if ( isset( $blueprint['document_settings']['custom_css'] ) && is_string( $blueprint['document_settings']['custom_css'] ) ) { $blueprint['document_settings']['custom_css'] = $this->native_selectors( $blueprint['document_settings']['custom_css'], $identity['nodes'] ); }
+            if ( isset( $blueprint['document_settings']['__retained__']['custom_css'] ) && is_string( $blueprint['document_settings']['__retained__']['custom_css'] ) ) { $blueprint['document_settings']['__retained__']['custom_css'] = $this->native_selectors( $blueprint['document_settings']['__retained__']['custom_css'], $identity['nodes'] ); }
             $check = $this->validate_blueprint( $blueprint ); if ( is_wp_error( $check ) ) { return $check; }
             $payload = [ 'elementor_data' => $blueprint['document'] ]; if ( array_key_exists( 'meta', $blueprint ) ) { $payload['elementor_page_settings'] = $blueprint['meta']; } if ( isset( $blueprint['template'] ) ) { $payload['template'] = $blueprint['template']; }
             if ( array_key_exists( 'theme_presentation', $blueprint ) ) { $payload['theme_presentation'] = $blueprint['theme_presentation']; }
