@@ -211,5 +211,15 @@ $new_attempt = result( $worker->process( $failed_job ) );
 check( $new_attempt['phase'] === 'event_pending' && ! isset( $new_attempt['payload']['native_writer'], $new_attempt['payload']['configuration'] ) && $inserts === 0, 'A new authorized attempt clears the former local writer/configuration before re-selection.' );
 $new_attempt['state'] = 'running'; $complete_failure = result( $worker->process( $new_attempt ) );
 check( $complete_failure['state'] === 'complete' && $complete_failure['last_error'] !== 'native_writer_identity' && $inserts === 0, 'A failed re-selection can drain its exact retained event after response loss without stale-dispatch blockage.' );
+foreach ( [ 'crash_insert', 'crash_save' ] as $interruption ) {
+    reset_native(); $old = result( Nova_Bridge_Suite_Rule_Writer::plan( snapshot(), config( $p ), [ 'operation_id' => op( 1 ) ] ) ); $GLOBALS[$interruption] = true;
+    check( is_wp_error( Nova_Bridge_Suite_Rule_Writer::apply( $old, op( 1 ) ) ), 'Interrupted rule predecessor is retained.' );
+    $before = $native_saves; $retired = result( Nova_Bridge_Suite_Rule_Writer::supersede( $old, op( 1 ) ) );
+    check( $retired['post_id'] === 10 && $native_saves === $before, 'Rule retirement does not finish the old content save.' );
+    $source = snapshot( '502' ); $source['content']['title'] = 'Replacement';
+    $new = result( Nova_Bridge_Suite_Rule_Writer::plan( $source, config( $p ), [ 'operation_id' => op( 2 ) ] ) );
+    $saved = result( Nova_Bridge_Suite_Rule_Writer::apply( $new, op( 2 ) ) );
+    check( $saved['post_id'] === 10 && $inserts === 1 && $posts[10]->post_title === 'Replacement', 'Newer rules reuse the same reserved page.' );
+}
 echo 'PASS ' . $checks . " rule-writer native lifecycle checks.\n";
 }

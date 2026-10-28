@@ -58,14 +58,15 @@ foreach ( [ 'missing_attempt', 'changed_bytes', 'wrong_profile' ] as $case ) {
     if ( 'wrong_profile' !== $case ) { delivery_check( 'blocked' === $result['state'] && [] === $server->posts, $case . ' fails before an event or write.' ); }
 }
 
-// A receipt lost during the previous release must replay its old bytes even after GET changes.
+// A lost historical receipt keeps its old bytes after a projection upgrade,
+// but must still check the current attempt before sending.
 [ $old_job, $old_store, $old_server, $old_worker ] = delivery_fixture();
 $old_server->lose = 'publication_succeeded'; $pending = $old_worker->process( $old_job );
 $old_receipt = $pending['payload']['event_bytes']; $old_etag = $pending['payload']['delivery_etag'];
 [ $f, $store, $server, $worker ] = unified_execution_fixture( 3 );
 $result = $worker->process( delivery_resume( $pending ) );
-delivery_check( 'complete' === $result['state'] && [ $old_receipt ] === $server->posts && 0 === Contract_Test_Writer::$apply, 'An already saved page completes its exact old success receipt without fetching or writing again.' );
-delivery_check( $old_etag === json_decode( $server->posts[0], true )['delivery_etag'] && 1 === count( $server->calls ), 'Historical receipt replay never substitutes the new public body hash.' );
+delivery_check( 'complete' === $result['state'] && [ $old_receipt ] === $server->posts && 0 === Contract_Test_Writer::$apply, 'An already saved page completes its exact old success receipt after checking authority, without writing again.' );
+delivery_check( $old_etag === json_decode( $server->posts[0], true )['delivery_etag'] && 3 === count( $server->calls ), 'Historical receipt replay checks authority but never substitutes the new public body hash.' );
 
 // Legacy V3 discovery retains the common identity checks that still exist in the unified body.
 [ $f, $store, $server, $worker ] = unified_execution_fixture( 3 );

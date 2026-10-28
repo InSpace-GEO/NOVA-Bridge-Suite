@@ -46,9 +46,32 @@ class Posting_Jobs_Database {
         if ( false !== strpos( $sql, 'id=%d AND lease_token=%s' ) ) { $row = $this->rows[ $args[0] ] ?? null; return $row && $row['lease_token'] === $args[1] ? $row : null; }
         throw new RuntimeException( 'Unexpected SELECT row.' );
     }
+    public function get_results( $query, $mode ) {
+        [ $sql, $a ] = $this->unpack( $query );
+        $this->guard( $sql, "JSON_UNQUOTE(JSON_EXTRACT(payload,'$.content.url_id'))=%s" );
+        $this->guard( $sql, 'protocol=%s AND identity_conflict=0' );
+        $this->guard( $sql, 'ORDER BY id LIMIT 51' );
+        return array_values( array_filter( $this->rows, static function ( $row ) use ( $a ) {
+            $payload = json_decode( $row['payload'], true );
+            return $row['id'] !== $a[0] && $row['site_id'] === $a[1] && $row['protocol'] === $a[2] && ! $row['identity_conflict'] && ( $payload['content']['url_id'] ?? null ) === $a[3]
+                && ( $row['state'] !== 'complete' || ( $row['phase'] === 'superseded' && ! isset( $payload['retirement_reconciled'] ) ) );
+        } ) );
+    }
     public function query( $query ) {
         [ $sql, $a ] = $this->unpack( $query );
         if ( $this->fail_query ) { $this->last_error = 'fixture storage failure'; return false; }
+        if ( false !== strpos( $sql, "SET state='complete',phase='superseded'" ) ) {
+            $this->guard( $sql, 'identity_conflict=0 AND journal_revision=%d' );
+            $row = $this->rows[$a[2]];
+            if ( $row['site_id'] !== $a[3] || $row['protocol'] !== $a[4] || $row['identity_conflict'] || ( $row['journal_revision'] ?? 0 ) !== $a[5] ) { return 0; }
+            $this->rows[$a[2]] = array_merge( $row, [ 'state' => 'complete', 'phase' => 'superseded', 'payload' => $a[0], 'lease_token' => '', 'lease_until' => 0, 'next_attempt' => 0, 'last_error' => 'delivery_superseded', 'journal_revision' => $a[5] + 1 ] ); return 1;
+        }
+        if ( false !== strpos( $sql, "SET state='ready',payload=" ) ) {
+            $this->guard( $sql, 'identity_conflict=0 AND state=%s AND lease_until=0' );
+            $row = $this->rows[$a[2]];
+            if ( $row['protocol'] !== $a[3] || $row['identity_conflict'] || $row['state'] !== $a[4] || $row['lease_until'] ) { return 0; }
+            $this->rows[$a[2]] = array_merge( $row, [ 'state' => 'ready', 'payload' => $a[0], 'next_attempt' => 0, 'attempts' => 0, 'last_error' => '', 'journal_revision' => ( $row['journal_revision'] ?? 0 ) + 1 ] ); return 1;
+        }
         if ( 0 === strpos( $sql, 'INSERT INTO fixture_nova_posting_discovery' ) ) {
             $old = $this->discovery[ $a[0] ] ?? [ 'site_id' => $a[0], 'wake_sequence' => 0, 'payload' => '{}' ];
             if ( false !== strpos( $sql, 'wake_sequence=wake_sequence+1' ) ) { ++$old['wake_sequence']; }
@@ -322,4 +345,31 @@ $upgrade_jobs->enqueue_discovered( $site, $unified, '11' );
 $saved = $upgrade_jobs->save( $active, [ 'last_error' => 'fixture_retry' ] );
 journal_check( 'unified' === $saved['payload']['discovery_feed'] && '11' === $saved['payload']['pending_discovery_checkpoint'], 'A stale worker cannot erase the unified sequence marker or latest observation.' );
 
+foreach ( [ 'blocked', 'ready' ] as $state ) {
+    $db = new Posting_Jobs_Database(); $jobs = new Nova_Bridge_Suite_Posting_Jobs( $db );
+    $job = $jobs->enqueue_discovered( $site, journal_item(), '1' );
+    $db->rows[1]['state'] = $state; $db->rows[1]['phase'] = 'applying'; $db->rows[1]['next_attempt'] = PHP_INT_MAX;
+    $requeued = $jobs->enqueue_discovered( $site, journal_item(), '2' );
+    journal_check( $requeued['state'] === 'ready' && $requeued['phase'] === 'applying' && $requeued['next_attempt'] === 0 && $requeued['payload']['pending_discovery_checkpoint'] === '2', 'Fresh discovery wakes retained ' . $state . ' work without resetting its native phase.' );
+}
+$db = new Posting_Jobs_Database(); $jobs = new Nova_Bridge_Suite_Posting_Jobs( $db );
+$jobs->enqueue_discovered( $site, journal_item(), '1' ); $old = $jobs->claim( $site );
+$payload = $old['payload']; $payload['content'] = [ 'url_id' => '42' ]; $payload['event_bytes'] = 'retained exact old callback';
+$old = $jobs->save( $old, [ 'payload' => $payload, 'phase' => 'applying' ] );
+$new = $jobs->enqueue_discovered( $site, journal_item( '11' ), '2' );
+$previous = $jobs->predecessors( $new, [ 'url_id' => '42' ] );
+journal_check( count( $previous ) === 1 && $previous[0]['id'] === $old['id'], 'Predecessor lookup finds unfinished work at the exact site/URL identity.' );
+$changed = $previous[0]; $db->rows[1]['journal_revision'] = 1;
+journal_check( is_wp_error( $jobs->retire_predecessor( $changed, [ 'post_id' => 41 ] ) ), 'A concurrent journal change invalidates retirement evidence.' );
+$previous = $jobs->predecessors( $new, [ 'url_id' => '42' ] );
+journal_check( true === $jobs->retire_predecessor( $previous[0], [ 'post_id' => 41 ] ), 'Remote retirement and native proof revoke the old lease.' );
+journal_check( is_wp_error( $jobs->save( $old, [ 'phase' => 'committed' ] ) ), 'The cancelled lease cannot acknowledge a delayed old completion.' );
+$retired = $db->rows[1];
+journal_check( 'retained exact old callback' === json_decode( $retired['payload'], true )['event_bytes'] && 'superseded' === $retired['phase'] && [] === $jobs->predecessors( $new, [ 'url_id' => '42' ] ), 'Retirement preserves exact callback evidence and removes the predecessor from pending work.' );
+$jobs->enqueue_discovered( $site, journal_item(), '3' );
+journal_check( $retired === $db->rows[1], 'Stale discovery cannot reopen a retired delivery.' );
+$jobs->enqueue_discovered( $site, journal_item( '12' ), '3' );
+$db->rows[3]['state'] = 'complete'; $db->rows[3]['phase'] = 'superseded';
+$p = json_decode( $db->rows[3]['payload'], true ); $p['content'] = [ 'url_id' => '42' ]; $p['retired'] = [ 'reason' => 'remote_gone' ]; $db->rows[3]['payload'] = json_encode( $p );
+journal_check( count( $jobs->predecessors( $new, [ 'url_id' => '42' ] ) ) === 1, 'A job retired at GET still requires native reconciliation before its replacement writes.' );
 echo 'PASS ' . $checks . " contracted journal checks.\n";

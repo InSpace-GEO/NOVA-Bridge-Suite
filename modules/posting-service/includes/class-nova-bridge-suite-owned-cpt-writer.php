@@ -36,7 +36,7 @@ final class Nova_Bridge_Suite_Owned_CPT_Writer {
         $association = self::assoc( $content ); $type = $local['routing']['post_type']; $resource = 'post_type:' . $type;
         $url = self::target_url( $content['url'] ?? '' );
         if ( $association ) {
-            if ( ( $association['state'] ?? '' ) !== 'committed' || ( $association['content_item_id'] ?? '' ) !== $content['content_item_id'] || ( $association['template_id'] ?? '' ) !== ( $content['configuration']['id'] ?? null ) || ( $association['target']['target_url'] ?? '' ) !== self::checked( Nova_Bridge_Suite_Mapped_Content_Target::normalize_url( $url ) )['identity'] ) { self::fail( 'association', 'This URL belongs to a different or unfinished native operation.' ); }
+            if ( ! in_array( $association['state'] ?? '', [ 'committed', 'retired' ], true ) || ( $association['content_item_id'] ?? '' ) !== $content['content_item_id'] || ( $association['template_id'] ?? '' ) !== ( $content['configuration']['id'] ?? null ) || ( $association['target']['target_url'] ?? '' ) !== self::checked( Nova_Bridge_Suite_Mapped_Content_Target::normalize_url( $url ) )['identity'] ) { self::fail( 'association', 'This URL belongs to a different or unfinished native operation.' ); }
             $previous = $association['content_item_version_id'] ?? ''; $current = $content['content_item_version_id']; if ( strlen( $current ) < strlen( $previous ) || ( strlen( $current ) === strlen( $previous ) && strcmp( $current, $previous ) <= 0 ) ) { self::fail( 'version', 'This content version is not newer than the retained version.' ); }
             return [ 'id' => (int) $association['post_id'], 'target' => $association['target'], 'association' => $association ];
         }
@@ -125,5 +125,28 @@ final class Nova_Bridge_Suite_Owned_CPT_Writer {
     } ); } ); }
     public static function recover( array $p, string $op ) { return self::guard( static function () use ( $p, $op ) { self::assert_plan( $p, $op ); return self::locked( $p, static function () use ( $p, $op ) { $r = self::option( self::opkey( $op ) ); if ( ! $r ) { if ( self::reserved( $p ) ) { self::fail( 'orphaned', 'The native reservation has no retained journal.' ); } if ( $p['target_post_id'] && self::state( $p['target_post_id'], $p['native_before_keys'] ?? array_keys( $p['meta'] ) ) !== $p['native_before'] ) { self::fail( 'human_changed', 'The native item changed after planning.' ); } return [ 'state' => 'not_committed', 'no_native_commit' => true, 'safe_to_apply' => true ]; } if ( ( $r['plan_digest'] ?? '' ) !== $p['plan_digest'] ) { self::fail( 'operation', 'The operation belongs to a different plan.' ); } if ( 'committed' === $r['state'] ) { return self::complete( $p, $r ); } $id = (int) ( $r['post_id'] ?: self::reserved( $p ) ); if ( $id && 'saving' === $r['state'] ) { self::check( $p, $id ); if ( get_post_status( $id ) === $p['desired_status'] ) { self::finish_seo( $p, $r, $id ); $r['post_id'] = $id; return self::complete( $p, $r ); } self::fail( 'save_unknown', 'The native save is incomplete and requires reconciliation.' ); } if ( $id ) { return [ 'state' => 'not_committed', 'no_native_commit' => false, 'safe_to_apply' => true, 'post_id' => $id ]; } if ( 'creating' === $r['state'] ) { self::fail( 'create_unknown', 'Creation remains uncertain; no duplicate was created.' ); } return [ 'state' => 'not_committed', 'no_native_commit' => true, 'safe_to_apply' => true ]; } ); } ); }
     public static function finish( array $p, array $r ) { return self::verify( $p, $r ); }
+    /** Retain a known target for replacement without completing the old REST/SEO write. */
+    public static function supersede( array $p, string $op ) {
+        return self::guard( static function () use ( $p, $op ) {
+            self::assert_plan( $p, $op );
+            return self::locked( $p, static function () use ( $p, $op ) {
+                $r = self::option( self::opkey( $op ) );
+                if ( ! $r ) { return self::recover( $p, $op ); }
+                if ( ( $r['plan_digest'] ?? '' ) !== $p['plan_digest'] ) { self::fail( 'operation', 'The retired operation belongs to another plan.' ); }
+                if ( 'committed' === $r['state'] ) { self::checked( self::verify( $p, [ 'post_id' => (int) $r['post_id'] ] ) ); }
+                $id = (int) ( $r['post_id'] ?: self::reserved( $p ) );
+                if ( ! $id ) {
+                    if ( 'creating' === $r['state'] ) { self::fail( 'create_unknown', 'An uncertain creation has no unique reservation.' ); }
+                    return [ 'state' => 'not_committed', 'no_native_commit' => true ];
+                }
+                if ( ! current_user_can( 'edit_post', $id ) || ( get_post( $id )->post_type ?? null ) !== $p['post_type'] ||
+                    ( ! $p['target_post_id'] && self::state( $id, [] )['marker'] !== self::marker( $p ) ) ) { self::fail( 'reservation', 'The retired native target cannot be reconciled.' ); }
+                self::check_url( $p, $id ); $current = self::assoc( $p['delivery_identity'] );
+                if ( $current !== $p['association_before'] && ( $current['operation_id'] ?? '' ) !== $op ) { self::fail( 'association', 'Another operation owns the URL.' ); }
+                self::checkpoint( self::assoc_key( $p['delivery_identity'] ), $p['delivery_identity'] + [ 'state' => 'retired', 'post_id' => $id, 'target' => $p['target'], 'template_id' => $p['template_id'], 'operation_id' => $op ] );
+                return [ 'state' => 'retired', 'post_id' => $id ];
+            } );
+        } );
+    }
     public static function verify( array $p, array $result ) { return self::guard( static function () use ( $p, $result ) { self::assert_plan( $p, $p['operation_id'] ); $r = self::option( self::opkey( $p['operation_id'] ) ); if ( ! is_array( $r ) || 'committed' !== $r['state'] || ( $r['plan_digest'] ?? '' ) !== $p['plan_digest'] || (int) $r['post_id'] !== ( $result['post_id'] ?? 0 ) ) { self::fail( 'unverified', 'A verified native save is required.' ); } $s = self::check( $p, (int) $r['post_id'] ); self::check_url( $p, (int) $r['post_id'] ); if ( self::digest( $s ) !== $r['native_digest'] || $s['status'] !== $p['desired_status'] || ! Nova_Bridge_Suite_Owned_CPT_SEO::matches( (int) $r['post_id'], $p['seo'] ?? [] ) ) { self::fail( 'human_changed', 'The native item changed after its verified save.' ); } return self::result( $r ); } ); }
 }

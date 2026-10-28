@@ -55,4 +55,14 @@ foreach ( [ 'service_page', 'blog' ] as $type ) {
     $intro = $type === 'blog' ? 'blog_intro' : 'sp_intro';
     check( $inserts === 1 && $saves === 1 && $r['cms_post_status'] === 'publish' && $posts[10]->post_title === 'My title 501' && $meta[10][$intro] === '<p>Fresh content 501</p>', 'Unified destination fields publish exactly one native ' . $type . ' with expected title/body.' );
 }
+foreach ( [ 'service_page', 'blog' ] as $type ) {
+    foreach ( [ 'crash_insert', 'crash_save' ] as $interruption ) {
+        reset_fake(); $old = planned( $type, '501', 1 ); $GLOBALS[$interruption] = true;
+        check( is_wp_error( Nova_Bridge_Suite_Owned_CPT_Writer::apply( $old, uuid( 1 ) ) ), 'Interrupted CPT predecessor is retained.' );
+        $before = $saves; $retired = ok( Nova_Bridge_Suite_Owned_CPT_Writer::supersede( $old, uuid( 1 ) ) );
+        check( $retired['post_id'] === 10 && $saves === $before, 'Retirement never finishes the old CPT save.' );
+        $new = ok( Nova_Bridge_Suite_Owned_CPT_Writer::apply( planned( $type, '502', 2 ), uuid( 2 ) ) );
+        check( $new['post_id'] === 10 && $inserts === 1 && $posts[10]->post_title === 'My title 502', 'Newer CPT content reuses the reserved native page.' );
+    }
+}
 echo "Owned CPT writer: $checks checks passed\n";

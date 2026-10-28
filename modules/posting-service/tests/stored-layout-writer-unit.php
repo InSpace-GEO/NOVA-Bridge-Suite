@@ -254,5 +254,19 @@ foreach ( [ 1, 3 ] as $version ) {
     $saved_body = json_decode( get_post_meta( 10, '_elementor_data' ), true )[0]['elements'][1]['settings']['editor'];
     check( json_encode( $wire ) === $before && $posts[10]->post_title === $content['content']['title'] && $saved_body === $content['content']['content'], 'Unified V' . $version . ' retains resolved title/body values and leaves wire data untouched.' );
 }
+foreach ( [ 'crash_insert', 'crash_save', 'crash_publish', 'partial' ] as $interruption ) {
+    reset_native(); $old = planned(); $GLOBALS[$interruption] = true;
+    check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $old, op( 1 ) ) ), 'Interrupted predecessor is retained: ' . $interruption );
+    $before_saves = $saves; $before_publishes = $publication_changes;
+    $retired = ok( Nova_Bridge_Suite_Stored_Layout_Writer::supersede( $old, op( 1 ) ) );
+    check( $retired['post_id'] === 10 && $saves === $before_saves && $publication_changes === $before_publishes, 'Retirement identifies the reserved page without completing old content.' );
+    $GLOBALS[$interruption] = false;
+    $new = ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( planned( 2, '502' ), op( 2 ) ) );
+    check( $new['post_id'] === 10 && $inserts === 1 && $posts[10]->post_title === "New creator's café 😀 502", 'A newer version takes over the same page after ' . $interruption );
+}
+reset_native(); $old = planned(); $crash_insert = true; Nova_Bridge_Suite_Stored_Layout_Writer::apply( $old, op( 1 ) ); unset( $posts[10] );
+check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::supersede( $old, op( 1 ) ) ) && $inserts === 1, 'A lost reservation with no uniquely identifiable native page is not blindly recreated.' );
+reset_native(); $old = planned(); ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $old, op( 1 ) ) ); $meta[10]['_elementor_page_settings']['background_color'] = '#human';
+check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::supersede( $old, op( 1 ) ) ), 'Retiring committed work does not bypass human-edit protection.' );
 echo "Stored-layout writer checks: $checks passed.\n";
 }

@@ -118,6 +118,7 @@ class Nova_Bridge_Suite_Posting_Jobs {
                     if ( false === $changed ) { return $this->error(); }
                     return new WP_Error( 'nova_posting_discovery_identity_conflict', 'Discovery disagrees with the retained exact snapshot identity. Reconciliation is required.', [ 'status' => 409 ] );
                 }
+                if ( 'superseded' === $job['phase'] || isset( $job['payload']['retired'] ) ) { return $job; }
                 if ( self::has_publication_receipt( $job ) ) {
                     if ( 'complete' === $job['state'] && 'committed' === $job['phase'] ) { return $job; }
                     // Older versions reopened acknowledged successes during discovery. Restore
@@ -149,6 +150,15 @@ class Nova_Bridge_Suite_Posting_Jobs {
                     $changed = $this->db->query( $this->db->prepare( "UPDATE {$this->table} SET state='ready',phase='attempt_check',payload=%s,next_attempt=0,attempts=0,last_error='',updated_at=%d WHERE id=%d AND state='complete' AND identity_conflict=0", $json, time(), $job['id'] ) );
                     if ( false === $changed ) { return $this->error(); }
                     if ( 1 === $changed ) { $job['state'] = 'ready'; $job['phase'] = 'attempt_check'; $job['attempts'] = 0; }
+                } elseif ( $new_checkpoint && in_array( $job['state'], [ 'blocked', 'ready' ], true ) && 0 === $job['lease_until'] ) {
+                    // Preserve the native phase/evidence. Only authenticated GET may
+                    // adopt a different attempt; the feed merely makes this check due.
+                    $job['payload']['pending_discovery_checkpoint'] = $checkpoint;
+                    $json = wp_json_encode( $job['payload'], JSON_UNESCAPED_SLASHES );
+                    if ( ! is_string( $json ) || strlen( $json ) > self::MAX_PAYLOAD_BYTES ) { return $this->error( 'journal_size' ); }
+                    $changed = $this->db->query( $this->db->prepare( "UPDATE {$this->table} SET state='ready',payload=%s,next_attempt=0,attempts=0,last_error='',updated_at=%d,journal_revision=journal_revision+1 WHERE id=%d AND protocol=%s AND identity_conflict=0 AND state=%s AND lease_until=0", $json, time(), $job['id'], self::PROTOCOL, $job['state'] ) );
+                    if ( false === $changed ) { return $this->error(); }
+                    if ( 1 === $changed ) { $job['state'] = 'ready'; $job['next_attempt'] = 0; $job['attempts'] = 0; $job['last_error'] = ''; }
                 } elseif ( $new_checkpoint ) {
                     // Keep an announcement arriving before the current attempt's final ACK.
                     // Worker saves share admission's lock and merge this key from storage.
@@ -290,14 +300,14 @@ class Nova_Bridge_Suite_Posting_Jobs {
         if ( 'complete' === $next['state'] && self::newer_checkpoint( $next['payload']['pending_discovery_checkpoint'] ?? null, $next['payload']['discovery_checkpoint'] ?? null ) ) {
             $next['payload']['discovery_checkpoint'] = $next['payload']['pending_discovery_checkpoint'];
             unset( $next['payload']['pending_discovery_checkpoint'] );
-            if ( ! self::has_publication_receipt( $next ) ) {
+            if ( ! isset( $next['payload']['retired'] ) && ! self::has_publication_receipt( $next ) ) {
                 $next['state'] = 'ready'; $next['phase'] = 'attempt_check'; $next['next_attempt'] = 0; $next['attempts'] = 0; $next['last_error'] = '';
             }
         }
         if ( ! is_int( $next['attempts'] ) || $next['attempts'] < 0 || $next['attempts'] > 4294967295 ) { return $this->error( 'journal_state' ); }
         $payload = wp_json_encode( $next['payload'], JSON_UNESCAPED_SLASHES );
         if ( ! is_string( $payload ) || strlen( $payload ) > self::MAX_PAYLOAD_BYTES ) { return $this->error( 'journal_size' ); }
-        if ( ! in_array( $next['state'], [ 'ready', 'running', 'blocked', 'complete' ], true ) || ! in_array( $next['phase'], [ 'accepted', 'validated', 'received', 'planned', 'applying', 'committed', 'event_pending', 'attempt_check' ], true ) ) { return $this->error( 'journal_state' ); }
+        if ( ! in_array( $next['state'], [ 'ready', 'running', 'blocked', 'complete' ], true ) || ! in_array( $next['phase'], [ 'accepted', 'validated', 'received', 'planned', 'applying', 'committed', 'event_pending', 'attempt_check', 'superseded' ], true ) ) { return $this->error( 'journal_state' ); }
         $now = time();
         $lease = 'running' === $next['state'] ? $now + self::LEASE_SECONDS : 0;
         $changed = $this->db->query( $this->db->prepare(
@@ -328,6 +338,27 @@ class Nova_Bridge_Suite_Posting_Jobs {
         }
         $id = $this->db->get_var( $this->db->prepare( "SELECT id FROM {$this->table} WHERE id<>%d AND site_id=%s AND phase='applying' AND (content_id=%s OR (target_id>0 AND target_id=%d)) LIMIT 1", $job['id'], $job['site_id'], $job['content_id'], $job['target_id'] ) );
         return ! empty( $this->db->last_error ) ? $this->error() : (bool) $id;
+    }
+
+    /** Caller holds the common publication lock, across all versions for a URL. */
+    public function predecessors( array $job, array $snapshot ) {
+        $rows = $this->db->get_results( $this->db->prepare( "SELECT * FROM {$this->table} WHERE id<>%d AND site_id=%s AND protocol=%s AND identity_conflict=0 AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.content.url_id'))=%s AND (state<>'complete' OR (phase='superseded' AND JSON_EXTRACT(payload,'$.retirement_reconciled') IS NULL)) ORDER BY id LIMIT 51", $job['id'], $job['site_id'], self::PROTOCOL, $snapshot['url_id'] ), ARRAY_A );
+        if ( ! is_array( $rows ) || ! empty( $this->db->last_error ) ) { return $this->error(); }
+        if ( count( $rows ) > 50 ) { return $this->error( 'predecessor_limit' ); }
+        $decoded = [];
+        foreach ( $rows as $row ) { $value = $this->decode( $row ); if ( is_wp_error( $value ) ) { return $value; } $decoded[] = $value; }
+        return $decoded;
+    }
+
+    /** Revoke an old lease only after remote 410 and native reconciliation. */
+    public function retire_predecessor( array $job, array $evidence ) {
+        $payload = $job['payload'];
+        $payload['retired'] = [ 'reason' => 'remote_gone', 'attempt_id' => $payload['attempt_id'] ?? null ];
+        $payload['retirement_reconciled'] = $evidence;
+        $json = wp_json_encode( $payload, JSON_UNESCAPED_SLASHES );
+        if ( ! is_string( $json ) || strlen( $json ) > self::MAX_PAYLOAD_BYTES ) { return $this->error( 'journal_size' ); }
+        $changed = $this->db->query( $this->db->prepare( "UPDATE {$this->table} SET state='complete',phase='superseded',payload=%s,lease_token='',lease_until=0,next_attempt=0,last_error='delivery_superseded',updated_at=%d,journal_revision=journal_revision+1 WHERE id=%d AND site_id=%s AND protocol=%s AND identity_conflict=0 AND journal_revision=%d", $json, time(), $job['id'], $job['site_id'], self::PROTOCOL, (int) ( $job['journal_revision'] ?? 0 ) ) );
+        return 1 === $changed ? true : $this->error( 'lease_lost' );
     }
 
     public function resume( int $id, string $site_id ) {

@@ -45,7 +45,7 @@ final class Nova_Bridge_Suite_Stored_Layout_Writer {
     private static function target( array $content, array $configuration, string $type ): array {
         $association = self::association( $content ); $url = self::target_url( $content['url'] ?? '' ); $resource = 'post_type:' . $type;
         if ( $association ) {
-            if ( ( $association['state'] ?? '' ) !== 'committed' || ( $association['template_id'] ?? '' ) !== $configuration['template']['id'] || ( $association['language'] ?? '' ) !== $content['language'] || ( $association['content_item_id'] ?? '' ) !== $content['content_item_id'] || self::compare( $content['content_item_version_id'], $association['content_item_version_id'] ?? '0' ) <= 0 ) { self::fail( 'association', 'This URL belongs to another mapping, content item, language or unfinished/newer delivery.' ); }
+            if ( ! in_array( $association['state'] ?? '', [ 'committed', 'retired' ], true ) || ( $association['template_id'] ?? '' ) !== $configuration['template']['id'] || ( $association['language'] ?? '' ) !== $content['language'] || ( $association['content_item_id'] ?? '' ) !== $content['content_item_id'] || self::compare( $content['content_item_version_id'], $association['content_item_version_id'] ?? '0' ) <= 0 ) { self::fail( 'association', 'This URL belongs to another mapping, content item, language or unfinished/newer delivery.' ); }
             $wanted = self::checked( Nova_Bridge_Suite_Mapped_Content_Target::normalize_url( $url ) );
             if ( $wanted['identity'] !== $association['target']['target_url'] ) { self::fail( 'url_changed', 'A retained page cannot be moved to a different delivery URL.' ); }
             return [ 'post_id' => (int) $association['post_id'], 'target' => $association['target'], 'association' => $association ];
@@ -295,6 +295,35 @@ final class Nova_Bridge_Suite_Stored_Layout_Writer {
         } );
     }
     public static function finish( array $plan, array $result ) { return self::verify( $plan, $result ); }
+    /** Remote retirement permits a newer plan to adopt a uniquely reserved page.
+     * Does not finish/publish the old content or invent a successful old receipt. */
+    public static function supersede( array $plan, string $operation ) {
+        return self::guard( static function () use ( $plan, $operation ) {
+            self::assert_plan( $plan, $operation );
+            return self::locked( $plan, static function () use ( $plan, $operation ) {
+                $record = self::option( self::operation_key( $operation ) );
+                if ( ! $record ) { return self::recover( $plan, $operation ); }
+                if ( ( $record['plan_digest'] ?? '' ) !== $plan['plan_digest'] ) { self::fail( 'operation_reused', 'The retired operation belongs to another plan.' ); }
+                if ( 'committed' === $record['state'] ) { self::verify_record( $plan, $record ); }
+                $id = (int) ( $record['post_id'] ?: self::reserved_post( $plan ) );
+                if ( ! $id ) {
+                    if ( 'creating' === $record['state'] ) { self::fail( 'create_unknown', 'An uncertain creation has no unique reservation.' ); }
+                    return [ 'state' => 'not_committed', 'no_native_commit' => true ];
+                }
+                $state = self::native_state( $id, $plan['payload']['theme_presentation'] ?? null, $plan['payload']['elementor_document_settings'] ?? null );
+                if ( ! current_user_can( 'edit_post', $id ) || $state['type'] !== $plan['post_type'] ||
+                    ( ! $plan['target_post_id'] && $state['reservation'] !== self::reservation_marker( $plan ) ) ||
+                    ( $state['owner'] !== '' && $state['owner'] !== self::owner( $plan ) ) ) { self::fail( 'ownership', 'The retired page identity cannot be reconciled.' ); }
+                self::check_url( $plan, $id );
+                $current = self::association( $plan['delivery_identity'] );
+                if ( $current !== $plan['association_before'] && ( $current['operation_id'] ?? '' ) !== $operation ) { self::fail( 'association_changed', 'Another operation owns the URL.' ); }
+                $association = $plan['delivery_identity'] + [ 'state' => 'retired', 'post_id' => $id, 'target' => $plan['target'], 'template_id' => $plan['template_id'], 'native_digest' => self::digest( $state ), 'operation_id' => $operation, 'creation_operation' => self::owner( $plan )['creation_operation'] ];
+                foreach ( [ 'theme_presentation', 'elementor_document_settings' ] as $key ) { if ( isset( $plan['payload'][$key] ) ) { $association[$key] = $plan['payload'][$key]; } }
+                self::checkpoint( self::association_key( $plan['site_id'], $plan['delivery_identity']['url_id'] ), $association );
+                return [ 'state' => 'retired', 'post_id' => $id, 'native_digest' => $association['native_digest'] ];
+            } );
+        } );
+    }
     public static function verify( array $plan, array $result ) {
         return self::guard( static function () use ( $plan, $result ) { self::assert_plan( $plan, $plan['operation_id'] ); $record = self::option( self::operation_key( $plan['operation_id'] ) ); if ( ! is_array( $record ) || 'committed' !== $record['state'] || $record['plan_digest'] !== $plan['plan_digest'] || $record['post_id'] !== ( $result['post_id'] ?? null ) ) { self::fail( 'unverified', 'A verified native save is required before publication confirmation.' ); } return self::verify_record( $plan, $record ); } );
     }

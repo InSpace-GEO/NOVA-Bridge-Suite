@@ -132,7 +132,7 @@ delivery_check( 'complete' === $result['state'] && json_decode( $server->posts[0
 [ $job, $store, $server, $worker ] = delivery_fixture(); Contract_Test_Writer::$crash = true;
 $result = $worker->process( $job ); Contract_Test_Writer::$crash = false; $server->attempt = '00000000-0000-4000-8000-000000000099';
 $result = $worker->process( delivery_resume( $result ) );
-delivery_check( 'blocked' === $result['state'] && 1 === Contract_Test_Writer::$apply && 0 === Contract_Test_Writer::$recover, 'Changed attempt cannot replay uncertain native write.' );
+delivery_check( 'complete' === $result['state'] && 1 === Contract_Test_Writer::$apply && 1 === Contract_Test_Writer::$recover && $result['payload']['attempt_id'] === $server->attempt, 'Changed attempt reconciles the retained native write without duplicating it.' );
 
 foreach ( [ 'draft', 'future', 'pending', 'private', 'publish' ] as $saved_status ) {
     [ $job, $store, $server, $worker ] = delivery_fixture(); Contract_Test_Writer::$status = $saved_status;
@@ -158,7 +158,7 @@ $result = $worker->process( delivery_resume( $failed ) );
 delivery_check( 'complete' === $result['state'] && 1 === Contract_Test_Writer::$apply && count( $result['payload']['prior_attempts'] ) === 1, 'Operator-issued new attempt proceeds only after retained no-native-write proof.' );
 $result['phase'] = 'attempt_check'; $server->attempt = '00000000-0000-4000-8000-000000000098';
 $result = $worker->process( delivery_resume( $result ) );
-delivery_check( 'blocked' === $result['state'] && 1 === Contract_Test_Writer::$apply, 'Completed native write refuses a new attempt.' );
+delivery_check( 'complete' === $result['state'] && 1 === Contract_Test_Writer::$apply && count( $result['payload']['prior_attempts'] ) === 2, 'A replacement attempt attests the already verified frozen write without duplicating it.' );
 
 foreach ( [ 'event_pending', 'applying' ] as $phase ) {
     [ $job, $store, $server, $worker ] = delivery_fixture(); $store->fail_phase = $phase;

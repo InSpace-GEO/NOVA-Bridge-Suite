@@ -119,7 +119,7 @@ final class Nova_Bridge_Suite_Rule_Writer {
             if ( ( $configuration['mode'] ?? '' ) !== 'local_rules' || ! array_key_exists( 'configuration', $content ) || null !== $content['configuration'] || ( $configuration['site_id'] ?? '' ) !== ( $content['site_id'] ?? null ) ) { self::fail( 'configuration', 'Local rules require an explicitly opted-in, unmapped delivery.' ); }
             self::routing( $content, $configuration['profile'] );
             $association = self::association( $content );
-            if ( $association && ( $association['state'] ?? '' ) !== 'committed' ) { self::fail( 'association_pending', 'An earlier native operation for this URL must be reconciled first.' ); }
+            if ( $association && ! in_array( $association['state'] ?? '', [ 'committed', 'retired' ], true ) ) { self::fail( 'association_pending', 'An earlier native operation for this URL must be reconciled first.' ); }
             return [ 'mode' => 'local_rules', 'reference' => [ 'reference_type' => 'post', 'reference_id' => (int) ( $association['post_id'] ?? 0 ) ], 'routing' => [ 'operation' => $association ? 'update' : 'create', 'publication' => $association ? 'preserve' : 'draft' ] ];
         } );
     }
@@ -133,7 +133,7 @@ final class Nova_Bridge_Suite_Rule_Writer {
         $route = $content ? self::routing( $content, $profile ) : null;
         $association = $content ? self::association( $content ) : null;
         if ( $association ) {
-            if ( ( $association['state'] ?? '' ) !== 'committed' || ( $association['profile_id'] ?? '' ) !== $profile['id'] || ( $association['language'] ?? '' ) !== $route['language'] ) { self::fail( 'association', 'The generated page belongs to another profile, language or unfinished native operation.' ); }
+            if ( ! in_array( $association['state'] ?? '', [ 'committed', 'retired' ], true ) || ( $association['profile_id'] ?? '' ) !== $profile['id'] || ( $association['language'] ?? '' ) !== $route['language'] ) { self::fail( 'association', 'The generated page belongs to another profile, language or unfinished native operation.' ); }
             if ( ! self::decimal( $content['content_item_version_id'] ?? null ) || self::compare_id( $content['content_item_version_id'], $association['content_item_version_id'] ?? '0' ) <= 0 ) { self::fail( 'stale_source', 'This URL already has this source version or a newer generated document.' ); }
         }
         $seed = $content ? $content['site_id'] . ':' . $content['url_id'] : $operation;
@@ -346,6 +346,36 @@ final class Nova_Bridge_Suite_Rule_Writer {
         } );
     }
     public static function finish( array $plan, array $result ) { return self::verify( $plan, $result ); }
+    public static function supersede( array $plan, string $operation ) {
+        return self::guard( static function () use ( $plan, $operation ) {
+            self::assert_plan( $plan, $operation );
+            if ( ! isset( $plan['delivery_identity'] ) ) { self::fail( 'identity', 'Only contracted delivery operations can be replaced.' ); }
+            return self::locked( $plan['delivery_identity']['site_id'] . ':' . $plan['delivery_identity']['url_id'], static function () use ( $plan, $operation ) {
+                $record = self::option( self::operation_key( $operation ) );
+                if ( ! $record ) { return self::recover( $plan, $operation ); }
+                if ( ( $record['plan_digest'] ?? '' ) !== $plan['plan_digest'] ) { self::fail( 'operation_reused', 'The retired operation belongs to another plan.' ); }
+                if ( 'committed' === $record['state'] ) { self::verify_record( $plan, $record ); }
+                $id = (int) ( $record['post_id'] ?: self::reserved_post( $plan ) );
+                if ( ! $id ) {
+                    if ( 'creating' === $record['state'] ) { self::fail( 'create_unknown', 'An uncertain creation has no unique reservation.' ); }
+                    return [ 'state' => 'not_committed', 'no_native_commit' => true ];
+                }
+                $state = self::native_state( $id );
+                if ( ! current_user_can( 'edit_post', $id ) || $state['post_type'] !== $plan['post_type'] ||
+                    ( ! $plan['target_post_id'] && $state['reservation'] !== self::reservation_marker( $plan ) ) ||
+                    ( $state['owner'] !== '' && $state['owner'] !== self::owner( $plan ) ) ) { self::fail( 'ownership', 'The retired page identity cannot be reconciled.' ); }
+                self::check_url( $id, $plan['route'] ); $current = self::association( $plan['delivery_identity'] );
+                if ( $current !== $plan['association_before'] && ( $current['operation_id'] ?? '' ) !== $operation ) { self::fail( 'association_changed', 'Another operation owns this URL.' ); }
+                // A reservation is an owned target even if the process stopped before
+                // writing its owner marker. Record only that identity, never old content.
+                if ( $state['owner'] === '' ) { update_post_meta( $id, '_nova_content_rule_owner', self::owner( $plan ) ); $state = self::native_state( $id ); }
+                if ( $state['owner'] !== self::owner( $plan ) ) { self::fail( 'ownership', 'The reserved page owner was not retained.' ); }
+                $association = $plan['delivery_identity'] + [ 'state' => 'retired', 'post_id' => $id, 'profile_id' => $plan['profile']['id'], 'native_digest' => self::digest( $state ), 'operation_id' => $operation, 'creation_operation' => self::owner( $plan )['creation_operation'] ];
+                self::checkpoint( self::association_key( $plan['delivery_identity']['site_id'], $plan['delivery_identity']['url_id'] ), $association );
+                return [ 'state' => 'retired', 'post_id' => $id, 'native_digest' => $association['native_digest'] ];
+            } );
+        } );
+    }
     public static function verify( array $plan, array $result ) {
         return self::guard( static function () use ( $plan, $result ) {
             self::assert_plan( $plan, $plan['operation_id'] ); $record = self::option( self::operation_key( $plan['operation_id'] ) );

@@ -20,7 +20,7 @@ class Layout_Delivery_Client {
     public $fixture; public $events = []; public $gets = []; public $lose_receipt = false;
     public function __construct( $fixture ) { $this->fixture = $fixture; }
     public function site_request( $method, $path ) {
-        $expected = ( $this->fixture['snapshot']['configuration']['definition']['version'] === 3 ? '/adaptation-deliveries/' : '/deliveries/' ) . $this->fixture['snapshot']['id'];
+        $expected = '/deliveries/' . $this->fixture['snapshot']['id'];
         check( $method === 'GET' && $path === $expected, 'Each mapping version uses its contracted result endpoint.' ); $this->gets[] = $path;
         return [ 'status' => 200, 'raw_body' => $this->fixture['raw'], 'etag' => $this->fixture['etag'], 'attempt_id' => $this->fixture['attempt_id'] ];
     }
@@ -97,4 +97,14 @@ $pending['state'] = 'running'; $done = ok( ( new Nova_Bridge_Suite_Posting_Worke
 check( $done['state'] === 'complete' && $inserts === 1 && $saves === 1 && $client->events[2]['event_id'] === $event_id, 'Receipt replay changes neither page nor event identity.' );
 list( $f, $store, $client, $worker ) = delivery_setup(); $crash_insert = true; $bad = ok( $worker->process( $f['job'] ) ); $bad['state'] = 'running'; $bad['payload']['plan']['format'] = 'wrong-writer'; $blocked = ok( $worker->process( $bad ) );
 check( $blocked['state'] === 'blocked' && $blocked['last_error'] === 'native_writer_identity' && $inserts === 1 && $saves === 0, 'Resume rejects a mismatched native writer identity before another native action.' );
+foreach ( [ 'crash_insert', 'crash_save', 'lost_receipt' ] as $interruption ) {
+    list( $f, $store, $client, $worker ) = delivery_setup();
+    if ( 'lost_receipt' === $interruption ) { $client->lose_receipt = true; } else { $GLOBALS[$interruption] = true; }
+    $old = ok( $worker->process( $f['job'] ) ); $before_events = count( $client->events );
+    $client->fixture['attempt_id'] = op( 900 ); $old['state'] = 'running';
+    $current = ok( ( new Nova_Bridge_Suite_Posting_Worker( $f['connection'], $store, $client ) )->process( $old ) );
+    check( $current['state'] === 'complete' && $current['target_id'] === 10 && $inserts === 1 && $saves === 1, 'Current attempt recovers exactly one real stored-layout page after ' . $interruption );
+    foreach ( array_slice( $client->events, $before_events ) as $event ) { check( $event['attempt_id'] === op( 900 ), 'Reconciled native publication only sends receipts for current authority.' ); }
+    check( count( $current['payload']['prior_attempts'] ) === 1, 'Native takeover retains its prior attempt history.' );
+}
 echo "Stored-layout delivery checks: $checks passed.\n";
