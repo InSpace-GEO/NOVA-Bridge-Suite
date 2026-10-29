@@ -1,6 +1,7 @@
 <?php
 /** Private connection settings for the site's posting-service plugin credential. */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
+require_once dirname( __DIR__, 2 ) . '/posting-service/includes/class-nova-bridge-suite-posting-url-scope.php';
 
 final class Nova_Bridge_Suite_Posting_Settings {
     public const OPTION = 'nova_bridge_posting_connection';
@@ -19,7 +20,7 @@ final class Nova_Bridge_Suite_Posting_Settings {
     public static function connection(): array {
         $value = get_option( self::OPTION, [] );
         $value = is_array( $value ) ? $value : [];
-        $value = array_merge( [ 'base_url' => '', 'site_id' => '', 'token' => '', 'webhook_secret' => '', 'enabled' => false, 'paused' => true, 'actor_user_id' => 0 ], $value );
+        $value = array_merge( [ 'base_url' => '', 'site_id' => '', 'token' => '', 'webhook_secret' => '', 'enabled' => false, 'paused' => true, 'actor_user_id' => 0, 'url_scope_enabled' => false, 'url_scope_excluded_paths' => [] ], $value );
         foreach ( [ 'base_url' => 'NOVA_POSTING_SERVICE_URL', 'site_id' => 'NOVA_POSTING_SITE_ID', 'token' => 'NOVA_POSTING_TOKEN', 'webhook_secret' => 'NOVA_POSTING_WEBHOOK_SECRET' ] as $key => $constant ) {
             if ( defined( $constant ) ) { $value[ $key ] = (string) constant( $constant ); }
         }
@@ -27,6 +28,7 @@ final class Nova_Bridge_Suite_Posting_Settings {
         $value['site_id'] = strtolower( $value['site_id'] );
         $value['paused'] = ! empty( $value['paused'] );
         $value['actor_user_id'] = (int) $value['actor_user_id'];
+        $value['url_scope_enabled'] = ! empty( $value['url_scope_enabled'] );
         return $value;
     }
 
@@ -75,6 +77,13 @@ final class Nova_Bridge_Suite_Posting_Settings {
         $next['enabled'] = ! empty( $input['enabled'] );
         $next['paused'] = ! empty( $input['paused'] );
         $next['actor_user_id'] = get_current_user_id();
+        $next['url_scope_enabled'] = ! empty( $input['url_scope_enabled'] );
+        $exclusions = Nova_Bridge_Suite_Posting_Url_Scope::exclusions( $input['url_scope_excluded_paths'] ?? '' );
+        if ( is_wp_error( $exclusions ) ) {
+            add_settings_error( self::OPTION, 'nova_posting_url_scope', $exclusions->get_error_message() );
+            return $old;
+        }
+        $next['url_scope_excluded_paths'] = $exclusions;
         // A different service/site must not accidentally inherit permission to publish.
         if ( ( $old['base_url'] ?? '' ) !== ( $next['base_url'] ?? '' ) || ( $old['site_id'] ?? '' ) !== ( $next['site_id'] ?? '' ) ) {
             if ( ! empty( $old['site_id'] ) && class_exists( 'Nova_Bridge_Suite_Posting_Jobs' ) ) {
@@ -104,6 +113,8 @@ final class Nova_Bridge_Suite_Posting_Settings {
         }
         echo '<p><label><input type="checkbox" name="' . esc_attr( self::OPTION ) . '[enabled]" value="1" ' . checked( $settings['enabled'], true, false ) . '> Enable compatible content delivery</label><br><span class="description">Enables retrieval and verified page changes using a compatible setup. Saving layout rules alone does not enable delivery.</span></p>';
         echo '<p><label><input type="checkbox" name="' . esc_attr( self::OPTION ) . '[paused]" value="1" ' . checked( $settings['paused'], true, false ) . '> Pause new page changes</label><br><span class="description">Recovery and delivery receipts can continue while paused. Turn the connection off to stop requests.</span></p>';
+        echo '<details><summary>Shared website delivery routing</summary><p><label><input type="checkbox" name="' . esc_attr( self::OPTION ) . '[url_scope_enabled]" value="1" ' . checked( $settings['url_scope_enabled'], true, false ) . '> Only process deliveries belonging to this WordPress installation</label><br><span class="description">For installations sharing a NOVA website identifier. Matches the public site URL: <code>' . esc_html( get_option( 'home', home_url( '/' ) ) ) . '</code>. Other deliveries are skipped locally without sending NOVA a delivery receipt.</span></p>';
+        echo '<p><label for="nova-posting-excluded-paths">Excluded paths, one per line</label><br><textarea class="large-text" rows="4" id="nova-posting-excluded-paths" name="' . esc_attr( self::OPTION ) . '[url_scope_excluded_paths]">' . esc_textarea( implode( "\n", (array) $settings['url_scope_excluded_paths'] ) ) . '</textarea><br><span class="description">Use paths from the domain root, for example /eindhoven. Each exclusion includes its subpaths. The main installation must exclude paths served by the other installations. These settings apply to deliveries that have not started; they do not change mappings or interrupt publication recovery.</span></p></details>';
         echo '<p>Confirm service compatibility with NOVA before allowing page changes, then verify a controlled test delivery.</p>';
         echo '<p>Publishing uses the WordPress permissions of the administrator saving these settings. Changing the service or site pauses new mutations until you resume them.</p>';
         submit_button( 'Save NOVA connection' );

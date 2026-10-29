@@ -64,8 +64,9 @@ final class Nova_Bridge_Suite_Posting_Delivery {
                 $record['response_completion_elapsed_ms'] = (int) round( ( microtime( true ) - $started ) * 1000 );
                 self::save_run( $record );
             }
-            self::drain( static function ( array $summary ) use ( &$record ) {
-                if ( isset( $summary['jobs_claimed'] ) ) { $record['jobs_claimed'] = max( 0, min( 3, (int) $summary['jobs_claimed'] ) ); }
+            $max_claims = empty( Nova_Bridge_Suite_Posting_Settings::connection()['url_scope_enabled'] ) ? 3 : 100;
+            self::drain( static function ( array $summary ) use ( &$record, $max_claims ) {
+                if ( isset( $summary['jobs_claimed'] ) ) { $record['jobs_claimed'] = max( 0, min( $max_claims, (int) $summary['jobs_claimed'] ) ); }
                 if ( isset( $summary['last_job'] ) && is_array( $summary['last_job'] ) ) { $record['last_job'] = self::safe_job( $summary['last_job'] ); }
                 if ( ! empty( $summary['last_error'] ) ) { $record['last_error'] = self::safe_error( $summary['last_error'] ); }
                 if ( isset( $summary['discovery_http_status'] ) && $summary['discovery_http_status'] >= 100 && $summary['discovery_http_status'] <= 599 ) { $record['discovery_http_status'] = (int) $summary['discovery_http_status']; }
@@ -94,14 +95,14 @@ final class Nova_Bridge_Suite_Posting_Delivery {
     private static function safe_error( $code ): string {
         if ( '' === $code ) { return ''; }
         if ( ! is_string( $code ) ) { return 'unclassified_error'; }
-        if ( in_array( $code, self::SAFE_ERRORS, true ) ) { return $code; }
+        if ( 'nova_posting_url_scope' === $code || in_array( $code, self::SAFE_ERRORS, true ) ) { return $code; }
         $base = substr( $code, 0, -12 );
         return substr( $code, -12 ) === '_retry_limit' && in_array( $base, self::SAFE_ERRORS, true ) ? $code : 'unclassified_error';
     }
 
     private static function safe_job( array $job ): array {
         $state = in_array( $job['state'] ?? null, [ 'ready', 'running', 'blocked', 'complete' ], true ) ? $job['state'] : 'unknown';
-        $phase = in_array( $job['phase'] ?? null, [ 'accepted', 'attempt_check', 'validated', 'event_pending', 'received', 'configured', 'planned', 'applying', 'committed' ], true ) ? $job['phase'] : 'unknown';
+        $phase = in_array( $job['phase'] ?? null, [ 'accepted', 'attempt_check', 'validated', 'event_pending', 'received', 'configured', 'planned', 'applying', 'committed', 'skipped' ], true ) ? $job['phase'] : 'unknown';
         // The current journal stores a delivery UUID in this historical column; retain legacy decimal IDs too.
         $content_id = $job['content_id'] ?? null;
         $content_id = is_string( $content_id ) && preg_match( '/^[0-9]{1,64}$/D', $content_id ) ? $content_id : self::safe_uuid( $content_id );

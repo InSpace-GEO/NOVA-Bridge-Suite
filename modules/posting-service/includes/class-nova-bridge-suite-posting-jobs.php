@@ -307,7 +307,7 @@ class Nova_Bridge_Suite_Posting_Jobs {
         if ( ! is_int( $next['attempts'] ) || $next['attempts'] < 0 || $next['attempts'] > 4294967295 ) { return $this->error( 'journal_state' ); }
         $payload = wp_json_encode( $next['payload'], JSON_UNESCAPED_SLASHES );
         if ( ! is_string( $payload ) || strlen( $payload ) > self::MAX_PAYLOAD_BYTES ) { return $this->error( 'journal_size' ); }
-        if ( ! in_array( $next['state'], [ 'ready', 'running', 'blocked', 'complete' ], true ) || ! in_array( $next['phase'], [ 'accepted', 'validated', 'received', 'planned', 'applying', 'committed', 'event_pending', 'attempt_check', 'superseded' ], true ) ) { return $this->error( 'journal_state' ); }
+        if ( ! in_array( $next['state'], [ 'ready', 'running', 'blocked', 'complete' ], true ) || ! in_array( $next['phase'], [ 'accepted', 'validated', 'received', 'planned', 'applying', 'committed', 'event_pending', 'attempt_check', 'superseded', 'skipped' ], true ) ) { return $this->error( 'journal_state' ); }
         $now = time();
         $lease = 'running' === $next['state'] ? $now + self::LEASE_SECONDS : 0;
         $changed = $this->db->query( $this->db->prepare(

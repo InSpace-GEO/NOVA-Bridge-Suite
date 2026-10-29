@@ -1,6 +1,7 @@
 <?php
 /** Durable delivery intake, native-write reconciliation and exact connector-event replay. */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
+require_once __DIR__ . '/class-nova-bridge-suite-posting-url-scope.php';
 
 final class Nova_Bridge_Suite_Posting_Worker {
     private $connection;
@@ -56,7 +57,9 @@ final class Nova_Bridge_Suite_Posting_Worker {
         if ( 401 === $status ) { return; }
         $this->recovery_only = ! empty( $this->connection['paused'] ) || 403 === $status;
         $started = microtime( true );
-        for ( $i = 0; $i < 3 && microtime( true ) - $started < 20; ++$i ) {
+        $processed = 0;
+        $max_claims = empty( $this->connection['url_scope_enabled'] ) ? 3 : 100;
+        for ( $i = 0; $i < $max_claims && $processed < 3 && microtime( true ) - $started < 20; ++$i ) {
             $job = $this->jobs->claim( $this->connection['site_id'], $this->recovery_only );
             if ( is_wp_error( $job ) ) { self::observe( $observe, [ 'last_error' => $job->get_error_code() ] ); break; }
             if ( ! $job ) { break; }
@@ -64,6 +67,8 @@ final class Nova_Bridge_Suite_Posting_Worker {
             $result = $this->process( $job );
             if ( is_wp_error( $result ) ) { self::observe( $observe, [ 'last_error' => $result->get_error_code() ] ); }
             elseif ( is_array( $result ) ) { self::observe( $observe, [ 'last_job' => self::job_diagnostic( $result ), 'last_error' => $result['last_error'] ?? '' ] ); }
+            // Foreign work must not consume this installation's three publishing slots.
+            if ( ! is_array( $result ) || 'skipped' !== ( $result['phase'] ?? '' ) ) { ++$processed; }
             if ( is_array( $result ) && in_array( $result['last_error'] ?? '', [ 'authentication_required', 'site_ineligible' ], true ) ) { break; }
         }
         $this->jobs->prune();
@@ -224,6 +229,7 @@ final class Nova_Bridge_Suite_Posting_Worker {
         );
     }
     private function process_job( array $job ) {
+        if ( 'complete' === $job['state'] && 'skipped' === $job['phase'] ) { return $job; }
         if ( 'superseded' === $job['phase'] || isset( $job['payload']['retired'] ) ) { return $job; }
         $this->writer = $this->initial_writer;
         if ( $this->default_dispatch && ( $job['payload']['native_writer'] ?? '' ) === 'static_recipe_v1' ) {
@@ -254,6 +260,21 @@ final class Nova_Bridge_Suite_Posting_Worker {
             if ( ( $this->recovery_only || ! empty( $this->connection['paused'] ) ) && ! in_array( $job['phase'], [ 'applying', 'committed', 'event_pending' ], true ) ) { return $this->paused( $job ); }
             $fetched = $this->fetch( $job );
             if ( is_wp_error( $fetched ) ) { return $this->remote_error( $job, $fetched ); }
+            // Check new work before any receipt, predecessor reconciliation or mapping
+            // lookup. Retained receipts/native plans always keep their recovery path.
+            $untouched = ! array_intersect( [ 'events', 'pending_event', 'event_bytes', 'plan', 'result', 'prior_attempts' ], array_keys( $job['payload'] ) );
+            if ( $untouched && ( in_array( $job['phase'], [ 'accepted', 'validated' ], true ) || ! empty( $job['payload']['scope_skipped'] ) ) ) {
+                $owns = Nova_Bridge_Suite_Posting_Url_Scope::owns( $this->connection, $fetched['content']['url'] ?? null );
+                if ( is_wp_error( $owns ) ) { return $this->block( $job, $owns->get_error_code() ); }
+                if ( ! $owns ) { return $this->save_payload( $job, $fetched + [ 'scope_skipped' => true ], 'skipped', [ 'state' => 'complete', 'next_attempt' => 0 ] ); }
+                if ( ! empty( $job['payload']['scope_skipped'] ) ) {
+                    // A fresh discovery checkpoint may re-evaluate an earlier local
+                    // skip after routing changed. It has no receipt/native authority.
+                    $payload = array_merge( $job['payload'], $fetched ); unset( $payload['scope_skipped'] );
+                    $job = $this->jobs->save( $job, [ 'payload' => $payload, 'phase' => 'validated' ] );
+                    if ( is_wp_error( $job ) ) { return $job; }
+                }
+            }
             $publication_lock = self::publication_lock( $job, $fetched['content'] );
             if ( is_wp_error( $this->jobs->lock( $publication_lock ) ) ) { $publication_lock = null; return $this->retry( $job, 'target_busy' ); }
             if ( 'attempt_check' === $job['phase'] || ( isset( $job['payload']['attempt_id'] ) && $job['payload']['attempt_id'] !== $fetched['attempt_id'] ) ) {

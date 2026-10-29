@@ -2,7 +2,8 @@
 /** Standalone connection boundary checks; no WordPress or network mutations. */
 if ( defined( 'ABSPATH' ) ) { exit( 1 ); }
 define( 'ABSPATH', __DIR__ );
-class WP_Error {}
+class WP_Error { public function __construct( $code = '', $message = '' ) { $this->message = $message; } public $message; public function get_error_message() { return $this->message; } }
+function is_wp_error( $value ) { return $value instanceof WP_Error; }
 class Nova_Bridge_Suite_Posting_Jobs {
     public static $unfinished = false;
     public static function has_unfinished_for_site( $site ) { return self::$unfinished; }
@@ -49,4 +50,9 @@ check( 2 === Nova_Bridge_Suite_Posting_Delivery::$initializations, 'Disabling se
 Nova_Bridge_Suite_Posting_Delivery::$storage = false;
 Nova_Bridge_Suite_Posting_Settings::updated( $first, $next, Nova_Bridge_Suite_Posting_Settings::OPTION );
 check( end( $errors ) === 'nova_posting_storage', 'A storage failure remains visible to the administrator saving settings.' );
+check( ! $first['url_scope_enabled'] && [] === $first['url_scope_excluded_paths'], 'Existing connections have routing disabled by default.' );
+$routed = Nova_Bridge_Suite_Posting_Settings::sanitize( array_merge( $blank, [ 'url_scope_enabled' => 1, 'url_scope_excluded_paths' => "/eindhoven/\n/schiphol\n/eindhoven" ] ) );
+check( $routed['url_scope_enabled'] && [ '/eindhoven', '/schiphol' ] === $routed['url_scope_excluded_paths'], 'An administrator can opt into local ownership and excluded path prefixes.' );
+check( $routed['site_id'] === $saved['site_id'] && $routed['token'] === $saved['token'] && $routed['webhook_secret'] === $saved['webhook_secret'], 'Routing settings do not change the shared site identity or credentials.' );
+check( Nova_Bridge_Suite_Posting_Settings::sanitize( array_merge( $blank, [ 'url_scope_enabled' => 1, 'url_scope_excluded_paths' => 'https://wrong.invalid/path' ] ) ) === $saved, 'Invalid routing settings retain the previous connection.' );
 echo "PASS {$checks} posting connection checks\n";
