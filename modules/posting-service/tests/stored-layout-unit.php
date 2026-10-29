@@ -47,7 +47,7 @@ function descriptor( $path, $id, $setting ): array { return [ 'path' => $path, '
 $document = [ [ 'id' => 'aaaaaaa', 'elType' => 'container', 'settings' => [ 'background_color' => '#ddeeff', 'opacity' => 0.75, 'padding_mobile' => [ 'unit' => 'px', 'top' => 16 ] ], 'elements' => [
     widget( 'bbbbbbb', 'heading', [ 'title' => 'Example headline', 'header_size' => 'h1', 'typography_font_size' => [ 'size' => 48.5, 'unit' => 'px' ] ] ),
     widget( 'ccccccc', 'text-editor', [ 'editor' => '<p>Example paragraph</p>', 'custom_css' => '.elementor-element-bbbbbbb { color: red; }' ] ),
-    widget( 'ddddddd', 'button', [ 'text' => 'Static CTA', 'link' => [ 'url' => 'https://example.test/contact/' ] ] ),
+    widget( 'ddddddd', 'button', [ 'text' => 'Static CTA', 'link' => [ 'url' => 'https://example.test/contact/' ], '__dynamic__' => [ 'link' => '[elementor-tag name="internal-url" settings="%7B%22post_id%22%3A9%7D"]' ] ] ),
     widget( 'eeeeeee', 'heading', [ 'title' => 'Remove example', 'header_size' => 'h2' ] ),
     widget( 'fffffff', 'accordion', [ 'tabs' => [ [ '_id' => 'tab-1', 'tab_title' => 'First question', 'tab_content' => '<p>Example answer</p>' ], [ '_id' => 'tab-2', 'tab_title' => 'Second question', 'tab_content' => '<p>Second answer</p>' ] ] ] ),
 ] ] ];
@@ -66,7 +66,7 @@ check( $source_reads === $read_count, 'Validation and compilation make no source
 $out = $compiled['writer_payload']['elementor_data'];
 check( $out[0]['settings'] === $document[0]['settings'] && $out[0]['elements'][0]['settings']['typography_font_size'] === $document[0]['elements'][0]['settings']['typography_font_size'], 'Responsive layout and styling survive creation' );
 check( $out[0]['elements'][0]['settings']['title'] === 'New heading' && $out[0]['elements'][1]['settings']['editor'] === '<p>Entirely new body.</p>', 'Fitted values reach exact saved native destinations' );
-check( $out[0]['elements'][2]['settings'] === $document[0]['elements'][2]['settings'], 'Protected CTA and its static link survive unchanged' );
+check( $out[0]['elements'][2]['settings'] === $document[0]['elements'][2]['settings'], 'Legacy saved layouts retain protected CTA native bindings unchanged' );
 check( $out[0]['elements'][3]['settings']['title'] === '' && $out[0]['elements'][4]['settings']['tabs'][0]['tab_content'] === '', 'Leave-empty and missing optional generated destinations do not leak example content' );
 check( $out[0]['elements'][4]['settings']['tabs'][1]['tab_content'] === '<p>Second answer</p>' && count( $out[0]['elements'][4]['settings']['tabs'] ) === 2, 'Unmapped nested fields and fixed cardinality are preserved' );
 check( $out[0]['id'] !== 'aaaaaaa' && $out[0]['elements'][0]['id'] !== 'bbbbbbb', 'New page elements receive new identities' );
@@ -94,7 +94,10 @@ $recipe_out = good( Layout::compile( $projected, $recipe_values, 'recipe-create'
 check( $recipe_out['post_fields']['title'] === 'Created title' && $recipe_out['writer_payload']['elementor_data'][0]['elements'][4]['settings']['tabs'][0]['tab_content'] === '<p>New nested answer.</p>', 'Native page title and nested values are filled from the V3 result' );
 $bad = $record; $bad['recipe']['regions'] = [ [ 'id' => 'generated' ] ]; bad( Layout::from_recipe( $bad ), 'Generated repeat regions are explicitly rejected, not dropped' );
 $bad = $record; $bad['recipe']['custom_fields'] = [ 'builder' => 'acf' ]; bad( Layout::from_recipe( $bad ), 'ACF sidecars are explicitly rejected, not dropped' );
-$bad = $record; $bad['recipe']['blueprint']['document'][0]['elements'][2]['settings']['__dynamic__']['text'] = '[elementor-tag id="source"]'; bad( Layout::from_recipe( $bad ), 'Dynamic source dependencies cannot enter a source-independent creation mapping' );
+$dynamic = $record; $dynamic['recipe']['blueprint']['document'][0]['elements'][2]['settings']['__dynamic__']['text'] = '[elementor-tag name="post-title" settings="%7B%7D"]';
+$dynamic_draft = good( Layout::from_recipe( $dynamic ), 'Protected native dynamic controls do not require the source page' );
+$dynamic_out = good( Layout::compile( $dynamic_draft, $recipe_values, 'recipe-dynamic' ), 'Native dynamic configuration compiles without evaluating the deleted example' );
+check( $dynamic_out['writer_payload']['elementor_data'][0]['elements'][2]['settings'] === $dynamic['recipe']['blueprint']['document'][0]['elements'][2]['settings'], 'Native dynamic expressions stay intact for destination rendering' );
 $bad = $record; $bad['recipe']['blueprint']['document'][0]['elements'][2]['widgetType'] = 'template'; bad( Layout::from_recipe( $bad ), 'Embedded external template widgets must be inlined before saving' );
 $bad = $record; $bad['recipe']['blueprint']['meta']['custom_css'] = '.elementor-page-10 .special{color:red}'; bad( Layout::from_recipe( $bad ), 'Source-specific page CSS must not silently stop working in a new page' );
 check( $source_reads === $read_count, 'All recipe projection and compilation checks stayed independent of the deleted example' );

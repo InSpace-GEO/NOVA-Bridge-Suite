@@ -41,9 +41,15 @@ final class Nova_Bridge_Suite_Recipe_Elementor {
     }
     public function validate_binding( array $native, array $binding ) {
         return $this->safe( function () use ( $native, $binding ) {
-            list( $node, $path ) = $this->node_for_target( $native, $binding['target'] ); $widget = $node['widgetType'] ?? ''; $control = $path[0] ?? ''; $settings = $node['settings'];
+            list( $node, $path ) = $this->node_for_target( $native, $binding['target'] ); $widget = $node['widgetType'] ?? ''; $settings = $node['settings'];
             $value = Nova_Bridge_Suite_Recipe_Engine::get( $native, $binding['target'], $found );
-            if ( ! $found || is_array( $value ) || isset( $settings['__dynamic__'][ $control ] ) ) { Nova_Bridge_Suite_Recipe_Engine::fail( 'Missing, structured and dynamic Elementor content remains protected.' ); }
+            $cursor = $settings; $dynamic = false;
+            foreach ( $path as $part ) {
+                if ( ! is_array( $cursor ) ) { break; }
+                if ( isset( $cursor['__dynamic__'][ $part ] ) ) { $dynamic = true; break; }
+                $cursor = $cursor[ $part ] ?? null;
+            }
+            if ( ! $found || is_array( $value ) || $dynamic ) { Nova_Bridge_Suite_Recipe_Engine::fail( 'Missing, structured and dynamic Elementor content remains protected.' ); }
             $formats = [];
             if ( 'heading' === $widget && [ 'title' ] === $path ) { $formats = [ 'text', 'html' ]; }
             elseif ( 'text-editor' === $widget && [ 'editor' ] === $path ) { $formats = [ 'text', 'html' ]; }

@@ -50,6 +50,8 @@ New saved-recipe projections use `nova.stored-recipe/v1`, with the builder and n
 
 The native operation journal format remains `nova.stored-layout-document/v1`. New plans retain their builder; older plans without that field continue through the Elementor provider. The existing Elementor provider identity tuple is preserved so an upgrade does not invalidate a retained operation solely through this refactor. Generic providers retain the native snapshot scope needed to compare later versions against prior committed state.
 
+Elementor dynamic tags in native widget, container, page and nested repeater settings remain protected native configuration. For example, a post-title or featured-image tag stays dynamic for the destination post instead of freezing the example's current title or image. These controls are not offered as writable mapping fields; the LLM only fills the selected independent fields. The saved layout retains tag expressions unchanged, including third-party bindings whose native provider remains responsible for rendering. This does not inline external templates or grant the mapper access to dynamic controls. External template references and source-page-specific CSS retain their existing checks.
+
 ## Local verification
 
 Run from the repository root with PHP and Node available. These standalone tests use in-memory WordPress/transport fixtures; they do not write to a staging or production database.
@@ -87,4 +89,12 @@ Normal WordPress UI checks confirmed:
 - Two older Elementor test fixtures failed the pre-existing complete-node capture check; they were left unchanged. The newly created native Post captured successfully.
 
 These checks exercise the live setup/sync and review-draft paths. The delivery worker, known-ID saves, higher-version replacements and uncertain-save recovery were verified with local in-memory tests, not a new backend-triggered CIV publication. No production WordPress settings or production database rows were changed by this verification.
+
+## Native dynamic-tag regression (29 October 2026)
+
+Aquavitalis saved its Posts layout locally, but synchronization stopped before HTTP because the old source-independence check rejected every nonempty Elementor `__dynamic__` map. The native recipe engine already retained these protected settings; the publication projection now follows that same contract, including protection of nested repeater controls.
+
+On `inspace-seo.com`, normal Elementor UI editing assigned the native Post Title tag to the isolated draft 5822. A fresh Static/Informative/Posts mapping captured it, exposed only the two independent text fields, synchronized and confirmed remote template revision 1. Native review draft 5828 then rendered its own title (`NOVA retained dynamic title proof 29 Oct`) through the retained tag, plus both text fields. The example title was not frozen into that heading. The site's Hello theme also renders its separate native title above the Elementor document; this test verifies dynamic resolution, not theme title visibility.
+
+Local tests cover protected title, featured-image, internal-URL and third-party expressions, nested controls, exact metadata preservation, known-ID writes/readback/recovery, higher content versions and rejection of mapped dynamic overrides. No backend-triggered publication or production save was performed for this regression.
 

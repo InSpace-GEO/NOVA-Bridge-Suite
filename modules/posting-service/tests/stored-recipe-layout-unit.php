@@ -96,6 +96,50 @@ foreach ( [ 'post', 'case_study' ] as $type ) {
     check( is_wp_error( Layout::compile( $wrong, $values, 'wrong-destination' ) ), 'A changed destination cannot silently replace the selected native post type' );
 }
 
+$dynamic_elementor = $elementor;
+$dynamic_elementor['document'][0]['settings']['__dynamic__'] = [ 'background_image' => '[elementor-tag name="post-featured-image" settings="%7B%7D"]' ];
+$dynamic_elementor['meta']['__dynamic__'] = [ 'background_color' => '[elementor-tag name="site-color" settings="%7B%7D"]' ];
+$protected_settings = [
+    [ 'widget' => 'heading', 'settings' => [ 'title' => 'Native fallback', '__dynamic__' => [ 'title' => '[elementor-tag name="post-title" settings="%7B%7D"]' ] ] ],
+    [ 'widget' => 'image', 'settings' => [ 'image' => [ 'id' => 0, 'url' => '', 'alt' => '' ], '__dynamic__' => [ 'image' => '[elementor-tag name="post-featured-image" settings="%7B%7D"]' ] ] ],
+    [ 'widget' => 'button', 'settings' => [ 'text' => 'Contact us', 'link' => [ 'url' => '' ], '__dynamic__' => [ 'link' => '[elementor-tag name="internal-url" settings="%7B%22post_id%22%3A9%7D"]' ] ] ],
+    [ 'widget' => 'custom-provider', 'settings' => [ 'custom_data' => '', '__dynamic__' => [ 'custom_data' => 'provider-owned-expression' ] ] ],
+    [ 'widget' => 'accordion', 'settings' => [ 'tabs' => [ [ '_id' => 'dynamic-row', 'tab_title' => 'Native row fallback', 'tab_content' => '<p>Fixed row body.</p>', '__dynamic__' => [ 'tab_title' => '[elementor-tag name="custom-row-title" settings="%7B%7D"]' ] ] ] ] ],
+];
+foreach ( $protected_settings as $index => $protected ) {
+    $dynamic_elementor['document'][0]['elements'][] = [ 'id' => 'dynamic-' . $index, 'elType' => 'widget', 'widgetType' => $protected['widget'], 'settings' => $protected['settings'], 'elements' => [] ];
+}
+$dynamic_saved = record( 'elementor', 'post', $dynamic_elementor, [ binding( $headline, 'text', 'Use the mapped section title.' ), binding( $body, 'html', 'Keep all paragraphs.' ) ] );
+$dynamic_draft = good( Layout::from_recipe( $dynamic_saved ), 'Protected native tags synchronize without needing the example' );
+check_projection( $dynamic_draft, $dynamic_saved );
+$dynamic_values = fitted( [ '/title' => 'Destination native title', $headline => 'New mapped heading', $body => '<p>New mapped body.</p>' ] );
+$dynamic_compiled = good( Layout::compile( $dynamic_draft, $dynamic_values, 'dynamic-post' ), 'Native tags remain independent of the missing source during compilation' );
+$dynamic_output = $dynamic_compiled['writer_payload'];
+check( $dynamic_output['elementor_page_settings'] === $dynamic_elementor['meta'] && $dynamic_output['elementor_data'][0]['settings'] === $dynamic_elementor['document'][0]['settings'], 'Native page and container dynamic styles are retained exactly' );
+foreach ( $protected_settings as $index => $protected ) {
+    $actual = $dynamic_output['elementor_data'][0]['elements'][$index + 2]['settings'];
+    $expected = $protected['settings'];
+    if ( isset( $expected['tabs'] ) ) { unset( $expected['tabs'][0]['_id'], $actual['tabs'][0]['_id'] ); }
+    check( $actual === $expected, 'Protected native expressions and fallbacks survive unchanged for ' . $protected['widget'] );
+}
+check( count( $dynamic_draft['fields'] ) === 3 && $dynamic_compiled['post_fields']['title'] === 'Destination native title', 'The mapper receives only declared static destinations and the new native title' );
+foreach ( [ '/document/0/elements/2/settings/title' => 'text', '/document/0/elements/3/settings/image/url' => 'url', '/document/0/elements/4/settings/link/url' => 'url', '/document/0/elements/6/settings/tabs/0/tab_title' => 'text' ] as $dynamic_target => $format ) {
+    $bad = $dynamic_saved; $bad['recipe']['bindings'][] = binding( $dynamic_target, $format, 'Do not override a native binding.' );
+    check( is_wp_error( Layout::from_recipe( $bad ) ), 'Dynamic control or nested repeater control remains unavailable to mapped writes: ' . $dynamic_target );
+}
+$bad = $dynamic_saved; $bad['recipe']['blueprint']['document'][0]['settings']['__dynamic__'] = 'not-a-map';
+check( is_wp_error( Layout::from_recipe( $bad ) ), 'Malformed native dynamic settings are rejected' );
+$bad = $dynamic_saved; $bad['recipe']['blueprint']['document'][0]['settings']['__dynamic__']['background_image'] = [ 'widgetType' => 'template', 'templateID' => 123 ];
+check( is_wp_error( Layout::from_recipe( $bad ) ), 'A dynamic metadata key cannot conceal an external template object' );
+$bad = $dynamic_saved; $bad['recipe']['blueprint']['document'][0]['settings']['__dynamic__']['background_image'] = '[elementor-template id="123"]';
+check( is_wp_error( Layout::from_recipe( $bad ) ), 'A dynamic metadata key cannot conceal an external template shortcode' );
+$bad = $dynamic_saved; $bad['recipe']['blueprint']['__dynamic__'] = [ 'title' => '[elementor-tag name="post-title"]' ];
+check( is_wp_error( Layout::from_recipe( $bad ) ), 'Native tag exceptions apply only to native settings metadata' );
+$bad = $dynamic_saved; $bad['recipe']['blueprint']['document'][0]['elements'][1]['settings']['editor'] = '[elementor-tag name="post-title"]';
+check( is_wp_error( Layout::from_recipe( $bad ) ), 'Inline tag text remains distinct from protected native metadata' );
+$bad = $dynamic_saved; $bad['recipe']['blueprint']['document'][0]['settings']['custom_css'] = '.elementor-page-987654321 { color:red; }';
+check( is_wp_error( Layout::from_recipe( $bad ) ), 'Preserved native tags do not weaken source-specific CSS checks' );
+
 $core_blueprint = [ 'resource_id' => 'post_type:post', 'type' => 'post_type', 'post_type' => 'post', 'template' => 'templates/full-width.php',
     'document' => [ 'title' => 'Example title', 'excerpt' => 'Example excerpt', 'intro' => '<p>Example introduction</p>', 'sections' => [ [ 'heading' => 'Example section', 'body' => '<p>Example paragraph</p>' ] ], 'faqs' => [] ] ];
 $saved = record( 'core', 'post', $core_blueprint, [ binding( '/document/title', 'text', 'Use the document title with the requested product name.' ), binding( '/document/intro', 'html', 'Use the introduction first.' ), binding( '/document/sections/0/heading', 'text', 'Use the next section heading.' ), binding( '/document/sections/0/body', 'html', 'Keep all remaining paragraphs in order.' ) ] );
