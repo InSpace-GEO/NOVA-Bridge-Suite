@@ -1,5 +1,5 @@
 <?php
-/** Saved Elementor layouts use the existing publishing-template and default APIs. */
+/** Saved native layouts use the existing publishing-template and default APIs. */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 final class Nova_Bridge_Suite_Stored_Recipe_Sync {
@@ -26,9 +26,15 @@ final class Nova_Bridge_Suite_Stored_Recipe_Sync {
         foreach ( $body['defaults'] as $id ) { if ( ! Nova_Bridge_Suite_Posting_Protocol::uuid( $id ) ) { return self::error( 'defaults', 'Posting service returned an invalid template default.' ); } }
         return $body['defaults'];
     }
+    private static function default_conflict( string $page_type, ?string $selected, int $revision ): WP_Error {
+        $data = [ 'status' => 409 ];
+        if ( $selected ) { $data['default_replacement'] = [ 'page_type' => $page_type, 'template_id' => $selected, 'defaults_revision' => $revision ]; }
+        return new WP_Error( 'nova_stored_recipe_default_conflict', 'Another template currently handles this NOVA content type. Review and explicitly choose this saved template to replace that default; no remote template was changed.', $data );
+    }
 
-    public static function sync_editor( array $connection, callable $load, bool $saving = false, string $recipe_id = '', $client = null, $locks = null, string $recover_template_id = '' ) {
+    public static function sync_editor( array $connection, callable $load, bool $saving = false, string $recipe_id = '', $client = null, $locks = null, string $recover_template_id = '', ?array $replace_default = null ) {
         if ( ! current_user_can( 'manage_options' ) || empty( $connection['enabled'] ) ) { return self::error( 'permission', 'Enable the posting connection and sign in as an administrator before synchronizing.' ); }
+        if ( null !== $replace_default && ( $saving || ! Nova_Bridge_Suite_Posting_Protocol::uuid( $replace_default['template_id'] ?? null ) || ! is_int( $replace_default['defaults_revision'] ?? null ) || $replace_default['defaults_revision'] < 1 || ! in_array( $replace_default['page_type'] ?? '', [ 'service', 'informative', 'category' ], true ) ) ) { return self::error( 'default_replacement', 'Review the saved template and the current default before replacing it.' ); }
         $client = $client ?: new Nova_Bridge_Suite_Posting_Client( $connection );
         $invalid = $client->connection_error(); if ( is_wp_error( $invalid ) ) { return $invalid; }
         $locks = $locks ?: new Nova_Bridge_Suite_Posting_Jobs(); $lock = 'stored-recipe-editor:' . $client->site_id();
@@ -40,15 +46,16 @@ final class Nova_Bridge_Suite_Stored_Recipe_Sync {
             $attempt = [ 'status' => 'pending', 'recipe_revision' => $saved['revision'], 'page_type' => $saved['posting_page_type'] ?? 'service', 'checked_at' => gmdate( 'Y-m-d\TH:i:s\Z' ), 'message' => 'Posting-service default confirmation has not completed.' ];
             $remembered = self::remember( $connection, $saved['id'], $attempt );
             $record = Nova_Bridge_Suite_Layout_Recipes::delivery_record( $saved['id'], $saved['revision'] );
-            $result = ! $remembered ? self::error( 'status_storage', 'The saved layout is local; its synchronization status could not be retained. Retry synchronization.' ) : ( is_wp_error( $record ) ? $record : self::synchronize( $connection, $client, $record, $recover_template_id ) );
+            $result = ! $remembered ? self::error( 'status_storage', 'The saved layout is local; its synchronization status could not be retained. Retry synchronization.' ) : ( is_wp_error( $record ) ? $record : self::synchronize( $connection, $client, $record, $recover_template_id, $replace_default ) );
             $saved['posting_sync'] = ( is_wp_error( $result ) ? [ 'status' => 'failed', 'code' => $result->get_error_code(), 'message' => $result->get_error_message() ] : $result ) + $attempt;
+            if ( is_wp_error( $result ) && is_array( $result->get_error_data()['default_replacement'] ?? null ) ) { $saved['posting_sync']['default_replacement'] = $result->get_error_data()['default_replacement']; }
             if ( ! self::remember( $connection, $saved['id'], $saved['posting_sync'] ) ) { $saved['posting_sync'] = [ 'status' => 'failed', 'code' => 'nova_stored_recipe_status_storage', 'message' => 'The last synchronization result could not be retained. Review and sync this saved revision again.' ] + $attempt; }
             $saved['local_only'] = 'synced' !== $saved['posting_sync']['status'];
             return $saved;
         } finally { $locks->unlock( $lock ); }
     }
 
-    private static function synchronize( array $connection, $client, array $record, string $recover_template_id ) {
+    private static function synchronize( array $connection, $client, array $record, string $recover_template_id, ?array $replace_default ) {
         $default = Nova_Bridge_Suite_Layout_Recipes::defaults()[$record['resource_id']] ?? [];
         if ( ( $default['id'] ?? '' ) !== $record['id'] || ( $default['revision'] ?? 0 ) !== $record['revision'] ) { return self::error( 'default_changed', 'Reload the current saved creation default before synchronizing.' ); }
         $draft = Nova_Bridge_Suite_Stored_Layout::from_recipe( $record ); if ( is_wp_error( $draft ) ) { return $draft; }
@@ -57,7 +64,8 @@ final class Nova_Bridge_Suite_Stored_Recipe_Sync {
         $scope = 'recipe:' . $record['id']; $previous = Nova_Bridge_Suite_Mapping_Sync::scope_state( $client->site_id(), $scope );
         if ( isset( $previous['template']['page_type'] ) && $previous['template']['page_type'] !== $page_type ) { return self::error( 'page_type_changed', 'Create a separate template for another NOVA content type. The synchronized template keeps its existing default and page type.' ); }
         $selected = $defaults[$page_type] ?? null;
-        if ( $selected && $selected !== ( $previous['template']['id'] ?? null ) ) { return self::error( 'default_conflict', 'This NOVA content type already selects another template. Review that default before replacing it; no remote template was changed.' ); }
+        if ( null !== $replace_default && ( $replace_default['page_type'] !== $page_type || $replace_default['template_id'] !== $selected || $replace_default['defaults_revision'] !== $reply['body']['revision'] ) ) { return self::default_conflict( $page_type, $selected, $reply['body']['revision'] ); }
+        if ( $selected && $selected !== ( $previous['template']['id'] ?? null ) && null === $replace_default ) { return self::default_conflict( $page_type, $selected, $reply['body']['revision'] ); }
         $sync = new Nova_Bridge_Suite_Mapping_Sync( $client, $scope );
         $state = $sync->synchronize( $draft, $recover_template_id ); if ( is_wp_error( $state ) ) { return $state; }
         $state = $sync->activate( $draft, [ 'actor_user_id' => (int) ( $connection['actor_user_id'] ?? 0 ) ] ); if ( is_wp_error( $state ) ) { return $state; }

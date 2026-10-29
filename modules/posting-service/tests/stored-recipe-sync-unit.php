@@ -12,7 +12,7 @@ require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-stored-reci
 class Nova_Bridge_Suite_Layout_Recipes {
     public static $record;
     public static function delivery_record( $id, $revision ) { return self::$record['id'] === $id && self::$record['revision'] === $revision ? self::$record : new WP_Error( 'missing', 'Unknown revision.' ); }
-    public static function defaults() { return [ 'post_type:page' => self::$record ]; }
+    public static function defaults() { return [ self::$record['resource_id'] => self::$record ]; }
 }
 class Nova_Bridge_Suite_Stored_Layout_Writer {
     public static $failure = null;
@@ -20,7 +20,7 @@ class Nova_Bridge_Suite_Stored_Layout_Writer {
 }
 class Stored_Sync_Lock { public function lock( $name ) { return true; } public function unlock( $name ) {} }
 function stored_ok( $value ) { check( ! is_wp_error( $value ), is_wp_error( $value ) ? $value->get_error_code() . ': ' . $value->get_error_message() : 'Success' ); return $value; }
-function stored_sync( $client, $connection, $recover = '' ) { return Nova_Bridge_Suite_Stored_Recipe_Sync::sync_editor( $connection, static function () { return Nova_Bridge_Suite_Layout_Recipes::$record; }, false, Nova_Bridge_Suite_Layout_Recipes::$record['id'], $client, new Stored_Sync_Lock(), $recover ); }
+function stored_sync( $client, $connection, $recover = '', ?array $replace_default = null ) { return Nova_Bridge_Suite_Stored_Recipe_Sync::sync_editor( $connection, static function () { return Nova_Bridge_Suite_Layout_Recipes::$record; }, false, Nova_Bridge_Suite_Layout_Recipes::$record['id'], $client, new Stored_Sync_Lock(), $recover, $replace_default ); }
 $connection += [ 'enabled' => true, 'actor_user_id' => 7 ];
 $recipe_id = '33333333-3333-4333-8333-333333333333'; $template_id = '44444444-4444-4444-8444-444444444444';
 $record = [ 'id' => $recipe_id, 'revision' => 1, 'resource_id' => 'post_type:page', 'builder' => 'elementor', 'mode' => 'static', 'posting_page_type' => 'service', 'label' => 'Service creation', 'recipe' => [ 'builder' => 'elementor', 'mode' => 'static', 'instructions' => 'Put the introductory content in the hero.', 'regions' => [], 'blueprint' => [ 'document' => [ [ 'id' => 'abc1234', 'elType' => 'widget', 'widgetType' => 'heading', 'settings' => [ 'title' => 'Example heading', 'header_size' => 'h1', 'opacity' => 0.75, 'title_color' => '#123abc' ], 'elements' => [] ] ], 'meta' => [ 'background_color' => '#ddeeff' ], 'template' => 'elementor_canvas' ], 'bindings' => [ [ 'id' => 'hero', 'target' => '/document/0/settings/title', 'source' => '/hero_title', 'format' => 'text', 'label' => 'Hero heading', 'required' => true, 'instructions' => 'Choose the main service heading.' ] ] ] ];
@@ -67,12 +67,28 @@ $recovered = stored_ok( stored_sync( $client, $connection ) ); check( $recovered
 check( stored_ok( Nova_Bridge_Suite_Mapping_Sync::configuration_for_snapshot( [ 'site_id' => $site, 'configuration' => $frozen ], $site ) ) === $profile, 'Later instructions do not rewrite the retained historical layout.' );
 $client->queue = [ [ 'GET', '/template-defaults', reply( [ 'revision' => 3, 'defaults' => [ 'service' => '55555555-5555-4555-8555-555555555555' ] ] ) ] ];
 $conflict = stored_ok( stored_sync( $client, $connection ) ); check( $conflict['posting_sync']['code'] === 'nova_stored_recipe_default_conflict', 'Unrelated remote defaults are not overwritten.' );
+$replacement = [ 'page_type' => 'service', 'template_id' => '55555555-5555-4555-8555-555555555555', 'defaults_revision' => 3 ];
+check( $conflict['posting_sync']['default_replacement'] === $replacement, 'A conflict identifies the exact default and revision the administrator must review.' );
+$before_calls = count( $client->calls );
+$client->queue = [ [ 'GET', '/template-defaults', reply( [ 'revision' => 4, 'defaults' => [ 'service' => $replacement['template_id'] ] ] ) ] ];
+$stale = stored_ok( stored_sync( $client, $connection, '', $replacement ) );
+check( count( $client->calls ) === $before_calls + 1 && $stale['posting_sync']['code'] === 'nova_stored_recipe_default_conflict' && $stale['posting_sync']['default_replacement']['defaults_revision'] === 4, 'A stale reviewed default cannot mutate a template or silently overwrite a changed remote revision.' );
+$before_defaults = [ 'revision' => 3, 'defaults' => [ 'service' => $replacement['template_id'], 'informative' => $other_id ] ];
+$after_defaults = [ 'revision' => 4, 'defaults' => [ 'service' => $template_id, 'informative' => $other_id ] ];
+$client->queue = [ [ 'GET', '/template-defaults', reply( $before_defaults ) ], [ 'GET', '/templates/' . $template_id, reply( $remote2 ) ], [ 'PUT', '/template-defaults', reply( $after_defaults ) ], [ 'GET', '/template-defaults', reply( $after_defaults ) ] ];
+$before_calls = count( $client->calls ); $switched = stored_ok( stored_sync( $client, $connection, '', $replacement ) );
+check( $switched['posting_sync']['verified'] && $switched['posting_sync']['default_selected'] && $client->calls[$before_calls + 2][3] === [ 'If-Match' => '"3"' ] && $client->calls[$before_calls + 2][2]['defaults']['informative'] === $other_id, 'Explicitly reviewed replacement uses the existing conditional defaults API and preserves other page types.' );
+$client->queue = [ [ 'GET', '/template-defaults', reply( $before_defaults ) ], [ 'GET', '/templates/' . $template_id, reply( $remote2 ) ], [ 'PUT', '/template-defaults', new WP_Error( 'precondition_failed', 'Another administrator changed the defaults.', [ 'status' => 412 ] ) ] ];
+$raced = stored_ok( stored_sync( $client, $connection, '', $replacement ) );
+check( $raced['local_only'] && $raced['posting_sync']['code'] === 'precondition_failed' && empty( $raced['posting_sync']['default_selected'] ), 'A concurrent default change after review never reports success or retries an unconditional overwrite.' );
+$called = false; $malformed = Nova_Bridge_Suite_Stored_Recipe_Sync::sync_editor( $connection, static function () use ( &$called ) { $called = true; return []; }, true, $recipe_id, $client, new Stored_Sync_Lock(), '', $replacement );
+check( is_wp_error( $malformed ) && ! $called, 'Creating a new local revision cannot implicitly authorize replacement of the remote default.' );
 $record['posting_page_type'] = 'informative'; Nova_Bridge_Suite_Layout_Recipes::$record = $record;
 $client->queue = [ [ 'GET', '/template-defaults', reply( [ 'revision' => 2, 'defaults' => [ 'service' => $template_id ] ] ) ] ];
 $type_error = stored_ok( stored_sync( $client, $connection ) ); check( $type_error['posting_sync']['code'] === 'nova_stored_recipe_page_type_changed', 'A synchronized template cannot strand its old page-type default.' );
 foreach ( [ 'informative', 'category' ] as $index => $page_type ) {
     $record['id'] = $index === 0 ? '77777777-7777-4777-8777-777777777777' : '88888888-8888-4888-8888-888888888888';
-    $record['revision'] = 1; $record['posting_page_type'] = $page_type; Nova_Bridge_Suite_Layout_Recipes::$record = $record;
+    $record['revision'] = 1; $record['posting_page_type'] = $page_type; $record['resource_id'] = $index === 0 ? 'post_type:post' : 'post_type:page'; Nova_Bridge_Suite_Layout_Recipes::$record = $record;
     $projection = stored_ok( Nova_Bridge_Suite_Writing_Adapter::template_input( stored_ok( Nova_Bridge_Suite_Stored_Layout::from_recipe( $record ) ) ) );
     check( $projection['page_type'] === $page_type, 'The selected ' . $page_type . ' type reaches the remote template definition.' );
     $type_template_id = $index === 0 ? 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' : 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
@@ -81,7 +97,9 @@ foreach ( [ 'informative', 'category' ] as $index => $page_type ) {
     $after_defaults = [ 'revision' => 4, 'defaults' => [ 'service' => $other_id, $page_type => $type_template_id ] ];
     $client->queue = [ [ 'GET', '/template-defaults', reply( $before_defaults ) ], [ 'POST', '/templates', reply( $remote_for_type, 201 ) ], [ 'GET', '/templates/' . $type_template_id, reply( $remote_for_type ) ], [ 'PUT', '/template-defaults', reply( $after_defaults ) ], [ 'GET', '/template-defaults', reply( $after_defaults ) ] ];
     $chosen = stored_ok( stored_sync( $client, $connection ) );
-    check( $chosen['posting_sync']['page_type'] === $page_type && $chosen['posting_sync']['default_selected'], 'The ' . $page_type . ' default is selected and independently confirmed for ordinary Pages.' );
+    check( $chosen['posting_sync']['page_type'] === $page_type && $chosen['posting_sync']['default_selected'], 'The ' . $page_type . ' default is selected and independently confirmed for its native destination.' );
+    $native = stored_ok( Nova_Bridge_Suite_Stored_Layout::from_recipe( $record ) );
+    check( $native['routing']['post_type'] === ( $index === 0 ? 'post' : 'page' ) && $native['stored_layout']['resource_id'] === $record['resource_id'], 'The native destination remains frozen in the layout independently of its NOVA page type.' );
 }
 $record['id'] = '99999999-9999-4999-8999-999999999999'; Nova_Bridge_Suite_Layout_Recipes::$record = $record;
 $projection = stored_ok( Nova_Bridge_Suite_Writing_Adapter::template_input( stored_ok( Nova_Bridge_Suite_Stored_Layout::from_recipe( $record ) ) ) );

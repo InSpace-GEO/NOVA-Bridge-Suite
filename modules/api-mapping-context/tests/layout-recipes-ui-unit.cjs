@@ -290,5 +290,47 @@ async function categoryMounted(settings={}){const current=categoryDesign(),choic
   t.controller.next();await t.controller.preview();await t.controller.save();
   const saved=t.calls.find(call=>call.path==='/save');assert(saved);assert.deepEqual(saved.payload.recipe.blueprint.document_settings,settings);
  });
+
+ await test('server capabilities enable sync for Posts and custom destinations without builder-endpoint pairs',async()=>{
+  for(const resourceId of ['post_type:post','post_type:article']){
+   const available=clone(catalog),support={supported:true,reason:''};
+   available.resources.push({id:resourceId,label:'Articles',type:'post_type',creation_supported:true,targets:[],posting_support:{core:{static:support,mixed:{supported:false,reason:'Choose fixed fields for publishing.'}}}});
+   const replacement={template_id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',defaults_revision:7,page_type:'informative'};
+   let currentReplacement=replacement;
+   const t=await mounted({config:{resourceId},request:async(path,payload)=>{
+    if(path==='/catalog')return available;
+    if(path==='/design')return {...clone(design),builder:'core'};
+    if(path==='/preview')return {preview_document:'<p>Review</p>',preview_receipt:'receipt'};
+    if(path==='/save')return {id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',revision:1,resource_id:resourceId,posting_page_type:payload.posting_page_type,default_saved:true,recipe:clone(payload.recipe),posting_support:support,posting_sync:{status:'failed',recipe_revision:1,page_type:'informative',message:'Another template is selected.',default_replacement:currentReplacement}};
+    if(path==='/sync'){
+     assert.equal(payload.revision,1);
+     if(!payload.replace_default)return {id:payload.id,revision:1,posting_support:support,posting_sync:{status:'failed',page_type:'informative',recipe_revision:1,default_replacement:currentReplacement}};
+     assert.deepEqual(payload.replace_default,currentReplacement);
+     return {id:payload.id,revision:1,posting_support:support,posting_sync:{status:'synced',verified:true,default_selected:true,page_type:'informative',recipe_revision:1,template_revision:2,template_id:'cccccccc-cccc-4ccc-8ccc-cccccccccccc'}};
+    }
+    throw Error(path);
+   }});
+   t.controller.selectPageType('informative');t.controller.selectBuilder('core');t.controller.selectMode('static');
+   assert(!t.host.textContent.includes('This layout is saved locally.'));
+   t.controller.next();await t.controller.capture(0);t.controller.next();await t.controller.preview();t.controller.next();await t.controller.save();
+   assert(t.host.all().some(item=>item.tag==='button'&&item.ownText==='Sync saved revision'));
+   assert(t.host.all().some(item=>item.tag==='button'&&item.ownText==='Use this template as Informative default'));
+   await t.controller.syncSaved();assert(!t.calls.filter(call=>call.path==='/sync')[0].payload.replace_default,'Ordinary retry cannot silently approve a replacement');
+   await t.controller.syncSaved(true);assert.equal(t.calls.filter(call=>call.path==='/save').length,1,'Replacement reuses the exact saved revision');
+   assert.equal(t.controller.state.error,false);assert.equal(t.host.querySelector('.nlr-state').textContent,'Default confirmed');
+   assert(!t.host.all().some(item=>item.tag==='button'&&item.ownText==='Use this template as Informative default'));
+  }
+ });
+ await test('default replacement requires observed matching type and a clean saved revision',async()=>{
+  let syncs=0;const f=fixture({request:async(path,payload)=>{
+   if(path==='/catalog')return clone(catalog);if(path==='/design')return clone(design);if(path==='/preview')return {preview_document:'Review',preview_receipt:'receipt'};
+   if(path==='/save')return {id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',revision:1,resource_id:payload.resource_id,posting_page_type:payload.posting_page_type,default_saved:true,recipe:clone(payload.recipe)};
+   if(path==='/sync'){syncs++;throw Error('No replacement should be submitted');}throw Error(path);
+  }});await reviewed(f);await f.ctrl.save();await f.ctrl.syncSaved(true);assert.equal(syncs,0);
+  f.ctrl.state.postingSync={recipe_revision:1,default_replacement:{template_id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',defaults_revision:2,page_type:'informative'}};
+  await f.ctrl.syncSaved(true);assert.equal(syncs,0,'Another content type cannot authorize replacement');
+  f.ctrl.state.postingSync.default_replacement.page_type='service';f.ctrl.state.postingSync.recipe_revision=0;await f.ctrl.syncSaved(true);assert.equal(syncs,0,'An older saved revision cannot authorize replacement');
+  f.ctrl.state.postingSync.recipe_revision=1;f.ctrl.edit(state=>{state.label='Unsaved name';});await f.ctrl.syncSaved(true);assert.equal(syncs,0,'Unsaved edits cannot replace a default');
+ });
  console.log('PASS '+checks+' layout recipe UI workflows.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

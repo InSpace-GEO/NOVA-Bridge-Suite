@@ -41,6 +41,12 @@ final class Nova_Bridge_Suite_Recipe_Builders {
         if ( $post_id < 1 ) { return self::error( 'reference', 'Choose an actual native reference before inspecting its builder.', 404 ); }
         $post = get_post( $post_id );
         if ( ! $post || ! current_user_can( 'manage_options' ) || ! current_user_can( 'edit_post', $post_id ) ) { return self::error( 'reference', 'The native reference cannot be inspected by this account.', 403 ); }
+        return self::native_carriers( $post );
+    }
+
+    /** Shared read-only carrier inspection; callers enforce their own editor permissions. */
+    public static function native_carriers( $post ): array {
+        $post_id = (int) $post->ID;
         $content = (string) $post->post_content; $builders = []; $elementor = get_post_meta( $post_id, '_elementor_data', true );
         if ( 'builder' === get_post_meta( $post_id, '_elementor_edit_mode', true ) || ! empty( $elementor ) && ! in_array( $elementor, [ '[]', [] ], true ) ) { $builders[] = 'elementor'; }
         $divi5 = 1 === preg_match( '/<!--\s+wp:divi\//i', $content );

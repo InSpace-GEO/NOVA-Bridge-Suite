@@ -6,7 +6,7 @@ function is_wp_error( $value ) { return $value instanceof WP_Error; }
 function wp_parse_url( $url ) { return parse_url( $url ); }
 function current_user_can( $cap, ...$args ) { return ! $GLOBALS['denied']; }
 function sanitize_title( $value ) { return trim( preg_replace( '/[^a-z0-9]+/', '-', strtolower( $value ) ), '-' ); }
-function get_option( $key, $default = false ) { return $key === 'home' ? ( $GLOBALS['site_home'] ?? 'https://example.test' ) : $default; }
+function get_option( $key, $default = false ) { return $key === 'home' ? ( $GLOBALS['site_home'] ?? 'https://example.test' ) : ( $key === 'permalink_structure' ? '/%postname%/' : $default ); }
 function home_url( $path = '/' ) { return 'https://example.test' . $path; }
 function get_locale() { return 'de_DE'; }
 function update_option( ...$args ) { throw new RuntimeException( 'Persistent language settings must not change' ); }
@@ -14,14 +14,15 @@ function pll_save_post_translations( ...$args ) { throw new RuntimeException( 'I
 function pll_languages_list( $args ) { return array_values( $args['fields'] === 'slug' ? array_keys( $GLOBALS['languages'] ) : $GLOBALS['languages'] ); }
 function pll_default_language( $field = 'slug' ) { return $field === 'locale' ? ( $GLOBALS['languages'][$GLOBALS['default_language']] ?? false ) : $GLOBALS['default_language']; }
 function pll_home_url( $code ) { return $GLOBALS['homes'][$code]; }
-function pll_is_translated_post_type( $type ) { return $type === 'page'; }
+function pll_is_translated_post_type( $type ) { return in_array( $type, [ 'page', 'post', 'case_study' ], true ); }
+function get_post_type_object( $type ) { return (object) [ 'hierarchical' => $type === 'page' ]; }
 function pll_get_post_language( $id, $field = 'slug' ) { $code = $GLOBALS['post_languages'][$id] ?? false; return $field === 'locale' && $code ? $GLOBALS['languages'][$code] : $code; }
 function pll_set_post_language( $id, $code ) { ++$GLOBALS['assignments']; $GLOBALS['post_languages'][$id] = $code; }
-function get_posts( $args ) { return array_slice( array_keys( $GLOBALS['links'] ), $args['offset'], $args['posts_per_page'] ); }
+function get_posts( $args ) { $ids = array_filter( array_keys( $GLOBALS['links'] ), static function ( $id ) use ( $args ) { return ( $GLOBALS['native_posts'][$id]->post_type ?? 'page' ) === $args['post_type']; } ); return array_slice( $ids, $args['offset'], $args['posts_per_page'] ); }
 function get_permalink( $id ) { return $GLOBALS['links'][$id] ?? ''; }
 function get_post( $id ) { return $GLOBALS['native_posts'][$id] ?? null; }
-class Language_Rewrite { public $structure = '/%pagename%/'; public function get_page_permastruct() { return $this->structure; } }
-class Nova_Bridge_Suite_Document_Mapping { public static function resources() { return [ [ 'id' => 'post_type:page', 'type' => 'post_type', 'post_type' => 'page', 'availability' => 'available', 'can_inspect_existing' => true ] ]; } }
+class Language_Rewrite { public $structure = '/%pagename%/'; public function get_page_permastruct() { return $this->structure; } public function get_extra_permastruct( $type ) { return '/cases/%case_study%/'; } }
+class Nova_Bridge_Suite_Document_Mapping { public static function resources() { return array_map( static function ( $type ) { return [ 'id' => 'post_type:' . $type, 'type' => 'post_type', 'post_type' => $type, 'availability' => 'available', 'can_inspect_existing' => true ]; }, [ 'page', 'post', 'case_study' ] ); } }
 require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-mapped-content-target.php';
 require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-stored-layout-language.php';
 require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-stored-layout-writer.php';
@@ -74,4 +75,15 @@ $denied = true; bad( Language::assign( 21, $german ), 'Publishing actor permissi
 $homes['de-de'] = 'https://foreign.test/'; bad( Language::creation( 'post_type:page', 'https://foreign.test/new/', 'nl-NL' ), 'Separate default-language domains remain outside this scoped adapter' ); $homes['de-de'] = 'https://example.test/';
 $default_language = 'missing'; bad( Language::creation( 'post_type:page', 'https://example.test/new/', 'nl-NL' ), 'Unavailable site default fails closed' ); $default_language = 'de-de';
 $wp_rewrite->structure = '/%year%/%pagename%/'; bad( Language::creation( 'post_type:page', 'https://example.test/new/', 'nl-NL' ), 'Unknown native page routing tokens fail closed' );
+$wp_rewrite->structure = '/%pagename%/'; $links = [];
+$post_target = good( Language::creation( 'post_type:post', 'https://example.test/new-article/', 'nl-NL' ), 'Regular Posts use their native root permalink and site default language' );
+check( $post_target['slug'] === 'new-article' && $post_target['parent'] === 0 && $post_target['native_language']['post_type'] === 'post', 'Posts retain their own destination in the language context' );
+good( Language::assign( 31, $post_target ), 'A reserved regular Post receives the default language' );
+good( Language::verify( 'post_type:post', 31, $post_target ), 'Regular Post language is verified without a Page-only restriction' );
+bad( Language::verify( 'post_type:page', 31, $post_target ), 'Language context cannot be reused for another destination' );
+bad( Language::creation( 'post_type:post', 'https://example.test/parent/new-article/', 'nl-NL' ), 'Flat Posts do not invent parent hierarchies' );
+$cpt_target = good( Language::creation( 'post_type:case_study', 'https://example.test/cases/new-case/', 'nl-NL' ), 'An arbitrary registered custom post type uses its own native rewrite base' );
+check( $cpt_target['slug'] === 'new-case' && $cpt_target['native_language']['post_type'] === 'case_study', 'Custom post type and slug survive routing' );
+good( Language::assign( 32, $cpt_target ), 'Custom native post type uses the same language assignment path' );
+bad( Language::creation( 'post_type:case_study', 'https://example.test/new-case/', 'nl-NL' ), 'A custom post type cannot publish outside its native permalink structure' );
 echo "Stored-layout language checks: $checks passed.\n";

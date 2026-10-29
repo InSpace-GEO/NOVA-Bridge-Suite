@@ -20,7 +20,7 @@
 		var confirmed = sync && sync.status === 'synced' && sync.verified === true && sync.default_selected === true && sync.recipe_revision === recipe.revision && sync.page_type === type && Number.isSafeInteger( sync.template_revision ) && sync.template_revision > 0 && typeof sync.template_id === 'string' && !! sync.template_id;
 		if ( confirmed ) { result.push( 'Posting-service default confirmed when saved or synchronized.' ); }
 		else if ( sync && sync.status === 'failed' && sync.recipe_revision === recipe.revision && sync.page_type === type ) { result.push( 'Saved locally · posting-service default not confirmed. ' + ( typeof sync.message === 'string' ? sync.message : 'Open the layout to retry synchronization.' ) ); }
-		else { result.push( resource.id === 'taxonomy:product_cat' && ! sync ? 'Saved locally · last posting-service confirmation is unavailable.' : 'Saved locally · posting-service default not confirmed.' ); }
+		else { result.push( resource.id === 'taxonomy:product_cat' && ! sync ? 'Saved locally · last posting-service confirmation is unavailable.' : 'Saved locally · posting-service default not confirmed.' ); if ( recipe.posting_support && recipe.posting_support.supported === false && recipe.posting_support.reason ) { result.push( recipe.posting_support.reason ); } }
 		return result;
 	}
 	function referenceType( resource ) { return resource.type === 'taxonomy' || resource.kind === 'term' ? 'term' : 'post'; }

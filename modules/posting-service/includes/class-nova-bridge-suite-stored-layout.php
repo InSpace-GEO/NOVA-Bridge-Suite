@@ -5,6 +5,20 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 final class Nova_Bridge_Suite_Stored_Layout {
     public const FORMAT = 'nova-stored-layout/v1';
 
+    /** One capability boundary for every native post destination and registered builder. */
+    public static function publishing_support( string $resource_id, string $builder, string $mode ): array {
+        require_once __DIR__ . '/class-nova-bridge-suite-stored-recipe-layout.php';
+        return Nova_Bridge_Suite_Stored_Recipe_Layout::publishing_support( $resource_id, $builder, $mode );
+    }
+    public static function supports_recipe( array $record ): bool {
+        $recipe = $record['recipe'] ?? [];
+        $support = self::publishing_support( $record['resource_id'] ?? '', $record['builder'] ?? $recipe['builder'] ?? '', $recipe['mode'] ?? $record['mode'] ?? 'static' );
+        return ! empty( $support['supported'] ) && empty( $recipe['regions'] ) && empty( $recipe['custom_fields'] );
+    }
+    public static function assert_independent( string $builder, array $blueprint ): void {
+        if ( 'elementor' === $builder ) { self::independent( $blueprint ); }
+    }
+
     private static function error( string $message ): WP_Error { return new WP_Error( 'nova_stored_layout', $message, [ 'status' => 422 ] ); }
     private static function checked( $value ) { if ( is_wp_error( $value ) ) { throw new InvalidArgumentException( $value->get_error_message() ); } return $value; }
     private static function guard( callable $work ) {
@@ -97,6 +111,10 @@ final class Nova_Bridge_Suite_Stored_Layout {
 
     /** Pure validation: no current example, native reader or source fingerprint is consulted. */
     public static function validate( array $draft ) {
+        if ( ( $draft['stored_layout']['format'] ?? '' ) === 'nova.stored-recipe/v1' ) {
+            require_once __DIR__ . '/class-nova-bridge-suite-stored-recipe-layout.php';
+            return Nova_Bridge_Suite_Stored_Recipe_Layout::validate( $draft );
+        }
         return self::guard( static function () use ( $draft ) {
             $layout = $draft['stored_layout'] ?? null;
             if ( ! is_array( $layout ) || ( $layout['format'] ?? '' ) !== self::FORMAT || ( $layout['builder'] ?? '' ) !== 'elementor' || ( $layout['post_type'] ?? '' ) !== 'page' || ! is_array( $layout['blueprint'] ?? null ) || ! is_array( $layout['post_fields'] ?? null ) || ! is_array( $layout['bindings'] ?? null ) || ! is_string( $layout['digest'] ?? null ) ) { self::fail( 'Save this mapping again to retain its complete Elementor creation layout.' ); }
@@ -110,6 +128,10 @@ final class Nova_Bridge_Suite_Stored_Layout {
 
     /** Fill frozen destinations and rebase native identities, without reading the source page. */
     public static function compile( array $draft, array $destination_values, string $seed ) {
+        if ( ( $draft['stored_layout']['format'] ?? '' ) === 'nova.stored-recipe/v1' ) {
+            require_once __DIR__ . '/class-nova-bridge-suite-stored-recipe-layout.php';
+            return Nova_Bridge_Suite_Stored_Recipe_Layout::compile( $draft, $destination_values, $seed );
+        }
         return self::guard( static function () use ( $draft, $destination_values, $seed ) {
             if ( '' === $seed ) { self::fail( 'A retained operation identity is required for fresh native element IDs.' ); }
             $layout = self::checked( self::validate( $draft ) ); $effective = Nova_Bridge_Suite_Writing_Adapter::adaptation_draft( $draft );
@@ -131,25 +153,8 @@ final class Nova_Bridge_Suite_Stored_Layout {
 
     /** Project the saved visual recipe into V3 destinations; native structure stays local. */
     public static function from_recipe( array $record ) {
-        return self::guard( static function () use ( $record ) {
-            $recipe = $record['recipe'] ?? [];
-            if ( ( $record['builder'] ?? '' ) !== 'elementor' || ( $record['resource_id'] ?? '' ) !== 'post_type:page' || ! is_array( $recipe['blueprint'] ?? null ) || ! is_array( $recipe['bindings'] ?? null ) || ! empty( $recipe['regions'] ) || ! empty( $recipe['custom_fields'] ) ) { self::fail( 'V3 stored-layout creation supports Elementor pages with fixed scalar fields. Generated regions and ACF fields need a dedicated creation adapter.' ); }
-            $adapter = new Nova_Bridge_Suite_Recipe_Elementor(); $design = self::checked( $adapter->describe( $recipe['blueprint'] ) );
-            $inventory = array_column( $design['fields'], null, 'target' );
-            $draft = [ 'schema_version' => 1, 'revision' => (string) ( $record['id'] ?? '' ) . ':' . (string) ( $record['revision'] ?? '' ), 'reference_type' => 'post', 'reference_id' => 0, 'signature' => Nova_Bridge_Suite_Recipe_Engine::digest( $recipe['blueprint'] ), 'catalog_mode' => 'destination', 'template' => [ 'id' => 'local-destination', 'revision' => '1' ], 'profile_page_type' => $record['posting_page_type'] ?? 'service', 'label' => $record['label'] ?? 'Elementor page', 'guidance_mode' => empty( $recipe['instructions'] ) ? 'clear' : 'set', 'guidance' => $recipe['instructions'] ?? '', 'routing' => [ 'operation' => 'create', 'publication' => 'publish', 'post_type' => 'page', 'locale' => '' ], 'fields' => [], 'target_descriptors' => [], 'repeat_slots' => [], 'destination_groups' => [] ];
-            $draft['fields']['/title'] = [ 'mode' => 'adapt', 'source_path' => '', 'required' => true, 'instructions' => '', 'description' => [ 'label' => 'Page title', 'purpose' => 'The native page title matching the supplied content heading.', 'value_type' => 'text', 'constraints' => [] ] ];
-            $draft['target_descriptors']['/title'] = [ 'path' => '/title' ];
-            foreach ( $recipe['bindings'] as $binding ) {
-                $path = $binding['target'] ?? ''; $field = $inventory[ $path ] ?? null;
-                if ( ! is_array( $field ) || empty( $field['writable'] ) || ! in_array( $binding['format'] ?? '', [ 'text', 'html', 'url' ], true ) || isset( $draft['fields'][ $path ] ) ) { self::fail( 'Every visual creation binding must identify one distinct supported scalar Elementor field.' ); }
-                self::checked( $adapter->validate_binding( $recipe['blueprint'], $binding ) );
-                $type = 'html' === $binding['format'] ? 'rich_text' : ( 'url' === $binding['format'] ? 'url' : 'text' );
-                $label = isset( $binding['label'] ) && '' !== trim( $binding['label'] ) ? $binding['label'] : $field['label'];
-                $draft['fields'][ $path ] = [ 'mode' => 'adapt', 'source_path' => '', 'required' => ! empty( $binding['required'] ), 'instructions' => $binding['instructions'] ?? '', 'description' => [ 'label' => $label, 'purpose' => 'Content for ' . $label . ( empty( $binding['source'] ) ? '.' : ', described by ' . $binding['source'] . '.' ), 'value_type' => $type, 'constraints' => [] ] ];
-                $draft['target_descriptors'][ $path ] = [ 'path' => $path, 'builder' => 'elementor', 'selector_data' => [ 'element_id' => $field['native_node_id'], 'path' => array_slice( $field['control_path'], 1 ) ] ];
-            }
-            $draft['stored_layout'] = self::seal( $draft, $recipe['blueprint'], [ 'title' => '', 'excerpt' => '' ] );
-            return $draft;
-        } );
+        require_once __DIR__ . '/class-nova-bridge-suite-stored-recipe-layout.php';
+        return Nova_Bridge_Suite_Stored_Recipe_Layout::from_recipe( $record );
     }
+
 }
