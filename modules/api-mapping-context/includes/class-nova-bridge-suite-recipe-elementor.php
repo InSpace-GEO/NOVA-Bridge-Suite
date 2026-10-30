@@ -314,7 +314,11 @@ final class Nova_Bridge_Suite_Recipe_Elementor {
             $raw = get_post_meta( $id, '_elementor_data', true ); $stored = is_array( $raw ) ? $raw : json_decode( (string) $raw, true );
             if ( ! is_array( $stored ) || Nova_Bridge_Suite_Recipe_Engine::digest( $stored ) !== Nova_Bridge_Suite_Recipe_Engine::digest( $writer_payload['elementor_data'] ?? null ) || 'on' === get_post_meta( $id, '_et_pb_use_builder', true ) || 'builder' !== get_post_meta( $id, '_elementor_edit_mode', true ) ) { return $this->error( 'The complete native Elementor draft was not retained; reconcile this existing draft before retrying.' ); }
             if ( array_key_exists( 'elementor_document_settings', $writer_payload ) ) { $verified = \SEOR_Elementor_Bridge\Document_Presentation::verify( $id, $writer_payload['elementor_document_settings'] ); if ( is_wp_error( $verified ) ) { return $verified; } }
-            elseif ( array_key_exists( 'elementor_page_settings', $writer_payload ) && Nova_Bridge_Suite_Recipe_Engine::digest( get_post_meta( $id, '_elementor_page_settings', true ) ) !== Nova_Bridge_Suite_Recipe_Engine::digest( $writer_payload['elementor_page_settings'] ) ) { return $this->error( 'Native Elementor page settings changed during persistence.' ); }
+            elseif ( array_key_exists( 'elementor_page_settings', $writer_payload ) ) {
+                $actual = get_post_meta( $id, '_elementor_page_settings', true ); $expected = $writer_payload['elementor_page_settings'];
+                // Empty metadata may be stored as [] or returned as ''. Nonempty settings stay exact.
+                if ( Nova_Bridge_Suite_Recipe_Engine::digest( '' === $actual ? [] : $actual ) !== Nova_Bridge_Suite_Recipe_Engine::digest( '' === $expected ? [] : $expected ) ) { return $this->error( 'Native Elementor page settings changed during persistence.' ); }
+            }
             if ( isset( $writer_payload['template'] ) && (string) get_page_template_slug( $id ) !== $writer_payload['template'] ) { return $this->error( 'The native WordPress page template changed during persistence.' ); }
             $state = [ $stored, get_post_meta( $id, '_elementor_page_settings', true ), get_page_template_slug( $id ) ];
             if ( array_key_exists( 'elementor_document_settings', $writer_payload ) ) { $state[] = \SEOR_Elementor_Bridge\Document_Presentation::read_selected( $id, $writer_payload['elementor_document_settings'] ); }

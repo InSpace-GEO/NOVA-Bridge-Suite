@@ -69,7 +69,15 @@ require_once dirname( __DIR__, 2 ) . '/api-mapping-context/includes/class-nova-b
 require_once dirname( __DIR__, 2 ) . '/api-mapping-context/includes/class-nova-bridge-suite-theme-presentation.php';
 require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-stored-layout.php';
 class Nova_Bridge_Suite_Recipe_Builders {
-    public static function verify_saved( $builder, $id, $payload ) { if ( isset( $payload['elementor_document_settings'] ) && is_wp_error( \SEOR_Elementor_Bridge\Document_Presentation::verify( $id, $payload['elementor_document_settings'] ) ) ) { return new WP_Error( 'readback', 'Native presentation changed' ); } return json_decode( get_post_meta( $id, '_elementor_data', true ), true ) === $payload['elementor_data'] && get_post_meta( $id, '_elementor_page_settings', true ) === $payload['elementor_page_settings'] && get_page_template_slug( $id ) === $payload['template'] ? [ 'post_id' => $id ] : new WP_Error( 'readback', 'Native styling/content changed' ); }
+    public static function verify_saved( $builder, $id, $payload ) {
+        if ( array_key_exists( 'elementor_document_settings', $payload ) ) {
+            if ( is_wp_error( \SEOR_Elementor_Bridge\Document_Presentation::verify( $id, $payload['elementor_document_settings'] ) ) ) { return new WP_Error( 'readback', 'Native presentation changed' ); }
+        } elseif ( array_key_exists( 'elementor_page_settings', $payload ) ) {
+            $actual = get_post_meta( $id, '_elementor_page_settings', true ); $expected = $payload['elementor_page_settings'];
+            if ( ( '' === $actual ? [] : $actual ) !== ( '' === $expected ? [] : $expected ) ) { return new WP_Error( 'readback', 'Native page settings changed' ); }
+        }
+        return json_decode( get_post_meta( $id, '_elementor_data', true ), true ) === $payload['elementor_data'] && get_page_template_slug( $id ) === $payload['template'] ? [ 'post_id' => $id ] : new WP_Error( 'readback', 'Native styling/content changed' );
+    }
 }
 class Nova_Bridge_Suite_Mapped_Content_Target {
     public static function normalize_url( $url ) { if ( ! is_string( $url ) || ! preg_match( '#^https://example\.test/(?:[a-z-]+(?:/[a-z-]+)*/?)?$#D', $url ) ) { return new WP_Error( 'foreign_url', 'Wrong site' ); } return [ 'origin' => 'https://example.test', 'path' => rtrim( parse_url( $url, PHP_URL_PATH ), '/' ) ?: '/', 'identity' => rtrim( $url, '/' ) ]; }

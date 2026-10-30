@@ -19,6 +19,23 @@ final class Nova_Bridge_Suite_Stored_Layout_Writer {
     }
     private static function checked( $value ) { if ( is_wp_error( $value ) ) { self::fail( 'native', $value->get_error_message() ); } return $value; }
     private static function digest( $value ): string { return hash( 'sha256', Nova_Bridge_Suite_Writing_Adapter::canonical_json( $value ) ); }
+    /** WordPress may return absent empty Elementor settings as '' instead of []. */
+    private static function alternate_empty_settings( array $state ): ?array {
+        if ( ! array_key_exists( 'page_settings', $state ) || ( $state['page_settings'] !== [] && $state['page_settings'] !== '' ) ) { return null; }
+        $state['page_settings'] = $state['page_settings'] === [] ? '' : [];
+        return $state;
+    }
+    private static function native_digest_matches( array $state, string $expected ): bool {
+        if ( self::digest( $state ) === $expected ) { return true; }
+        $alternate = self::alternate_empty_settings( $state );
+        // Keep historical hashes intact: every other native field must still match.
+        return null !== $alternate && self::digest( $alternate ) === $expected;
+    }
+    private static function same_native_state( array $state, array $expected ): bool {
+        if ( $state === $expected ) { return true; }
+        $alternate = self::alternate_empty_settings( $state );
+        return null !== $alternate && $alternate === $expected;
+    }
     private static function option( string $key ) { wp_cache_delete( $key, 'options' ); return get_option( $key, null ); }
     private static function checkpoint( string $key, array $value ): void {
         if ( strlen( wp_json_encode( $value ) ) > 2097152 ) { self::fail( 'journal_size', 'The retained native operation exceeds its storage limit.' ); }
@@ -144,7 +161,7 @@ final class Nova_Bridge_Suite_Stored_Layout_Writer {
             $before = $target_id ? self::native_state( $target_id, $payload['theme_presentation'] ?? null, $payload['elementor_document_settings'] ?? null, $builder, $payload ) : null;
             if ( $target_id && ( $before['type'] !== $type || ! in_array( $before['status'], [ 'draft', 'publish' ], true ) || ( ! $association && $before['owner'] !== '' ) ) ) { self::fail( 'target_changed', 'The existing page type, status or ownership changed during planning.' ); }
             // Compare using the previous operation's scope, so a legacy page can adopt a newly captured theme snapshot.
-            if ( $target_id && ( ! current_user_can( 'edit_post', $target_id ) || ( $association && self::digest( self::native_state( $target_id, $association['theme_presentation'] ?? null, $association['elementor_document_settings'] ?? null, $association['builder'] ?? 'elementor', $association['native_scope'] ?? [] ) ) !== ( $association['native_digest'] ?? '' ) ) ) ) { self::fail( 'human_changed', 'This generated page changed after its verified save. Review its edits before replacing the owned document.' ); }
+            if ( $target_id && ( ! current_user_can( 'edit_post', $target_id ) || ( $association && ! self::native_digest_matches( self::native_state( $target_id, $association['theme_presentation'] ?? null, $association['elementor_document_settings'] ?? null, $association['builder'] ?? 'elementor', $association['native_scope'] ?? [] ), $association['native_digest'] ?? '' ) ) ) ) { self::fail( 'human_changed', 'This generated page changed after its verified save. Review its edits before replacing the owned document.' ); }
             $plan = [ 'format' => self::FORMAT, 'operation_id' => $operation, 'context' => $context, 'site_id' => $content['site_id'], 'template_id' => $configuration['template']['id'], 'template_revision' => $configuration['template']['revision'], 'profile_digest' => $configuration['profile_digest'], 'layout_digest' => $compiled['layout_digest'], 'post_type' => $type, 'payload' => $payload, 'post_fields' => $post_fields, 'target' => $target, 'target_post_id' => $target_id, 'desired_status' => $status, 'provider' => $provider, 'native_before' => $before, 'association_before' => $association, 'delivery_identity' => array_intersect_key( $content, array_flip( [ 'site_id', 'url_id', 'content_item_id', 'content_item_version_id', 'version_number', 'source_sha256', 'language' ] ) ) ];
             if ( 'nova.stored-recipe/v1' === ( $local['stored_layout']['format'] ?? '' ) || 'elementor' !== $builder ) { $plan['builder'] = $builder; }
             if ( strlen( wp_json_encode( $plan ) ) > 786432 ) { self::fail( 'plan_size', 'This layout exceeds the recoverable native journal size.' ); }
@@ -200,7 +217,7 @@ final class Nova_Bridge_Suite_Stored_Layout_Writer {
         try { self::check_content( $plan, $id ); return true; }
         catch ( Nova_Bridge_Suite_Stored_Layout_Writer_Failure $error ) {
             $claimed = $plan['native_before']; $claimed['owner'] = self::owner( $plan );
-            if ( self::plan_state( $plan, $id ) === $claimed ) { return false; }
+            if ( self::same_native_state( self::plan_state( $plan, $id ), $claimed ) ) { return false; }
             throw $error;
         }
     }
@@ -266,7 +283,7 @@ final class Nova_Bridge_Suite_Stored_Layout_Writer {
                     if ( $plan['target_post_id'] ) {
                         $before = $plan['native_before']; $claimed = $before; $claimed['owner'] = self::owner( $plan );
                         // A lost ownership-marker response may be resumed only for this exact frozen plan.
-                        if ( $state !== $before && $state !== $claimed ) { self::fail( 'human_changed', 'The existing page changed after planning.' ); }
+                        if ( ! self::same_native_state( $state, $before ) && ! self::same_native_state( $state, $claimed ) ) { self::fail( 'human_changed', 'The existing page changed after planning.' ); }
                         if ( $before['owner'] !== '' && $before['owner'] !== self::owner( $plan ) ) { self::fail( 'ownership', 'The page belongs to another native operation.' ); }
                         self::check_url( $plan, $id );
                     }
@@ -292,7 +309,7 @@ final class Nova_Bridge_Suite_Stored_Layout_Writer {
     }
     private static function verify_record( array $plan, array $record ): array {
         $state = self::check_content( $plan, (int) $record['post_id'] ); self::check_url( $plan, (int) $record['post_id'] );
-        if ( self::digest( $state ) !== ( $record['native_digest'] ?? '' ) || $state['status'] !== $plan['desired_status'] ) { self::fail( 'human_changed', 'The generated page changed after its verified save.' ); }
+        if ( ! self::native_digest_matches( $state, $record['native_digest'] ?? '' ) || $state['status'] !== $plan['desired_status'] ) { self::fail( 'human_changed', 'The generated page changed after its verified save.' ); }
         return self::result( $record );
     }
     public static function recover( array $plan, string $operation ) {
@@ -300,7 +317,7 @@ final class Nova_Bridge_Suite_Stored_Layout_Writer {
             self::assert_plan( $plan, $operation ); return self::locked( $plan, static function () use ( $plan, $operation ) {
                 $record = self::option( self::operation_key( $operation ) );
                 if ( ! $record ) {
-                    if ( $plan['target_post_id'] && self::plan_state( $plan, $plan['target_post_id'] ) === $plan['native_before'] && self::association( $plan['delivery_identity'] ) === $plan['association_before'] ) { return [ 'state' => 'not_committed', 'no_native_commit' => true, 'safe_to_apply' => true ]; }
+                    if ( $plan['target_post_id'] && self::same_native_state( self::plan_state( $plan, $plan['target_post_id'] ), $plan['native_before'] ) && self::association( $plan['delivery_identity'] ) === $plan['association_before'] ) { return [ 'state' => 'not_committed', 'no_native_commit' => true, 'safe_to_apply' => true ]; }
                     if ( self::reserved_post( $plan ) || $plan['target_post_id'] ) { self::fail( 'orphaned_native', 'Native evidence exists without its journal. No second page will be created.' ); }
                     return [ 'state' => 'not_committed', 'no_native_commit' => true, 'safe_to_apply' => true ];
                 }
