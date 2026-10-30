@@ -73,7 +73,14 @@ final class Nova_Bridge_Suite_Recipe_Visual {
                 if ( is_wp_error( $snapshot ) ) { return $snapshot; }
                 if ( null !== $snapshot ) { $current['blueprint']['theme_presentation'] = $snapshot; }
             }
-            if ( is_wp_error( $current ) || Nova_Bridge_Suite_Recipe_Engine::digest( $current['blueprint'] ?? [] ) !== $source['native_digest'] ) {
+            // A selected UX Block is frozen independently of its reusable source.
+            // Compare the original page's links/structure without re-reading those blocks;
+            // the signed receipt above still authenticates the complete captured snapshot.
+            $expected = $recipe['blueprint'];
+            if ( 'flatsome' === $recipe['builder'] && class_exists( 'Nova_Bridge_Suite_Recipe_Flatsome' ) ) {
+                $expected = Nova_Bridge_Suite_Recipe_Flatsome::linked_blueprint( $expected );
+            }
+            if ( is_wp_error( $current ) || Nova_Bridge_Suite_Recipe_Engine::digest( $current['blueprint'] ?? [] ) !== Nova_Bridge_Suite_Recipe_Engine::digest( $expected ) ) {
                 return self::error( 'The example page or native field schema changed after capture. Capture it again and review your mappings before saving.' );
             }
         }
@@ -120,6 +127,10 @@ final class Nova_Bridge_Suite_Recipe_Visual {
         $validated = self::validate_source( [ 'source_reference' => $source, 'source_receipt' => $source_receipt ], [ 'builder' => $builder, 'mode' => $design['recipe_preset']['mode'], 'blueprint' => $design['blueprint'] ], $resource );
         if ( is_wp_error( $validated ) ) { $design['visual_preview'] = [ 'status' => 'stale', 'reason' => $validated->get_error_message() ]; return $design; }
         $source = $validated; $design['source_reference'] = $source;
+        if ( 'flatsome' === $builder && class_exists( 'Nova_Bridge_Suite_Recipe_Flatsome' ) && Nova_Bridge_Suite_Recipe_Engine::digest( Nova_Bridge_Suite_Recipe_Flatsome::linked_blueprint( $design['blueprint'] ) ) !== $source['native_digest'] ) {
+            $design['visual_preview'] = [ 'status' => 'unavailable', 'reason' => 'Captured UX Blocks use their saved layout. Select their fields below and review a generated draft; the live example can still show different reusable block content.' ];
+            return $design;
+        }
         if ( ! class_exists( 'Nova_Bridge_Suite_Mapping_Preview' ) || ! $source['url'] ) { $design['visual_preview'] = [ 'status' => 'unavailable', 'reason' => 'The authenticated native page preview is unavailable. Use the complete field inventory.' ]; return $design; }
         $session = wp_generate_uuid4();
         $url = Nova_Bridge_Suite_Mapping_Preview::url( $source );

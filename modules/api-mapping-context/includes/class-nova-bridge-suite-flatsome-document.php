@@ -4,6 +4,22 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 final class Nova_Bridge_Suite_Flatsome_Document {
     private const TOKEN = '~\[(/?)([a-zA-Z_][a-zA-Z0-9_-]*)(?=[\s/\]])(?:"[^"]*"|\x27[^\x27]*\x27|[^\]\x22\x27])*\]~s';
+    private const NESTED_TAGS = [ 'row', 'col', 'col_grid', 'section', 'ux_stack' ];
+
+    /** Captured blocks share their parent's shortcode pass. Reuse native renderers on public requests. */
+    public static function register_nested_aliases(): void {
+        if ( ! defined( 'UX_BUILDER_VERSION' ) || ! function_exists( 'ux_row' ) || ! function_exists( 'ux_col' ) || ! function_exists( 'add_shortcode' ) ) { return; }
+        global $shortcode_tags;
+        foreach ( self::NESTED_TAGS as $tag ) {
+            if ( ! isset( $shortcode_tags[$tag] ) || ! is_callable( $shortcode_tags[$tag] ) ) { continue; }
+            for ( $depth = 1; $depth <= 9; ++$depth ) {
+                $alias = self::nested_tag( $tag, $depth );
+                if ( ! isset( $shortcode_tags[$alias] ) ) { add_shortcode( $alias, $shortcode_tags[$tag] ); }
+            }
+        }
+    }
+
+    private static function nested_tag( string $base, int $depth ): string { return $base . ( 0 === $depth ? '' : ( 1 === $depth ? '_inner' : '_inner_' . ( $depth - 1 ) ) ); }
 
     public static function parse( string $source ): array {
         if ( strlen( $source ) > 2097152 ) { throw new RuntimeException( 'The Flatsome document exceeds two megabytes.' ); }
@@ -87,9 +103,25 @@ final class Nova_Bridge_Suite_Flatsome_Document {
     }
 
     public static function serialize( array $nodes ): string {
+        return self::render( $nodes, [], false );
+    }
+
+    private static function render( array $nodes, array $ancestors, bool $captured ): string {
         $result = '';
         foreach ( $nodes as $node ) {
-            if ( 'shortcode' === ( $node['kind'] ?? '' ) ) { $result .= self::opening( $node ) . ( $node['content'] ?? self::serialize( $node['children'] ) ) . $node['raw_close']; }
+            if ( 'block_snapshot' === ( $node['kind'] ?? '' ) ) { $result .= self::render( $node['children'], $ancestors, true ); }
+            elseif ( 'shortcode' === ( $node['kind'] ?? '' ) ) {
+                $tag = $node['tag']; $open = self::opening( $node ); $close = $node['raw_close'];
+                if ( $captured && in_array( $tag, $ancestors, true ) ) {
+                    $base = preg_replace( '/_inner(?:_[0-9]+)?$/', '', $tag );
+                    if ( ! in_array( $base, self::NESTED_TAGS, true ) ) { throw new RuntimeException( 'This captured UX Block nests the same unsupported native shortcode: ' . $tag . '. Keep this occurrence linked or adjust its layout.' ); }
+                    for ( $depth = 0; $depth <= 9; ++$depth ) { $tag = self::nested_tag( $base, $depth ); if ( ! in_array( $tag, $ancestors, true ) ) { break; } }
+                    if ( $depth > 9 ) { throw new RuntimeException( 'The captured UX Block exceeds the native shortcode nesting limit.' ); }
+                    $open = preg_replace( '~^\[' . preg_quote( $node['tag'], '~' ) . '(?=[\s/\]])~', '[' . $tag, $open, 1 );
+                    $close = preg_replace( '~^\[/' . preg_quote( $node['tag'], '~' ) . '(?=[\s\]])~', '[/' . $tag, $close, 1 );
+                }
+                $result .= $open . ( $node['content'] ?? self::render( $node['children'], array_merge( $ancestors, [ $tag ] ), $captured ) ) . $close;
+            }
             elseif ( 'html' === ( $node['kind'] ?? '' ) ) { $result .= $node['raw_open'] . $node['content'] . $node['raw_close']; }
             else { $result .= $node['content']; }
         }

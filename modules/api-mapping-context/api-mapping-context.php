@@ -34,6 +34,9 @@ foreach ( [ 'content-transport', 'strategy', 'mapping-drafts', 'posting-settings
 	}
 }
 Nova_Bridge_Suite_Recipe_Builders::register();
+// Captured UX Blocks can introduce deeper native nesting on ordinary frontend requests.
+// Register only missing Flatsome aliases; no editor registry or document lookup is needed.
+add_action( 'init', [ 'Nova_Bridge_Suite_Flatsome_Document', 'register_nested_aliases' ], 100 );
 Nova_Bridge_Suite_Recipe_ACF::register();
 Nova_Bridge_Suite_Recipe_Core::register();
 Nova_Bridge_Suite_Layout_Recipes::bootstrap();

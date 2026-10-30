@@ -12,7 +12,7 @@ final class Nova_Bridge_Suite_Recipe_Flatsome {
     private static function available(): bool { return defined( 'UX_BUILDER_VERSION' ) && function_exists( 'ux_row' ) && function_exists( 'ux_col' ); }
     public static function has_document( string $content ): bool {
         if ( preg_match( '~<!--\s*wp:flatsome/uxbuilder\b|\[ux_[a-z_]+(?=[\s/\]])~i', $content ) ) { return true; }
-        return self::available() && 1 === preg_match( '~\[(?:row|col|section)(?:_inner(?:_[0-9]+)?)?(?=[\s/\]])~i', $content );
+        return self::available() && 1 === preg_match( '~\[(?:row|col|section|block)(?:_inner(?:_[0-9]+)?)?(?=[\s/\]])~i', $content );
     }
     public function metadata( string $post_type = 'page' ): array {
         $support = $this->publication_support( $post_type );
@@ -31,6 +31,7 @@ final class Nova_Bridge_Suite_Recipe_Flatsome {
         return $result;
     }
     private static function external( string $tag ): bool { return in_array( preg_replace( '/_inner(?:_[0-9]+)?$/', '', $tag ), [ 'block', 'ux_block', 'ux_template' ], true ); }
+    private static function contains_external( array $nodes ): bool { foreach ( $nodes as $node ) { if ( 'shortcode' === $node['kind'] && self::external( $node['tag'] ) || self::contains_external( $node['children'] ?? [] ) ) { return true; } } return false; }
     private static function protected_tag( string $tag ): bool { return 1 === preg_match( '/^(?:ux_html|ux_gutenberg|ux_products|ux_pages|ux_portfolio|blog_posts|ux_gallery|contact|gravityform|wpforms|fluentform|woocommerce|ux_sidebar|ux_nav|ux_instagram)/i', $tag ); }
     private static function semantic( string $key, array $option ): ?array {
         $type = $option['type'] ?? ''; $label = strip_tags( (string) ( $option['heading'] ?? ucwords( str_replace( '_', ' ', $key ) ) ) );
@@ -48,12 +49,11 @@ final class Nova_Bridge_Suite_Recipe_Flatsome {
             $walk = static function ( array &$items ) use ( &$walk, $registry ) {
                 foreach ( $items as &$node ) {
                     if ( 'shortcode' !== $node['kind'] ) { continue; }
-                    if ( self::external( $node['tag'] ) ) { throw new RuntimeException( 'This layout references a reusable UX Block. Insert its layout into the example page before capturing; publishing must not depend on another source document.' ); }
                     $definition = $registry->get( $node['tag'] ); $fields = []; $body = false;
                     if ( is_array( $definition ) ) { foreach ( self::options( $definition['options'] ?? [] ) as $key => $option ) { if ( '$content' === $key && in_array( $option['type'] ?? '', [ 'text-editor', 'textarea' ], true ) ) { $body = true; } $field = self::semantic( (string) $key, $option ); if ( $field ) { $fields[$key] = $field; } } }
-                    $node['definition'] = [ 'name' => is_array( $definition ) ? strip_tags( (string) ( $definition['name'] ?? $node['tag'] ) ) : $node['tag'], 'container' => is_array( $definition ) && 'container' === ( $definition['type'] ?? '' ), 'protected' => ! is_array( $definition ) || self::protected_tag( $node['tag'] ), 'fields' => $fields, 'body' => $body ];
+                    $node['definition'] = [ 'name' => is_array( $definition ) ? strip_tags( (string) ( $definition['name'] ?? $node['tag'] ) ) : $node['tag'], 'container' => is_array( $definition ) && 'container' === ( $definition['type'] ?? '' ), 'protected' => ! is_array( $definition ) || self::protected_tag( $node['tag'] ) || self::external( $node['tag'] ), 'fields' => self::external( $node['tag'] ) ? [] : $fields, 'body' => $body ];
                     $walk( $node['children'] );
-                    if ( $body && '' !== $node['raw_close'] ) { $node['content'] = Nova_Bridge_Suite_Flatsome_Document::serialize( $node['children'] ); $node['children'] = []; }
+                    if ( $body && '' !== $node['raw_close'] && ! self::contains_external( $node['children'] ) ) { $node['content'] = Nova_Bridge_Suite_Flatsome_Document::serialize( $node['children'] ); $node['children'] = []; }
                 }
                 unset( $node );
             };
@@ -75,21 +75,56 @@ final class Nova_Bridge_Suite_Recipe_Flatsome {
         }
         return $meta;
     }
-    public function capture( int $post_id ) {
-        return self::guard( function () use ( $post_id ) {
+    public function capture( int $post_id, array $options = [] ) {
+        return self::guard( function () use ( $post_id, $options ) {
             $post = get_post( $post_id );
             if ( ! $post || ! current_user_can( 'manage_options' ) || ! current_user_can( 'edit_post', $post_id ) ) { return self::error( 'An editable native example is required to capture its UX Builder layout.', 403 ); }
             $target = $this->check_target( $post ); if ( is_wp_error( $target ) ) { return $target; }
             $document = $this->capture_document( (string) $post->post_content ); if ( is_wp_error( $document ) ) { return $document; }
             $blueprint = [ 'document' => $document, 'template' => (string) get_page_template_slug( $post_id ), 'meta' => self::meta_capture( $post ) ];
+            $targets = $options['block_expansions'] ?? [];
+            if ( ! is_array( $targets ) || count( $targets ) > 4000 ) { return self::error( 'Choose individual reusable block occurrences to capture.' ); }
+            foreach ( $targets as $target ) { if ( ! is_string( $target ) ) { return self::error( 'Each reusable block selection must be its native occurrence path.' ); } }
+            usort( $targets, static fn( $a, $b ) => substr_count( $a, '/' ) <=> substr_count( $b, '/' ) );
+            foreach ( array_unique( $targets ) as $target ) { $expanded = $this->expand_block( $blueprint, $target ); if ( is_wp_error( $expanded ) ) { return $expanded; } $blueprint = $expanded['blueprint']; }
             return $this->envelope( $blueprint );
         } );
+    }
+    /** Freeze only the selected occurrence; descendants remain linked until explicitly selected. */
+    public function expand_block( array $blueprint, string $target ) {
+        return self::guard( function () use ( $blueprint, $target ) {
+            $valid = $this->validate_blueprint( $blueprint ); if ( is_wp_error( $valid ) ) { return $valid; }
+            if ( ! current_user_can( 'manage_options' ) ) { return self::error( 'Permission is required to capture a reusable UX Block.', 403 ); }
+            $selected = null; foreach ( $this->inventory( $blueprint )['reusable_blocks'] as $entry ) { if ( $entry['target'] === $target ) { $selected = $entry; break; } }
+            if ( ! $selected || 'linked' !== $selected['mode'] || ! $selected['expandable'] ) { return self::error( 'Choose a linked native UX Block outside protected interactive content.' ); }
+            $original = Nova_Bridge_Suite_Recipe_Engine::get( $blueprint, $target ); $reference = $selected['reference'];
+            if ( '' === trim( $reference ) ) { return self::error( 'This reusable UX Block has no ID or slug. Keep it linked or correct the reference first.' ); }
+            if ( function_exists( 'flatsome_get_block_id' ) ) { $id = (int) flatsome_get_block_id( $reference ); }
+            elseif ( ctype_digit( $reference ) ) { $id = (int) $reference; }
+            else { $found = get_page_by_path( $reference, OBJECT, 'blocks' ); $id = $found ? (int) $found->ID : 0; }
+            $post = $id > 0 ? get_post( $id ) : null;
+            if ( ! $post || 'blocks' !== $post->post_type || in_array( $post->post_status, [ 'trash', 'auto-draft' ], true ) || ! current_user_can( 'edit_post', $id ) ) { return self::error( 'The selected UX Block is missing or not editable. Keep it linked or restore access before capturing it.', 403 ); }
+            $path = ''; foreach ( Nova_Bridge_Suite_Recipe_Engine::parts( $target ) as $part ) { $path .= '/' . $part; if ( ctype_digit( (string) $part ) && $path !== $target ) { $ancestor = Nova_Bridge_Suite_Recipe_Engine::get( $blueprint, $path ); if ( 'block_snapshot' === ( $ancestor['kind'] ?? '' ) && $ancestor['block_id'] === $id ) { return self::error( 'This UX Block refers back to an already captured ancestor. Keep the recursive occurrence linked or correct the block reference.' ); } } }
+            $document = $this->capture_document( (string) $post->post_content ); if ( is_wp_error( $document ) ) { return $document; }
+            $snapshot = [ 'kind' => 'block_snapshot', 'reference' => $reference, 'block_id' => $id, 'label' => (string) ( $post->post_title ?? '' ), 'original_node' => $original, 'children' => $document ];
+            Nova_Bridge_Suite_Recipe_Engine::put( $blueprint, $target, $snapshot );
+            $valid = $this->validate_blueprint( $blueprint ); if ( is_wp_error( $valid ) ) { return $valid; }
+            // Verify inline shortcode nesting now, before issuing a new sealed layout.
+            Nova_Bridge_Suite_Flatsome_Document::serialize( $blueprint['document'] );
+            return $this->envelope( $blueprint );
+        } );
+    }
+    /** Restore exact source links for provenance checks without resolving any live reusable block. */
+    public static function linked_blueprint( array $blueprint ): array {
+        $walk = static function ( array $nodes ) use ( &$walk ): array { foreach ( $nodes as &$node ) { if ( 'block_snapshot' === ( $node['kind'] ?? '' ) ) { $node = $node['original_node']; } elseif ( isset( $node['children'] ) ) { $node['children'] = $walk( $node['children'] ); } } unset( $node ); return $nodes; };
+        if ( isset( $blueprint['document'] ) && is_array( $blueprint['document'] ) ) { $blueprint['document'] = $walk( $blueprint['document'] ); }
+        return $blueprint;
     }
     public function starter( string $mode = 'mixed' ) {
         $document = $this->capture_document( '[section][row][col span="12"]<h1>Example heading</h1><p>Example service content.</p>[/col][/row][/section]' );
         return is_wp_error( $document ) ? $document : $this->envelope( [ 'document' => $document, 'template' => '', 'meta' => [] ] );
     }
-    private function envelope( array $blueprint ): array { return [ 'builder' => 'flatsome', 'provider' => 'flatsome', 'version' => defined( 'UX_BUILDER_VERSION' ) ? (string) UX_BUILDER_VERSION : '', 'blueprint' => $blueprint, 'capabilities' => $this->metadata(), 'warnings' => [] ] + $this->inventory( $blueprint ); }
+    private function envelope( array $blueprint ): array { $inventory = $this->inventory( $blueprint ); $linked = array_filter( $inventory['reusable_blocks'], static fn( $entry ) => 'linked' === $entry['mode'] ); return [ 'builder' => 'flatsome', 'provider' => 'flatsome', 'version' => defined( 'UX_BUILDER_VERSION' ) ? (string) UX_BUILDER_VERSION : '', 'blueprint' => $blueprint, 'capabilities' => $this->metadata(), 'warnings' => $linked ? [ 'Uncaptured UX Blocks remain linked to their live site content.' ] : [] ] + $inventory; }
     public function describe( array $blueprint ) { $valid = $this->validate_blueprint( $blueprint ); return is_wp_error( $valid ) ? $valid : $this->inventory( $blueprint ); }
     public function fields( array $native ): array { return $this->inventory( $native )['fields']; }
     public function containers( array $native ): array { return $this->inventory( $native )['containers']; }
@@ -103,11 +138,15 @@ final class Nova_Bridge_Suite_Recipe_Flatsome {
                     if ( ! is_array( $node ) || ++$count > 4000 ) { throw new RuntimeException( 'The UX Builder document exceeds its native node limit.' ); }
                     $kind = $node['kind'] ?? '';
                     if ( 'shortcode' === $kind ) {
-                        if ( ! is_string( $node['tag'] ?? null ) || ! preg_match( '/^[a-zA-Z_][a-zA-Z0-9_-]*$/D', $node['tag'] ) || self::external( $node['tag'] ) || ! is_array( $node['attributes'] ?? null ) || ! is_array( $node['original_attributes'] ?? null ) || ! is_array( $node['definition'] ?? null ) || ! is_array( $node['children'] ?? null ) || ! is_string( $node['raw_open'] ?? null ) || ! is_string( $node['raw_close'] ?? null ) ) { throw new RuntimeException( 'The frozen UX Builder shortcode is incomplete or retains a reusable block reference.' ); }
+                        if ( ! is_string( $node['tag'] ?? null ) || ! preg_match( '/^[a-zA-Z_][a-zA-Z0-9_-]*$/D', $node['tag'] ) || ! is_array( $node['attributes'] ?? null ) || ! is_array( $node['original_attributes'] ?? null ) || ! is_array( $node['definition'] ?? null ) || ! is_array( $node['children'] ?? null ) || ! is_string( $node['raw_open'] ?? null ) || ! is_string( $node['raw_close'] ?? null ) ) { throw new RuntimeException( 'The frozen UX Builder shortcode is incomplete.' ); }
                         if ( ! is_string( $node['definition']['name'] ?? null ) || ! is_bool( $node['definition']['container'] ?? null ) || ! is_bool( $node['definition']['protected'] ?? null ) || ! is_array( $node['definition']['fields'] ?? null ) || ( isset( $node['content'] ) && ( ! is_string( $node['content'] ) || $node['children'] ) ) ) { throw new RuntimeException( 'The frozen UX Builder control definitions are incomplete.' ); }
+                        if ( self::external( $node['tag'] ) && ( ! $node['definition']['protected'] || $node['definition']['fields'] || $node['attributes'] !== $node['original_attributes'] ) ) { throw new RuntimeException( 'Linked reusable blocks must retain their protected native references.' ); }
                         foreach ( $node['definition']['fields'] as $name => $field ) { if ( ! is_string( $name ) || ! preg_match( '/^[a-zA-Z_][a-zA-Z0-9_-]*$/D', $name ) || ! is_array( $field ) || ! in_array( $field['format'] ?? '', [ 'text', 'html', 'url' ], true ) || ! is_string( $field['kind'] ?? null ) || ! is_string( $field['label'] ?? null ) || ! is_bool( $field['image'] ?? null ) ) { throw new RuntimeException( 'The frozen UX Builder field definition is invalid.' ); } }
                         foreach ( $node['attributes'] as $key => $value ) { if ( ! is_string( $value ) && ! is_numeric( $value ) ) { throw new RuntimeException( 'UX Builder attributes must remain native scalar strings.' ); } if ( is_string( $key ) && preg_match( '/(?:password|secret|token|credential|api[_-]?key)/i', $key ) && '' !== (string) $value ) { throw new RuntimeException( 'The UX Builder document contains a credential-like setting and cannot be exported.' ); } }
                         $walk( $node['children'], $depth + 1 );
+                    } elseif ( 'block_snapshot' === $kind ) {
+                        if ( ! is_string( $node['reference'] ?? null ) || ! is_int( $node['block_id'] ?? null ) || $node['block_id'] < 1 || ! is_string( $node['label'] ?? null ) || ! is_array( $node['original_node'] ?? null ) || 'shortcode' !== ( $node['original_node']['kind'] ?? '' ) || 'block' !== ( $node['original_node']['tag'] ?? '' ) || (string) ( $node['original_node']['attributes']['id'] ?? '' ) !== $node['reference'] || ! is_array( $node['children'] ?? null ) ) { throw new RuntimeException( 'The captured UX Block must retain its original native reference and frozen children.' ); }
+                        $walk( [ $node['original_node'] ], $depth + 1 ); $walk( $node['children'], $depth + 1 );
                     } elseif ( in_array( $kind, [ 'raw', 'html' ], true ) ) {
                         if ( ! is_string( $node['content'] ?? null ) || 'html' === $kind && ( ! is_string( $node['raw_open'] ?? null ) || ! is_string( $node['raw_close'] ?? null ) || ! is_string( $node['tag'] ?? null ) ) ) { throw new RuntimeException( 'The frozen UX Builder text fragment is incomplete.' ); }
                     } else { throw new RuntimeException( 'The frozen UX Builder node type is unknown.' ); }
@@ -119,13 +158,23 @@ final class Nova_Bridge_Suite_Recipe_Flatsome {
         } );
     }
     private function inventory( array $native ): array {
-        $result = [ 'fields' => [], 'containers' => [] ]; $nodes = $native['document'] ?? $native; $prefix = isset( $native['document'] ) ? '/document' : '';
+        $result = [ 'fields' => [], 'containers' => [], 'reusable_blocks' => [] ]; $nodes = $native['document'] ?? $native; $prefix = isset( $native['document'] ) ? '/document' : '';
         $walk = static function ( array $items, string $path, bool $protected, string $context ) use ( &$walk, &$result ) {
             $entries = [];
             foreach ( $items as $i => $node ) {
                 $p = $path . '/' . $i; $tag = $node['tag'] ?? 'text'; $label = $node['definition']['name'] ?? ( preg_match( '/^h[1-6]$/', $tag ) ? 'Heading' : 'Text' );
                 $blocked = $protected || ! empty( $node['definition']['protected'] );
                 $native_context = trim( $context . ' > ' . $label . ' ' . ( $i + 1 ), ' >' );
+                if ( 'block_snapshot' === $node['kind'] ) {
+                    $label = 'UX Block: ' . ( $node['label'] ?: $node['reference'] );
+                    $result['reusable_blocks'][] = [ 'target' => $p, 'label' => $label, 'reference' => $node['reference'], 'block_id' => $node['block_id'], 'mode' => 'captured', 'linked' => false, 'expandable' => false, 'reason' => 'This occurrence is stored in the mapping; its original reusable block is no longer needed.' ];
+                    $walk( $node['children'], $p . '/children', $protected, trim( $context . ' > ' . $label, ' >' ) );
+                    $entries[] = [ 'index' => $i, 'label' => $label, 'native_type' => 'block_snapshot' ]; continue;
+                }
+                if ( 'shortcode' === $node['kind'] && self::external( $tag ) ) {
+                    $reference = (string) ( $node['attributes']['id'] ?? '' ); $expandable = 'block' === $tag && ! $protected && '' !== trim( $reference );
+                    $result['reusable_blocks'][] = [ 'target' => $p, 'label' => 'UX Block: ' . ( $reference ?: '(missing reference)' ), 'reference' => $reference, 'block_id' => ctype_digit( $reference ) ? (int) $reference : null, 'mode' => 'linked', 'linked' => true, 'expandable' => $expandable, 'reason' => $expandable ? 'Kept linked to the live site block. Capture this occurrence to expose its fields for mapping.' : 'This native reference remains protected; only an ordinary editable UX Block occurrence can be captured.' ];
+                }
                 $add = static function ( string $target, string $format, string $kind, string $label, string $value, bool $writable, array $extra = [] ) use ( &$result, $p, $tag, $native_context ) {
                     $result['fields'][] = [ 'target' => $target, 'label' => $label, 'format' => $format, 'kind' => $kind, 'value' => $value, 'sample' => $value, 'writable' => $writable, 'protected' => ! $writable, 'reason' => $writable ? '' : 'This is a retained native interactive or dynamic fragment.', 'context' => $native_context, 'node_target' => $p, 'element_type' => $tag, 'native_node_id' => '', 'control_path' => Nova_Bridge_Suite_Recipe_Engine::parts( substr( $target, strlen( $p ) ) ), 'locator' => [ 'strategy' => 'none', 'native_node_id' => '', 'anchor' => '', 'precision' => 'element', 'status' => 'unavailable', 'reason' => 'Use the named native field in the list.' ] ] + $extra;
                 };

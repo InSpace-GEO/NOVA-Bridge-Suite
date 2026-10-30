@@ -12,6 +12,7 @@ function wp_strip_all_tags( $value ) { return strip_tags( $value ); }
 function current_user_can( ...$args ) { return $GLOBALS['permission']; }
 function get_post_type_object( $type ) { return in_array( $type, [ 'page', 'post', 'service' ], true ) ? (object) [ 'cap' => (object) [ 'edit_posts' => 'edit_posts', 'create_posts' => 'edit_posts' ] ] : null; }
 function get_post( $id ) { if ( $GLOBALS['forbid_post_reads'] ) { throw new RuntimeException( 'Compilation attempted to read the example post.' ); } return $GLOBALS['posts'][$id] ?? null; }
+function flatsome_get_block_id( $reference ) { if ( ctype_digit( (string) $reference ) ) { return (int) $reference; } foreach ( $GLOBALS['posts'] as $post ) { if ( 'blocks' === $post->post_type && ( $post->post_name ?? '' ) === $reference ) { return $post->ID; } } return 0; }
 function get_post_meta( $id, $key, $single = true ) { return $GLOBALS['meta'][$id][$key] ?? ''; }
 function metadata_exists( $type, $id, $key ) { return array_key_exists( $key, $GLOBALS['meta'][$id] ?? [] ); }
 function get_page_template_slug( $id ) { $value = get_post_meta( $id, '_wp_page_template' ); return 'default' === $value ? '' : $value; }
@@ -32,6 +33,7 @@ class Flatsome_Unit_Registry {
         if ( in_array( $tag, [ 'row', 'col', 'section', 'ux_banner', 'text' ], true ) ) { $options = [ 'background_options' => [ 'type' => 'group', 'options' => [ 'bg' => [ 'type' => 'image' ], 'bg_pos' => [ 'type' => 'textfield' ] ] ] ]; if ( 'text' === $tag ) { $options['$content'] = [ 'type' => 'text-editor' ]; } return [ 'name' => ucfirst( $tag ), 'type' => 'container', 'options' => $options ]; }
         if ( in_array( $tag, [ 'title', 'button' ], true ) ) { return [ 'name' => ucfirst( $tag ), 'options' => [ 'text' => [ 'type' => 'textfield', 'heading' => 'Text' ], 'link' => [ 'type' => 'textfield' ], 'style' => [ 'type' => 'select' ] ] ]; }
         if ( 'ux_image' === $tag ) { return [ 'name' => 'Image', 'options' => [ 'id' => [ 'type' => 'image' ] ] ]; }
+        if ( 'block' === $tag ) { return [ 'name' => 'Block', 'external' => true, 'options' => [ 'id' => [ 'type' => 'select' ] ] ]; }
         if ( 'client_photo' === $tag ) { return [ 'name' => 'Client photo', 'options' => [ 'photo' => [ 'type' => 'image' ], 'caption' => [ 'type' => 'textfield' ] ] ]; }
         return false;
     }
@@ -72,7 +74,8 @@ check( $frozen === blueprint( $fixtures[0] ), 'Bindings do not mutate the captur
 $image_fields = $adapter->fields( blueprint( '[section bg="12"][ux_image id="34"][client_photo photo="56" caption="Client"][/section]' ) );
 foreach ( [ '/attributes/bg', '/attributes/id', '/attributes/photo' ] as $target ) { $field = find_field( $image_fields, $target ); check( $field['format'] === 'url' && $field['native_media']['kind'] === 'flatsome' && $field['native_media']['id_target'] === $field['target'], 'Registered native image controls expose attachment-ID placement through an image-URL mapping.' ); }
 check( ! in_array( 'bg_pos', array_column( $fields, 'kind' ), true ), 'Native layout settings are not exposed as editorial text.' );
-check( is_wp_error( $adapter->capture_document( '[section][block id="123"][/section]' ) ), 'Reusable UX Block dependencies require an explicit independent capture.' );
+$linked = blueprint( '[section][block id="123"][/section]' );
+check( good( $adapter->finalize( $linked, 'linked' ) )['native_document'] === '[section][block id="123"][/section]' && count( good( $adapter->describe( $linked ) )['reusable_blocks'] ) === 1, 'Reusable UX Blocks remain exact live links unless explicitly captured.' );
 $unknown = $adapter->fields( blueprint( '[unknown]<h2>Dynamic title</h2><p>Dynamic body</p>[/unknown]' ) );
 check( count( array_filter( $unknown, static fn( $field ) => $field['writable'] ) ) === 0, 'Unknown interactive shortcode content remains protected.' );
 $script = $adapter->fields( blueprint( '<script>"<p>Not visible prose</p>"</script>' ) );
@@ -108,4 +111,48 @@ $snapshot = good( $adapter->publication_snapshot( 20, $compiled['writer_payload'
 $posts[20]->post_content .= '<p>Changed</p>'; check( is_wp_error( $adapter->publication_verify( 20, $compiled['writer_payload'] ) ), 'Readback detects a changed shortcode document.' );
 $absent = $compiled['writer_payload']; $absent['meta']['_footer'] = [ 'present' => false, 'value' => '' ]; good( $adapter->publication_apply( 20, $absent, [ 'title' => 'Replacement' ] ) ); check( ! metadata_exists( 'post', 20, '_footer' ), 'A captured absent presentation value removes only that explicitly captured setting.' );
 $permission = false; $before = $writes; check( is_wp_error( $adapter->publication_apply( 20, $absent, [ 'title' => 'Denied' ] ) ) && $writes === $before, 'Permission denial performs no native write.' ); $permission = true;
+// Selective capture is read-only and keeps occurrence paths stable, including descendants.
+$posts[301] = (object) [ 'ID' => 301, 'post_type' => 'blocks', 'post_status' => 'publish', 'post_title' => 'Service hero', 'post_name' => 'hero', 'post_content' => '[section bg="7"][row][col span="6"][ux_text]<p>Stored service text.</p>[/ux_text][block id="302"][/col][/row][/section]' ];
+$posts[302] = (object) [ 'ID' => 302, 'post_type' => 'blocks', 'post_status' => 'publish', 'post_title' => 'Shared footer', 'post_name' => 'shared-footer', 'post_content' => '[section][row][col][row_inner][col_inner]<p>Nested frozen text.</p>[/col_inner][/row_inner][/col][/row][/section]' ];
+$posts[30] = (object) [ 'ID' => 30, 'post_type' => 'page', 'post_status' => 'publish', 'post_content' => '[section][row][col]<h1>Page title</h1>[block id="hero"][block id="301"]<p>After the blocks.</p>[/col][/row][/section]' ];
+$before = $writes; $captured = good( $adapter->capture( 30 ) ); $original = $captured['blueprint'];
+check( count( $captured['reusable_blocks'] ) === 2 && array_column( $captured['reusable_blocks'], 'mode' ) === [ 'linked', 'linked' ], 'Capture defaults every reusable block occurrence to linked, including repeated references.' );
+check( Nova_Bridge_Suite_Recipe_Flatsome::has_document( '[block id="301"]' ), 'A block-only page is detected as Flatsome when the native theme is active.' );
+check( ! array_filter( $captured['fields'], static fn( $f ) => str_contains( $f['target'], '/attributes/id' ) ), 'Linked block references never expose their IDs or live block content as mapping destinations.' );
+$first_target = $captured['reusable_blocks'][0]['target']; $second_target = $captured['reusable_blocks'][1]['target'];
+$expanded = good( $adapter->expand_block( $original, $first_target ) );
+check( $writes === $before && count( $expanded['reusable_blocks'] ) === 3 && $expanded['reusable_blocks'][0]['mode'] === 'captured', 'Expanding one occurrence captures read-only and discovers its still-linked child.' );
+$second = array_values( array_filter( $expanded['reusable_blocks'], static fn( $b ) => $b['target'] === $second_target ) );
+check( count( $second ) === 1 && $second[0]['mode'] === 'linked', 'The duplicate block occurrence and its native path remain unchanged.' );
+check( Nova_Bridge_Suite_Recipe_Flatsome::linked_blueprint( $expanded['blueprint'] ) === $original, 'Source provenance projects captured blocks back to their exact original protected native nodes.' );
+$original_after = array_values( array_filter( $captured['fields'], static fn( $f ) => str_contains( $f['value'], 'After the blocks' ) ) )[0];
+$expanded_after = array_values( array_filter( $expanded['fields'], static fn( $f ) => str_contains( $f['value'], 'After the blocks' ) ) )[0];
+check( $original_after['target'] === $expanded_after['target'], 'Existing mapping destinations outside the captured occurrence retain their paths.' );
+$body = array_values( array_filter( $expanded['fields'], static fn( $f ) => str_contains( $f['value'], 'Stored service text' ) ) )[0];
+$bound = good( $adapter->bind( $expanded['blueprint'], [ 'target' => $body['target'], 'format' => 'html' ], '<p>Mapped frozen text.</p>' ) );
+$out = good( $adapter->finalize( $bound, 'selective' ) )['native_document'];
+check( str_contains( $out, '[section_inner bg="7"][row_inner][col_inner span="6"]' ) && str_contains( $out, '[block id="302"]' ) && str_contains( $out, '[block id="301"]' ) && ! str_contains( $out, 'id="hero"' ), 'Only the selected block is inlined with safe native nesting aliases; its child and duplicate remain linked.' );
+$nested_target = $expanded['reusable_blocks'][1]['target']; $nested = good( $adapter->expand_block( $bound, $nested_target ) );
+$nested_out = good( $adapter->finalize( $nested['blueprint'], 'nested' ) )['native_document'];
+check( str_contains( $nested_out, '[section_inner_1][row_inner_1][col_inner_1][row_inner_2][col_inner_2]' ), 'Nested selected blocks and their original native aliases avoid all introduced ancestor tag collisions.' );
+$options = good( $adapter->capture( 30, [ 'block_expansions' => [ $nested_target, $first_target ] ] ) );
+check( count( array_filter( $options['reusable_blocks'], static fn( $b ) => 'captured' === $b['mode'] ) ) === 2, 'Optional capture selections resolve parent first even if their input order is reversed.' );
+unset( $posts[301], $posts[302], $posts[30] ); $forbid_post_reads = true;
+check( good( $adapter->finalize( $nested['blueprint'], 'sources-deleted' ) )['native_document'] === $nested_out, 'Frozen selected blocks compile after their source blocks and source page are deleted, without any source read.' );
+check( Nova_Bridge_Suite_Recipe_Flatsome::linked_blueprint( $nested['blueprint'] ) === $original, 'Even recursively captured source projection never resolves deleted blocks.' ); $forbid_post_reads = false;
+check( is_wp_error( $adapter->expand_block( $original, $first_target ) ), 'A missing block fails only explicit capture; the original live reference stays intact.' );
+check( good( $adapter->finalize( $original, 'still-linked' ) )['native_document'] === '[section][row][col]<h1>Page title</h1>[block id="hero"][block id="301"]<p>After the blocks.</p>[/col][/row][/section]', 'An unresolved unselected link does not prevent preserving the original layout.' );
+$inside_text = blueprint( '[ux_text font_size="1.2"]<p>Before</p>[block id="301"]<p>After</p>[/ux_text]' );
+$inside = good( $adapter->describe( $inside_text ) );
+check( count( $inside['reusable_blocks'] ) === 1 && ! array_filter( $inside['fields'], static fn( $f ) => str_contains( $f['value'], '[block' ) && $f['writable'] ), 'Block references inside native text controls retain their own paths and cannot be overwritten through a whole-body binding.' );
+$protected = good( $adapter->describe( blueprint( '[unknown][block id="301"][/unknown]' ) ) );
+check( ! $protected['reusable_blocks'][0]['expandable'] && is_wp_error( $adapter->expand_block( blueprint( '[unknown][block id="301"][/unknown]' ), $protected['reusable_blocks'][0]['target'] ) ), 'A block inside an unknown interactive shortcode remains protected.' );
+$posts[303] = (object) [ 'ID' => 303, 'post_type' => 'blocks', 'post_status' => 'publish', 'post_title' => 'Recursive', 'post_content' => '[block id="303"]' ];
+$cycle = good( $adapter->expand_block( blueprint( '[block id="303"]' ), '/document/0' ) );
+check( is_wp_error( $adapter->expand_block( $cycle['blueprint'], '/document/0/children/0' ) ), 'Explicit selection cannot recursively capture a block already present in its ancestor chain.' );
+$permission = false; check( is_wp_error( $adapter->expand_block( blueprint( '[block id="303"]' ), '/document/0' ) ), 'Explicit block capture requires authoring permission.' ); $permission = true;
+$shortcode_tags = [ 'row' => 'ux_row', 'col' => 'ux_col', 'section' => static fn() => 'native-section', 'row_inner' => static fn() => 'existing-custom' ]; $existing_alias = $shortcode_tags['row_inner'];
+Nova_Bridge_Suite_Flatsome_Document::register_nested_aliases();
+check( $shortcode_tags['row_inner'] === $existing_alias && $shortcode_tags['row_inner_8'] === $shortcode_tags['row'] && $shortcode_tags['section_inner_2'] === $shortcode_tags['section'] && ! isset( $shortcode_tags['section_inner_9'] ), 'Frontend aliases are bounded native callback aliases and never overwrite an existing shortcode.' );
+check( $writes === $before, 'All selective block capture, projection and compilation checks perform no native writes.' );
 echo 'Flatsome recipe checks: ' . $checks . " passed.\n";
