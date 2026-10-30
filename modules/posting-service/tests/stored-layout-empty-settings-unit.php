@@ -36,7 +36,7 @@ foreach ( [ [], '' ] as $historical ) {
     check( $old === $old_frozen && $options[$operation]['plan'] === $old_frozen && $next === $next_frozen, 'Empty representation compatibility does not normalize or alter either immutable plan.' );
 }
 
-// An empty raw record does not bypass the full-state ownership check.
+// A new delivery may replace mutable page state; it must still own the same native target.
 $edits = [
     'body' => static function () { $GLOBALS['posts'][10]->post_content = 'Human body'; },
     'elements' => static function () { $data = json_decode( $GLOBALS['meta'][10]['_elementor_data'], true ); $data[0]['elements'][1]['settings']['editor'] = 'Human Elementor body'; $GLOBALS['meta'][10]['_elementor_data'] = json_encode( $data ); },
@@ -46,6 +46,10 @@ $edits = [
     'width' => static function () { $GLOBALS['meta'][10]['vendor_width'] = 'narrow'; },
     'template' => static function () { $GLOBALS['meta'][10]['_wp_page_template'] = 'different-template'; },
     'owner' => static function () { $GLOBALS['meta'][10]['_nova_stored_layout_owner']['creation_operation'] = op( 90 ); },
+    'owner site' => static function () { $GLOBALS['meta'][10]['_nova_stored_layout_owner']['site_id'] = op( 91 ); },
+    'owner URL' => static function () { $GLOBALS['meta'][10]['_nova_stored_layout_owner']['url_id'] = '999'; },
+    'owner template' => static function () { $GLOBALS['meta'][10]['_nova_stored_layout_owner']['template_id'] = 'different-template'; },
+    'missing owner' => static function () { unset( $GLOBALS['meta'][10]['_nova_stored_layout_owner'] ); },
     'type' => static function () { $GLOBALS['posts'][10]->post_type = 'post'; },
     'status' => static function () { $GLOBALS['posts'][10]->post_status = 'draft'; },
     'slug' => static function () { $GLOBALS['posts'][10]->post_name = 'human-slug'; },
@@ -55,24 +59,34 @@ $edits = [
     'excerpt' => static function () { $GLOBALS['posts'][10]->post_excerpt = 'Human excerpt'; },
     'reservation' => static function () { $GLOBALS['posts'][10]->post_content_filtered = 'changed-marker'; },
 ];
-foreach ( $edits as $label => $edit ) {
-    [ $old, $result ] = empty_settings_committed(); $meta[10]['_elementor_page_settings'] = ''; $edit();
+$mutable_edits = [ 'body', 'elements', 'nonempty settings', 'unrelated nonempty settings', 'header', 'width', 'template', 'status', 'author', 'title', 'excerpt', 'reservation' ];
+foreach ( $mutable_edits as $label ) {
+    [ $old, $result ] = empty_settings_committed(); $meta[10]['_elementor_page_settings'] = ''; $edits[$label]();
+    $current_state = empty_settings_state( $old ); $before = [ $posts, $meta, $options, $saves, $inserts ];
+    $next = planned( 2, '502' );
+    check( $next['target_post_id'] === 10 && $next['native_before'] === $current_state, 'A between-version ' . $label . ' change becomes the new operation baseline.' );
+    check( [ $posts, $meta, $options, $saves, $inserts ] === $before, 'Planning over a between-version ' . $label . ' change is read-only.' );
+    $updated = ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $next, op( 2 ) ) );
+    check( $updated['post_id'] === 10 && $inserts === 1 && $saves === 2, 'A higher version replaces mutable ' . $label . ' state on the same owned page.' );
+}
+foreach ( [ 'owner', 'owner site', 'owner URL', 'owner template', 'missing owner', 'type', 'slug', 'parent' ] as $label ) {
+    [ $old, $result ] = empty_settings_committed(); $meta[10]['_elementor_page_settings'] = ''; $edits[$label]();
     $before = [ $posts, $meta, $options, $saves, $inserts ];
     [ $content, $config ] = fixture( '502' );
-    check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $content, $config, [ 'operation_id' => op( 2 ) ] ) ), 'A real ' . $label . ' edit still blocks higher-version planning.' );
+    check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $content, $config, [ 'operation_id' => op( 2 ) ] ) ), 'A changed ' . $label . ' identity still blocks higher-version planning.' );
     check( [ $posts, $meta, $options, $saves, $inserts ] === $before, 'Rejected ' . $label . ' edits cause no native or journal mutation.' );
 }
-foreach ( [ false, 0, '0' ] as $invalid ) {
-    [ $old, $result ] = empty_settings_committed(); $meta[10]['_elementor_page_settings'] = $invalid;
-    [ $content, $config ] = fixture( '502' );
-    check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $content, $config, [ 'operation_id' => op( 2 ) ] ) ), 'Only empty string and empty array are equivalent, not other false-like values.' );
-}
-// The fixture's get_post_meta uses ?? and therefore collapses NULL to absent;
-// check that value at the real state comparator instead of claiming a DB read.
+// The comparator remains narrow for in-flight/recovery checks even though a new
+// delivery can deliberately replace a prior operation's mutable page state.
+// The fixture's get_post_meta collapses NULL to absent, so test the real comparators directly.
 [ $old ] = empty_settings_committed(); $state = empty_settings_state( $old );
-$null_state = $state; $null_state['page_settings'] = null;
 $digest_match = new ReflectionMethod( Nova_Bridge_Suite_Stored_Layout_Writer::class, 'native_digest_matches' );
-check( ! $digest_match->invoke( null, $null_state, empty_settings_digest( $state ) ), 'NULL state is not treated as an empty settings representation.' );
+$same_state = new ReflectionMethod( Nova_Bridge_Suite_Stored_Layout_Writer::class, 'same_native_state' );
+foreach ( [ false, 0, '0', null ] as $invalid ) {
+    $changed = $state; $changed['page_settings'] = $invalid;
+    check( ! $digest_match->invoke( null, $changed, empty_settings_digest( $state ) ), 'Other false-like values are not equivalent to an empty settings digest.' );
+    check( ! $same_state->invoke( null, $changed, $state ), 'Other false-like values are not equivalent to an empty settings baseline.' );
+}
 
 // Between planning and application, no owned native document has changed.
 foreach ( [ [], '' ] as $before ) {

@@ -34,7 +34,10 @@ The posting service must supply the PR #79 attempt and retirement behaviour.
 Attested successes remain terminal, as in that contract. A new CIV ID with an
 unchanged version number is not treated as a higher content version.
 
-Native ownership, URL and human-edit checks remain. If a partially written page
+Native ownership and URL checks remain. A newer authorized stored-layout version
+replaces content and design changes since the previous publication; it captures
+the current page as its new operation baseline. In-flight change detection and
+same-operation verification remain. If a partially written page
 cannot be verified for the same frozen operation, or an interrupted creation has
 no uniquely identifiable reservation, the job still requires reconciliation. A
 backend resend does not justify creating a second page or guessing native state.

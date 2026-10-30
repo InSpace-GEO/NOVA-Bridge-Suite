@@ -159,9 +159,17 @@ final class Nova_Bridge_Suite_Stored_Layout_Writer {
             $title = sanitize_text_field( $title ); if ( '' === trim( $title ) || strlen( $title ) > 1000 ) { self::fail( 'title', 'The fitted layout needs a nonempty page title.' ); }
             $post_fields['title'] = $title; $provider = self::provider( $type, $payload, $status, $builder );
             $before = $target_id ? self::native_state( $target_id, $payload['theme_presentation'] ?? null, $payload['elementor_document_settings'] ?? null, $builder, $payload ) : null;
-            if ( $target_id && ( $before['type'] !== $type || ! in_array( $before['status'], [ 'draft', 'publish' ], true ) || ( ! $association && $before['owner'] !== '' ) ) ) { self::fail( 'target_changed', 'The existing page type, status or ownership changed during planning.' ); }
-            // Compare using the previous operation's scope, so a legacy page can adopt a newly captured theme snapshot.
-            if ( $target_id && ( ! current_user_can( 'edit_post', $target_id ) || ( $association && ! self::native_digest_matches( self::native_state( $target_id, $association['theme_presentation'] ?? null, $association['elementor_document_settings'] ?? null, $association['builder'] ?? 'elementor', $association['native_scope'] ?? [] ), $association['native_digest'] ?? '' ) ) ) ) { self::fail( 'human_changed', 'This generated page changed after its verified save. Review its edits before replacing the owned document.' ); }
+            if ( $target_id && ( $before['type'] !== $type || ! in_array( $before['status'], [ 'draft', 'publish' ], true ) || $before['slug'] !== $target['slug'] || $before['parent'] !== $target['parent'] || ( ! $association && $before['owner'] !== '' ) ) ) { self::fail( 'target_changed', 'The existing page identity, status or ownership changed during planning.' ); }
+            if ( $target_id && ! current_user_can( 'edit_post', $target_id ) ) { self::fail( 'permission', 'The configured actor cannot edit the retained page.' ); }
+            if ( $target_id && $association ) {
+                $expected_owner = self::owner( [ 'site_id' => $content['site_id'], 'delivery_identity' => $content, 'template_id' => $configuration['template']['id'], 'association_before' => $association, 'operation_id' => $operation ] );
+                // A retired interrupted creation may have reserved its page before claiming it.
+                $unclaimed_retired = 'retired' === ( $association['state'] ?? '' ) && '' === $before['owner'];
+                if ( $before['owner'] !== $expected_owner && ! $unclaimed_retired ) { self::fail( 'ownership', 'The retained page belongs to another native operation.' ); }
+            }
+            // A newer authorized delivery replaces the saved layout even if content or design
+            // changed since the previous publication. Freeze today's state for this operation's
+            // apply/recovery checks; do not require the previous success's whole-page digest.
             $plan = [ 'format' => self::FORMAT, 'operation_id' => $operation, 'context' => $context, 'site_id' => $content['site_id'], 'template_id' => $configuration['template']['id'], 'template_revision' => $configuration['template']['revision'], 'profile_digest' => $configuration['profile_digest'], 'layout_digest' => $compiled['layout_digest'], 'post_type' => $type, 'payload' => $payload, 'post_fields' => $post_fields, 'target' => $target, 'target_post_id' => $target_id, 'desired_status' => $status, 'provider' => $provider, 'native_before' => $before, 'association_before' => $association, 'delivery_identity' => array_intersect_key( $content, array_flip( [ 'site_id', 'url_id', 'content_item_id', 'content_item_version_id', 'version_number', 'source_sha256', 'language' ] ) ) ];
             if ( 'nova.stored-recipe/v1' === ( $local['stored_layout']['format'] ?? '' ) || 'elementor' !== $builder ) { $plan['builder'] = $builder; }
             if ( strlen( wp_json_encode( $plan ) ) > 786432 ) { self::fail( 'plan_size', 'This layout exceeds the recoverable native journal size.' ); }

@@ -198,7 +198,11 @@ reset_native(); $plan = planned(); $partial = true; check( is_wp_error( Nova_Bri
 reset_native(); $first = ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( planned(), op( 1 ) ) ); $second = ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( planned( 2, '502' ), op( 2 ) ) ); check( $first['post_id'] === $second['post_id'] && $inserts === 1 && $saves === 2 && get_post( 10 )->post_title === "New creator's café 😀 502", 'A newer owned source version safely updates the same generated page.' );
 check( json_decode( get_post_meta( 10, '_elementor_data' ), true )[0]['elements'][0]['settings']['__dynamic__']['title'] === '[elementor-tag id="headline" name="post-title" settings="%7B%7D"]' && $source_reads === 0, 'A higher content version preserves the title binding without reading or resolving the example.' );
 list( $old, $config ) = fixture(); check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $old, $config, [ 'operation_id' => op( 3 ) ] ) ), 'An older version cannot overwrite its generated page.' );
-$meta[10]['_elementor_page_settings']['background_color'] = '#human'; list( $next, $config ) = fixture( '503' ); check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $next, $config, [ 'operation_id' => op( 3 ) ] ) ), 'Manual styling changes are protected from replacement.' );
+$meta[10]['_elementor_page_settings']['background_color'] = '#human'; list( $next, $config ) = fixture( '503' );
+$replacement = ok( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $next, $config, [ 'operation_id' => op( 3 ) ] ) );
+check( $replacement['native_before']['page_settings']['background_color'] === '#human', 'A newer authorized delivery uses current styling as its baseline instead of rejecting a change since the previous publication.' );
+ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $replacement, op( 3 ) ) );
+check( $inserts === 1 && $saves === 3 && $meta[10]['_elementor_page_settings']['background_color'] === '#445566', 'The newer delivery replaces prior styling with the approved saved layout on the same page.' );
 reset_native(); $plan = planned( 1, '501', 1, 'draft' ); $saved = ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $plan, op( 1 ) ) ); check( $saved['cms_post_status'] === 'draft' && $publication_changes === 0 && $saves === 1, 'V1 direct content creates the same stored layout without requiring an LLM or publication.' );
 reset_native(); list( $content, $config ) = fixture(); $policy = ok( Nova_Bridge_Suite_Stored_Layout_Writer::policy( $content, $config ) ); check( $policy['reference']['reference_id'] === 0 && $policy['routing']['operation'] === 'create', 'New URL policy contains no source native page dependency.' );
 check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::probe_mapping( $config['template'], $config['template']['mapping'], $config['local'] ) ), 'Activation requires the configured publishing actor.' );
@@ -227,7 +231,10 @@ $pending = ok( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $next, $config, [ '
 $meta[10]['vendor_width'] = 'normal-width';
 check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $pending, op( 3 ) ) ) && $saves === 2, 'A human theme edit after planning blocks replacement before native save.' );
 check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::verify( $update, [ 'post_id' => 10 ] ) ), 'A human theme edit after commit prevents the saved state from being verified.' );
-check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $next, $config, [ 'operation_id' => op( 4 ) ] ) ), 'A human theme edit after commit blocks a later owned update.' );
+$replacement = ok( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $next, $config, [ 'operation_id' => op( 4 ) ] ) );
+check( $replacement['native_before']['document_presentation']['vendor_width'] === 'normal-width', 'A fresh operation for a newer version takes the current theme state as its baseline.' );
+ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $replacement, op( 4 ) ) );
+check( $inserts === 1 && $saves === 3 && get_post_meta( 10, 'vendor_width' ) === 'full-width', 'The new delivery reapplies its saved theme settings without replaying the interrupted operation.' );
 
 reset_native(); presentation_source(); $plan = planned(); $drop_meta_write = 'vendor_width';
 check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $plan, op( 1 ) ) ) && $inserts === 1 && $publication_changes === 0, 'An incomplete theme metadata save cannot be reported or published as success.' );

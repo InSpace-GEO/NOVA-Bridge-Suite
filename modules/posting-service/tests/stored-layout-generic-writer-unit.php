@@ -86,7 +86,10 @@ foreach ( [ 'core', 'gutenberg' ] as $builder ) {
             $new = planned( $builder, $type, '502', 2, $status ); ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $new, op( 2 ) ) );
             check( $new['target_post_id'] === 10 && $saves === 2 && $inserts === 1 && strpos( $posts[10]->post_content, 'Mapped 502' ) !== false, 'A higher CIV updates the same retained native identity and scope.' );
             $posts[10]->post_content .= '<p>Human edit.</p>'; [ $content, $config ] = fixture( $builder, $type, '503', $status );
-            check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $content, $config, [ 'operation_id' => op( 3 ) ] ) ), 'Human changes remain protected when generalizing the native provider.' );
+            $replacement = ok( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $content, $config, [ 'operation_id' => op( 3 ) ] ) );
+            check( strpos( $replacement['native_before']['content'], 'Human edit.' ) !== false, 'A newer delivery uses the current native content as its baseline for every supported builder and destination.' );
+            ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $replacement, op( 3 ) ) );
+            check( $saves === 3 && $inserts === 1 && strpos( $posts[10]->post_content, 'Mapped 503' ) !== false && strpos( $posts[10]->post_content, 'Human edit.' ) === false, 'The newer authorized version replaces changed content on the same native item.' );
         }
     }
     foreach ( [ 'crash_insert', 'crash_meta' ] as $interruption ) {
@@ -130,7 +133,10 @@ reset_native(); $plan = planned( 'custom', 'portfolio' ); $saved = ok( Nova_Brid
 $new = planned( 'custom', 'portfolio', '502', 2 ); ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $new, op( 2 ) ) );
 check( $saved['post_id'] === 10 && $new['target_post_id'] === 10 && $inserts === 1 && $saves === 2 && get_post_meta( 10, '_vendor_document' ) === '<p>Mapped 502</p>', 'A registered third-party adapter reuses its scoped readback and known ID on an arbitrary native destination.' );
 $meta[10]['_vendor_document'] .= 'Manual edit'; [ $content, $config ] = fixture( 'custom', 'portfolio', '503' );
-check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $content, $config, [ 'operation_id' => op( 3 ) ] ) ), 'The extension snapshot scope survives association storage and protects carrier edits.' );
+$replacement = ok( Nova_Bridge_Suite_Stored_Layout_Writer::plan( $content, $config, [ 'operation_id' => op( 3 ) ] ) );
+check( strpos( $replacement['native_before']['native_document']['document'], 'Manual edit' ) !== false, 'The extension captures current carrier data as the newer delivery baseline.' );
+ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $replacement, op( 3 ) ) );
+check( $inserts === 1 && $saves === 3 && get_post_meta( 10, '_vendor_document' ) === '<p>Mapped 503</p>', 'A newer authorized delivery replaces changed extension content on the retained native item.' );
 $extension_bad_confirmation = true;
 check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Provider::verify( 'custom', 10, $new['payload'] ) ), 'Extension verification requires an explicit true confirmation rather than a truthy result object.' );
 echo "Generic stored-layout writer checks: $checks passed.\n";

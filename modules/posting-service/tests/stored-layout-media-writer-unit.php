@@ -50,7 +50,10 @@ require_once dirname( __DIR__ ) . '/includes/class-nova-bridge-suite-owned-cpt-m
 check( Nova_Bridge_Suite_Owned_CPT_Media::retained( op( 1 ), 'https://images.example.test/generated.png' ) === 100, 'The former CPT class and journal keys resolve the same retained attachment.' );
 $meta[10]['_thumbnail_id'] = 41;
 check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::verify( $p, $result ) ), 'An edited featured image invalidates native readback.' );
-check( is_wp_error( Nova_Bridge_Suite_Stored_Layout_Writer::plan( ...array_merge( fixture( '502' ), [ [ 'operation_id' => op( 2 ) ] ] ) ) ), 'The new association scope protects later manual featured-image changes.' );
+$replacement = media_plan( 2, '502', 'https://images.example.test/replacement.png' );
+check( $replacement['native_before']['featured_image'] === 41, 'A newer delivery can replace an edited featured image using its current value as the operation baseline.' );
+ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $replacement, op( 2 ) ) );
+check( $inserts === 1 && $saves === 2 && get_post_thumbnail_id( 10 ) === 101 && image_settings()['background_image']['id'] === 101, 'The approved higher version replaces the mapped images on the same page.' );
 
 reset_media(); $old = planned(); $old_result = ok( Nova_Bridge_Suite_Stored_Layout_Writer::apply( $old, op( 1 ) ) ); $meta[10]['_thumbnail_id'] = 9;
 ok( Nova_Bridge_Suite_Stored_Layout_Writer::verify( $old, $old_result ) );
