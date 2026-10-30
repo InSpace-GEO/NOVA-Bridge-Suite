@@ -3,7 +3,7 @@
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 final class Nova_Bridge_Suite_Recipe_Builders {
-    const BUILDERS = [ 'elementor', 'gutenberg', 'wpbakery', 'avada', 'divi4', 'divi5', 'beaver', 'breakdance' ];
+    const BUILDERS = [ 'elementor', 'gutenberg', 'flatsome', 'wpbakery', 'avada', 'divi4', 'divi5', 'beaver', 'breakdance' ];
     private static $adapters = [];
 
     public static function register(): void {
@@ -16,7 +16,12 @@ final class Nova_Bridge_Suite_Recipe_Builders {
     public static function adapter( string $builder ) {
         if ( ! in_array( $builder, self::BUILDERS, true ) ) { return self::error( 'builder', 'This native recipe adapter is unavailable.' ); }
         if ( 'elementor' === $builder && ! class_exists( 'Nova_Bridge_Suite_Recipe_Elementor' ) ) { return self::error( 'builder', 'The Elementor recipe adapter is unavailable.' ); }
-        if ( ! isset( self::$adapters[ $builder ] ) ) { self::$adapters[ $builder ] = 'elementor' === $builder ? new Nova_Bridge_Suite_Recipe_Elementor() : new Nova_Bridge_Suite_Recipe_Native_Adapter( $builder ); }
+        if ( ! isset( self::$adapters[ $builder ] ) ) {
+            if ( 'flatsome' === $builder ) {
+                require_once __DIR__ . '/class-nova-bridge-suite-recipe-flatsome.php';
+                self::$adapters[ $builder ] = new Nova_Bridge_Suite_Recipe_Flatsome();
+            } else { self::$adapters[ $builder ] = 'elementor' === $builder ? new Nova_Bridge_Suite_Recipe_Elementor() : new Nova_Bridge_Suite_Recipe_Native_Adapter( $builder ); }
+        }
         return self::$adapters[ $builder ];
     }
 
@@ -54,9 +59,13 @@ final class Nova_Bridge_Suite_Recipe_Builders {
         if ( preg_match( '/\[et_pb_/i', $content ) || ! $divi5 && 'on' === get_post_meta( $post_id, '_et_pb_use_builder', true ) ) { $builders[] = 'divi4'; }
         if ( preg_match( '/\[vc_/i', $content ) ) { $builders[] = 'wpbakery'; }
         if ( preg_match( '/\[fusion_/i', $content ) || ! empty( get_post_meta( $post_id, '_fusion_builder_shortcodes', true ) ) ) { $builders[] = 'avada'; }
+        require_once __DIR__ . '/class-nova-bridge-suite-recipe-flatsome.php';
+        if ( Nova_Bridge_Suite_Recipe_Flatsome::has_document( $content ) ) { $builders[] = 'flatsome'; }
         if ( in_array( get_post_meta( $post_id, '_fl_builder_enabled', true ), [ true, 1, '1', 'true', 'yes', 'on' ], true ) || ! empty( get_post_meta( $post_id, '_fl_builder_data', true ) ) ) { $builders[] = 'beaver'; }
         if ( ! empty( get_post_meta( $post_id, '_breakdance_data', true ) ) ) { $builders[] = 'breakdance'; }
-        if ( ! $divi5 && preg_match( '/<!--\s+wp:/i', $content ) ) { $builders[] = 'gutenberg'; }
+        // Flatsome's native block is a shortcode carrier, not a second builder.
+        $block_content = preg_replace( '/<!--\s*\/?wp:flatsome\/uxbuilder\b[\s\S]*?-->/i', '', $content );
+        if ( ! $divi5 && preg_match( '/<!--\s+wp:/i', $block_content ) ) { $builders[] = 'gutenberg'; }
         return array_values( array_unique( $builders ) );
     }
 

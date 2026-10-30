@@ -488,7 +488,7 @@ final class Nova_Bridge_Suite_Layout_Recipes {
         }
         $media = Nova_Bridge_Suite_Native_Media::resolve( $operation['builder'], $id, $payload, 'layout-draft:' . $operation['operation_id'] ); if ( is_wp_error( $media ) ) { return $media; }
         foreach ( $payload['nova_media'] as $entry ) {
-            if ( 'elementor' !== ( $entry['kind'] ?? '' ) ) { continue; }
+            if ( 'featured' === ( $entry['kind'] ?? '' ) ) { continue; }
             require_once dirname( __DIR__, 2 ) . '/posting-service/includes/class-nova-bridge-suite-stored-layout-provider.php';
             $native = $payload; unset( $native['meta_all'] ); $post = get_post( $id );
             return Nova_Bridge_Suite_Stored_Layout_Provider::apply( $operation['builder'], $id, $native, [ 'title' => $operation['title'], 'excerpt' => (string) ( $post->post_excerpt ?? '' ) ], 'layout-draft:' . $operation['operation_id'] );

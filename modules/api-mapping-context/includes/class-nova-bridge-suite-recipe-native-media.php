@@ -29,9 +29,15 @@ final class Nova_Bridge_Suite_Recipe_Native_Media {
         foreach ( $description['fields'] ?? [] as $field ) {
             if ( ( $field['target'] ?? '' ) !== $binding['target'] ) { continue; }
             $spec = $field['native_media'] ?? null;
-            if ( empty( $field['writable'] ) || ! is_array( $spec ) || ( $spec['kind'] ?? '' ) !== 'elementor' || ( $spec['url_target'] ?? '' ) !== $binding['target'] || ! is_string( $spec['id_target'] ?? null ) ) { break; }
+            if ( empty( $field['writable'] ) || ! is_array( $spec ) || ! is_string( $spec['id_target'] ?? null ) ) { break; }
             Nova_Bridge_Suite_Recipe_Engine::parts( $spec['id_target'] );
-            return [ 'kind' => 'elementor', 'url_target' => $spec['url_target'], 'id_target' => $spec['id_target'] ];
+            if ( ( $spec['kind'] ?? '' ) === 'elementor' && ( $spec['url_target'] ?? '' ) === $binding['target'] ) {
+                return [ 'kind' => 'elementor', 'url_target' => $spec['url_target'], 'id_target' => $spec['id_target'] ];
+            }
+            if ( ( $spec['kind'] ?? '' ) === 'flatsome' && $spec['id_target'] === $binding['target'] && $adapter instanceof Nova_Bridge_Suite_Recipe_Flatsome ) {
+                return [ 'kind' => 'flatsome', 'id_target' => $spec['id_target'] ];
+            }
+            break;
         }
         Nova_Bridge_Suite_Recipe_Engine::fail( 'Only a captured native image control can use image import.' );
     }

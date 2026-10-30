@@ -20,6 +20,10 @@ final class Nova_Bridge_Suite_Native_Media {
         // Media controls may omit their empty id/url leaf; only their existing object may be completed.
         $current[$leaf] = $value; return true;
     }
+    private static function flatsome_pointer( string $target ): ?array {
+        if ( ! preg_match( '#^/document/(?:0|[1-9][0-9]*)(?:/children/(?:0|[1-9][0-9]*))*/attributes/[a-zA-Z_][a-zA-Z0-9_-]*$#D', $target ) ) { return null; }
+        return array_merge( [ 'flatsome_document' ], explode( '/', substr( $target, strlen( '/document/' ) ) ) );
+    }
     public static function validate( string $builder, array $payload ) {
         if ( ! array_key_exists( 'nova_media', $payload ) ) { return true; }
         if ( ! is_array( $payload['nova_media'] ) ) { return self::error( 'The native image manifest is invalid.' ); }
@@ -36,6 +40,18 @@ final class Nova_Bridge_Suite_Native_Media {
                 $url_path = self::pointer( $url_target ); $id_path = self::pointer( $id_target ); $test = $payload;
                 if ( ! $url_path || ! $id_path || ! self::place( $test, $url_path, '' ) || ! self::place( $test, $id_path, 0 ) ) { return self::error( 'A native image target no longer belongs to its compiled media control.' ); }
                 $targets[$url_target] = true;
+            } elseif ( 'flatsome' === ( $entry['kind'] ?? '' ) && 'flatsome' === $builder ) {
+                $id_target = $entry['id_target'] ?? '';
+                if ( ! is_string( $id_target ) || $target !== $id_target || isset( $targets[$id_target] ) || ! ( $path = self::flatsome_pointer( $id_target ) ) ) { return self::error( 'The native shortcode image target is invalid.' ); }
+                $test = $payload;
+                if ( ! self::place( $test, $path, 0 ) ) { return self::error( 'The native shortcode image target no longer belongs to its captured layout.' ); }
+                require_once dirname( __DIR__, 2 ) . '/api-mapping-context/includes/class-nova-bridge-suite-recipe-flatsome.php';
+                $adapter = new Nova_Bridge_Suite_Recipe_Flatsome();
+                $description = $adapter->describe( [ 'document' => $payload['flatsome_document'], 'template' => $payload['template'] ?? '', 'meta' => $payload['meta'] ?? [] ] );
+                if ( is_wp_error( $description ) ) { return $description; }
+                $field = array_column( $description['fields'] ?? [], null, 'target' )[$id_target] ?? [];
+                if ( ( $field['native_media']['kind'] ?? '' ) !== 'flatsome' || ( $field['native_media']['id_target'] ?? '' ) !== $id_target || empty( $field['writable'] ) ) { return self::error( 'Only a captured UX Builder image control can receive an imported image.' ); }
+                $targets[$id_target] = true;
             } else { return self::error( 'This builder has no native handler for the selected image control.' ); }
         }
         return true;
@@ -63,6 +79,7 @@ final class Nova_Bridge_Suite_Native_Media {
                     if ( ! is_string( $url ) || '' === $url ) { return self::error( 'The retained native image has no readable attachment URL.' ); }
                 }
                 if ( 'featured' === $entry['kind'] ) { $result['featured'] = $id; }
+                elseif ( 'flatsome' === $entry['kind'] ) { self::place( $result['payload'], self::flatsome_pointer( $entry['id_target'] ), (string) $id ); }
                 else { self::place( $result['payload'], self::pointer( $entry['url_target'] ), $url ); self::place( $result['payload'], self::pointer( $entry['id_target'] ), $id ); }
             }
         } catch ( Throwable $error ) { return self::error( 'The native image result is not yet verified. Recover this same operation before continuing.' ); }
