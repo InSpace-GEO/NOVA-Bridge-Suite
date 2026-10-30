@@ -332,5 +332,16 @@ async function categoryMounted(settings={}){const current=categoryDesign(),choic
   f.ctrl.state.postingSync.default_replacement.page_type='service';f.ctrl.state.postingSync.recipe_revision=0;await f.ctrl.syncSaved(true);assert.equal(syncs,0,'An older saved revision cannot authorize replacement');
   f.ctrl.state.postingSync.recipe_revision=1;f.ctrl.edit(state=>{state.label='Unsaved name';});await f.ctrl.syncSaved(true);assert.equal(syncs,0,'Unsaved edits cannot replace a default');
  });
+ await test('native image purposes are optional, explicit and keep featured wording', async()=>{
+  const owner={bindings:[]}, field={target:'/native_post/featured_image',label:'Featured image',format:'url',required:false,writable:true,native_media:{kind:'featured'}};
+  assert.deepEqual(ui.rolesFor(field).map(role=>role.id),['image_url','custom']);
+  const binding=ui.assignRole(owner,field,'image_url','main');
+  assert.equal(binding.required,false);assert.equal(binding.native_media,true);assert.equal(binding.label,'Featured image');assert.equal(binding.format,'url');
+  binding.required=true;ui.assignRole(owner,field,'image_url','main');assert.equal(binding.required,true,'Explicit requirement survives reselection');
+  const body={target:'/document/title',format:'text',label:'Heading',writable:true};const ordinary=ui.assignRole(owner,body,'title','main');assert.equal(ordinary.required,true);assert.equal(ordinary.native_media,undefined);
+ });
+ await test('preview carries the selected native destination for featured capability checks', async()=>{
+  const f=fixture();await ready(f);await f.ctrl.preview();const call=f.calls.find(call=>call.path==='/preview');assert.equal(call.payload.resource_id,'post_type:page');
+ });
  console.log('PASS '+checks+' layout recipe UI workflows.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -1,6 +1,7 @@
 <?php
 /** Known-ID native saves for the stored-layout journal. These providers never create posts. */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
+require_once __DIR__ . '/class-nova-bridge-suite-native-media.php';
 
 final class Nova_Bridge_Suite_Stored_Layout_Provider {
     private static function error( string $message ): WP_Error { return new WP_Error( 'nova_layout_provider', $message, [ 'status' => 409 ] ); }
@@ -38,6 +39,7 @@ final class Nova_Bridge_Suite_Stored_Layout_Provider {
         return [ 'supported' => true, 'reason' => '' ];
     }
     public static function probe( string $builder, string $type, array $payload, string $status ) {
+        $media = Nova_Bridge_Suite_Native_Media::validate( $builder, $payload ); if ( is_wp_error( $media ) ) { return $media; }
         $support = self::support( $builder, $type ); if ( ! $support['supported'] ) { return self::error( $support['reason'] ); }
         $object = get_post_type_object( $type );
         if ( 'publish' === $status && ! current_user_can( $object->cap->publish_posts ?? 'publish_posts' ) ) { return self::error( 'The publishing actor cannot publish this native post type.' ); }
@@ -73,9 +75,9 @@ final class Nova_Bridge_Suite_Stored_Layout_Provider {
     }
     /** Retain exactly the provider's readback scope with the owned native association. */
     public static function snapshot_scope( string $builder, array $payload ): array {
-        if ( 'elementor' === $builder ) { return []; }
-        if ( in_array( $builder, [ 'core', 'gutenberg' ], true ) ) { return [ 'meta' => array_fill_keys( array_keys( $payload['meta'] ?? [] ), null ) ]; }
-        return $payload;
+        $scope = 'elementor' === $builder ? [] : ( in_array( $builder, [ 'core', 'gutenberg' ], true ) ? [ 'meta' => array_fill_keys( array_keys( $payload['meta'] ?? [] ), null ) ] : $payload );
+        if ( Nova_Bridge_Suite_Native_Media::has_featured( $payload ) ) { $scope['nova_featured'] = true; }
+        return $scope;
     }
     private static function content_target( $post ) {
         if ( is_callable( [ 'Nova_Bridge_Suite_Recipe_Builders', 'native_carriers' ] ) ) {
@@ -100,8 +102,11 @@ final class Nova_Bridge_Suite_Stored_Layout_Provider {
         $adapter = self::extension( $builder ); return is_wp_error( $adapter ) ? $adapter : $adapter->publication_snapshot( $id, $payload );
     }
     /** The caller has retained the ID and saving checkpoint before entering this method. */
-    public static function apply( string $builder, int $id, array $payload, array $post_fields ) {
+    public static function apply( string $builder, int $id, array $payload, array $post_fields, string $operation = '' ) {
         $post = get_post( $id ); if ( ! $post || ! current_user_can( 'edit_post', $id ) ) { return self::error( 'The retained native item cannot be edited.' ); }
+        $original_payload = $payload;
+        $media = Nova_Bridge_Suite_Native_Media::resolve( $builder, $id, $payload, $operation ); if ( is_wp_error( $media ) ) { return $media; }
+        $payload = $media['payload'];
         if ( 'elementor' === $builder ) {
             $body = $payload; $body['elementor_data'] = wp_json_encode( $payload['elementor_data'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
             $body['title'] = wp_slash( $post_fields['title'] ); $body['excerpt'] = wp_slash( $post_fields['excerpt'] ?? '' );
@@ -121,9 +126,12 @@ final class Nova_Bridge_Suite_Stored_Layout_Provider {
             if ( true !== $result ) { return self::error( 'The native adapter did not confirm its known-ID save.' ); }
         }
         if ( isset( $payload['theme_presentation'] ) ) { $result = Nova_Bridge_Suite_Theme_Presentation::apply( $id, $payload['theme_presentation'] ); if ( is_wp_error( $result ) ) { return $result; } }
-        return self::verify( $builder, $id, $payload );
+        $result = Nova_Bridge_Suite_Native_Media::apply_featured( $id, $media ); if ( is_wp_error( $result ) ) { return $result; }
+        return self::verify( $builder, $id, $original_payload, $operation );
     }
-    public static function verify( string $builder, int $id, array $payload ) {
+    public static function verify( string $builder, int $id, array $payload, string $operation = '', bool $include_featured = true ) {
+        $media = Nova_Bridge_Suite_Native_Media::resolve( $builder, $id, $payload, $operation, false ); if ( is_wp_error( $media ) ) { return $media; }
+        $payload = $media['payload'];
         if ( 'elementor' === $builder ) { $result = Nova_Bridge_Suite_Recipe_Builders::verify_saved( $builder, $id, $payload ); }
         elseif ( in_array( $builder, [ 'core', 'gutenberg' ], true ) ) {
             $native = self::content_payload( $builder, $payload ); if ( is_wp_error( $native ) ) { return $native; }
@@ -138,6 +146,6 @@ final class Nova_Bridge_Suite_Stored_Layout_Provider {
         if ( is_wp_error( $result ) ) { return $result; }
         if ( ! $result ) { return self::error( 'The native provider could not verify the saved layout.' ); }
         if ( isset( $payload['theme_presentation'] ) ) { $result = Nova_Bridge_Suite_Theme_Presentation::verify( $id, $payload['theme_presentation'] ); if ( is_wp_error( $result ) ) { return $result; } }
-        return true;
+        return $include_featured ? Nova_Bridge_Suite_Native_Media::verify_featured( $id, $media ) : true;
     }
 }

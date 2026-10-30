@@ -169,20 +169,32 @@ final class Nova_Bridge_Suite_Stored_Layout_Writer {
         if ( ! is_array( $elements ) ) { self::fail( 'native_data', 'The retained native Elementor document is unreadable.' ); }
         $state = [ 'post_id' => $id, 'type' => $post->post_type, 'status' => $post->post_status, 'title' => $post->post_title, 'excerpt' => $post->post_excerpt, 'slug' => $post->post_name, 'parent' => (int) $post->post_parent, 'author' => (int) $post->post_author, 'content' => $post->post_content, 'reservation' => $post->post_content_filtered, 'elements' => $elements, 'page_settings' => get_post_meta( $id, '_elementor_page_settings', true ), 'template' => get_page_template_slug( $id ), 'native_language' => function_exists( 'pll_get_post_language' ) ? pll_get_post_language( $id, 'slug' ) : null, 'owner' => get_post_meta( $id, self::OWNER, true ) ];
         if ( 'elementor' !== $builder ) { $state['native_builder'] = $builder; $state['native_document'] = self::checked( Nova_Bridge_Suite_Stored_Layout_Provider::snapshot( $builder, $id, $payload ) ); }
+        // Older plans/associations deliberately keep their original digest scope.
+        if ( ! empty( $payload['nova_featured'] ) || Nova_Bridge_Suite_Native_Media::has_featured( $payload ) ) { $state['featured_image'] = (int) get_post_thumbnail_id( $id ); }
         if ( null !== $theme ) { $state['theme_presentation'] = self::checked( Nova_Bridge_Suite_Theme_Presentation::native_state( $id, $theme ) ); }
         if ( null !== $document_settings ) { $state['document_presentation'] = self::checked( \SEOR_Elementor_Bridge\Document_Presentation::read_state( $id, $document_settings ) ); }
         return $state;
     }
     private static function plan_state( array $plan, int $id ): array { return self::native_state( $id, $plan['payload']['theme_presentation'] ?? null, $plan['payload']['elementor_document_settings'] ?? null, $plan['builder'] ?? 'elementor', $plan['payload'] ); }
     private static function retain_provider_scope( array &$association, array $plan ): void {
-        if ( isset( $plan['builder'] ) ) { $association['builder'] = $plan['builder']; $association['native_scope'] = Nova_Bridge_Suite_Stored_Layout_Provider::snapshot_scope( $plan['builder'], $plan['payload'] ); }
+        if ( isset( $plan['builder'] ) || Nova_Bridge_Suite_Native_Media::has_featured( $plan['payload'] ) ) { $association['builder'] = $plan['builder'] ?? 'elementor'; $association['native_scope'] = Nova_Bridge_Suite_Stored_Layout_Provider::snapshot_scope( $association['builder'], $plan['payload'] ); }
     }
-    private static function check_content( array $plan, int $id ): array {
+    private static function check_content( array $plan, int $id, bool $include_featured = true ): array {
         $state = self::plan_state( $plan, $id );
         if ( $state['type'] !== $plan['post_type'] || $state['title'] !== $plan['post_fields']['title'] || $state['excerpt'] !== ( $plan['post_fields']['excerpt'] ?? '' ) || $state['slug'] !== $plan['target']['slug'] || $state['parent'] !== $plan['target']['parent'] || $state['owner'] !== self::owner( $plan ) || ( $plan['target_post_id'] && $state['author'] !== $plan['native_before']['author'] ) ) { self::fail( 'native_mismatch', 'The retained page identity or fitted fields differ from the approved plan.' ); }
-        self::checked( Nova_Bridge_Suite_Stored_Layout_Provider::verify( $plan['builder'] ?? 'elementor', $id, $plan['payload'] ) );
+        self::checked( Nova_Bridge_Suite_Stored_Layout_Provider::verify( $plan['builder'] ?? 'elementor', $id, $plan['payload'], $plan['operation_id'], $include_featured ) );
         self::checked( Nova_Bridge_Suite_Stored_Layout_Language::verify( 'post_type:' . $plan['post_type'], $id, $plan['target'] ) );
         return $state;
+    }
+    /** A lost native-save response may leave only the explicit thumbnail assignment unfinished. */
+    private static function pending_featured( array $plan, int $id ): bool {
+        if ( ! Nova_Bridge_Suite_Native_Media::has_featured( $plan['payload'] ) ) { return false; }
+        $media = Nova_Bridge_Suite_Native_Media::resolve( $plan['builder'] ?? 'elementor', $id, $plan['payload'], $plan['operation_id'], false );
+        $current = (int) get_post_thumbnail_id( $id );
+        if ( is_wp_error( $media ) || ! array_key_exists( 'featured', $media ) || $media['featured'] === $current || $current !== (int) ( $plan['native_before']['featured_image'] ?? 0 ) ) { return false; }
+        // Never finish over human edits or merely assume a successful document save.
+        try { self::check_content( $plan, $id, false ); return true; }
+        catch ( Nova_Bridge_Suite_Stored_Layout_Writer_Failure $error ) { return false; }
     }
     private static function existing_save_witnessed( array $plan, int $id ): bool {
         try { self::check_content( $plan, $id ); return true; }
@@ -243,6 +255,10 @@ final class Nova_Bridge_Suite_Stored_Layout_Writer {
                 }
                 $id = (int) $record['post_id']; if ( ! current_user_can( 'edit_post', $id ) ) { self::fail( 'permission', 'The configured actor cannot edit the retained page.' ); }
                 $saved = in_array( $record['state'], [ 'saving', 'saved', 'publishing' ], true );
+                if ( $record['state'] === 'saving' && self::pending_featured( $plan, $id ) ) {
+                    $media = self::checked( Nova_Bridge_Suite_Native_Media::resolve( $plan['builder'] ?? 'elementor', $id, $plan['payload'], $operation, false ) );
+                    self::checked( Nova_Bridge_Suite_Native_Media::apply_featured( $id, $media ) );
+                }
                 if ( $saved && $record['state'] === 'saving' && $plan['target_post_id'] ) { $saved = self::existing_save_witnessed( $plan, $id ); }
                 if ( $saved ) { self::check_content( $plan, $id ); }
                 else {
@@ -258,8 +274,11 @@ final class Nova_Bridge_Suite_Stored_Layout_Writer {
                     update_post_meta( $id, self::OWNER, self::owner( $plan ) ); if ( get_post_meta( $id, self::OWNER, true ) !== self::owner( $plan ) ) { self::fail( 'storage', 'The page ownership marker was not retained.' ); }
                     if ( ! $plan['target_post_id'] ) { self::checked( Nova_Bridge_Suite_Stored_Layout_Language::assign( $id, $plan['target'] ) ); }
                     else { self::checked( Nova_Bridge_Suite_Stored_Layout_Language::verify( 'post_type:' . $plan['post_type'], $id, $plan['target'] ) ); }
+                    // Import after reservation, but before the native-save checkpoint. An interrupted
+                    // download/sideload can resume its journal without claiming the document was saved.
+                    self::checked( Nova_Bridge_Suite_Native_Media::resolve( $plan['builder'] ?? 'elementor', $id, $plan['payload'], $operation ) );
                     $record['state'] = 'saving'; self::checkpoint( $key, $record );
-                    self::checked( Nova_Bridge_Suite_Stored_Layout_Provider::apply( $plan['builder'] ?? 'elementor', $id, $plan['payload'], $plan['post_fields'] ) );
+                    self::checked( Nova_Bridge_Suite_Stored_Layout_Provider::apply( $plan['builder'] ?? 'elementor', $id, $plan['payload'], $plan['post_fields'], $operation ) );
                     self::check_content( $plan, $id );
                 }
                 $record['state'] = 'saved'; self::checkpoint( $key, $record ); self::check_url( $plan, $id );
@@ -289,6 +308,7 @@ final class Nova_Bridge_Suite_Stored_Layout_Writer {
                 if ( 'committed' === $record['state'] ) { self::verify_record( $plan, $record ); return self::complete( $plan, $record ); }
                 $id = (int) ( $record['post_id'] ?: self::reserved_post( $plan ) );
                 if ( $id && in_array( $record['state'], [ 'saving', 'saved', 'publishing' ], true ) ) {
+                    if ( $record['state'] === 'saving' && self::pending_featured( $plan, $id ) ) { return [ 'state' => 'not_committed', 'no_native_commit' => false, 'safe_to_apply' => true, 'post_id' => $id ]; }
                     if ( $record['state'] === 'saving' && $plan['target_post_id'] && ! self::existing_save_witnessed( $plan, $id ) ) { return [ 'state' => 'not_committed', 'no_native_commit' => false, 'safe_to_apply' => true, 'post_id' => $id ]; }
                     self::check_content( $plan, $id ); if ( get_post_status( $id ) === $plan['desired_status'] ) { $record['post_id'] = $id; return self::complete( $plan, $record ); }
                 }

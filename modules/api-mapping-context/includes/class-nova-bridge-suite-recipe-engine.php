@@ -1,6 +1,7 @@
 <?php
 /** Pure, bounded compilation of sealed native layout recipes. No CMS writes occur here. */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
+require_once __DIR__ . '/class-nova-bridge-suite-recipe-native-media.php';
 
 final class Nova_Bridge_Suite_Recipe_Failure extends RuntimeException {
     public $error;
@@ -90,10 +91,12 @@ final class Nova_Bridge_Suite_Recipe_Engine {
         if ( $depth > self::MAX_DEPTH || ! self::list_array( $bindings ) || ! self::list_array( $regions ) || ( 'static' === $mode && $regions ) ) { self::fail( 'Use ordered bindings/regions nested at most eight levels; static mode has no variable regions.' ); }
         $targets = []; $identities = [];
         foreach ( $bindings as $binding ) {
-            if ( ++$count > 2000 || ! is_array( $binding ) || array_diff( array_keys( $binding ), [ 'id', 'label', 'target', 'source', 'format', 'required', 'instructions' ] ) || ! is_string( $binding['target'] ?? null ) || '' === $binding['target'] || ! is_string( $binding['source'] ?? null ) || ! in_array( $binding['format'] ?? '', [ 'text', 'html', 'url', 'number', 'boolean' ], true ) || ! is_bool( $binding['required'] ?? null ) ) { self::fail( 'Each native binding declares a target, relative content source, format and required preference.' ); }
+            if ( ++$count > 2000 || ! is_array( $binding ) || array_diff( array_keys( $binding ), [ 'id', 'label', 'target', 'source', 'format', 'required', 'instructions', 'native_media' ] ) || ! is_string( $binding['target'] ?? null ) || '' === $binding['target'] || ! is_string( $binding['source'] ?? null ) || ! in_array( $binding['format'] ?? '', [ 'text', 'html', 'url', 'number', 'boolean' ], true ) || ! is_bool( $binding['required'] ?? null ) ) { self::fail( 'Each native binding declares a target, relative content source, format and required preference.' ); }
             self::parts( $binding['target'] ); self::parts( $binding['source'] ); self::metadata( $binding );
             if ( isset( $targets[ $binding['target'] ] ) ) { self::fail( 'A native field cannot have two bindings in the same scope.' ); } $targets[ $binding['target'] ] = true;
-            self::checked( $adapter->validate_binding( $native, $binding ) );
+            $media = Nova_Bridge_Suite_Recipe_Native_Media::spec( $native, $binding, $adapter );
+            if ( $media && ( 0 !== $depth || 'static' !== $mode ) ) { self::fail( 'Native image import currently needs a fixed field in a static layout.' ); }
+            if ( ! $media || 'featured' !== $media['kind'] ) { self::checked( $adapter->validate_binding( $native, $binding ) ); }
         }
         foreach ( $regions as $region ) {
             if ( ++$count > 2000 || ! is_array( $region ) || array_diff( array_keys( $region ), [ 'id', 'label', 'instructions', 'target', 'start', 'count', 'prototype_start', 'prototype_count', 'source', 'kind', 'context', 'prototype', 'empty', 'max_items', 'projection', 'variant_by', 'variants', 'default_variant' ] ) || ! is_string( $region['id'] ?? null ) || ! preg_match( '/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/D', $region['id'] ) || isset( $identities[ $region['id'] ] ) || ! is_string( $region['target'] ?? null ) || ! is_string( $region['source'] ?? null ) || ! is_int( $region['start'] ?? null ) || ! is_int( $region['count'] ?? null ) || $region['start'] < 0 || $region['count'] < 0 || ! in_array( $region['kind'] ?? '', [ 'repeat', 'optional' ], true ) || ! in_array( $region['context'] ?? 'item', [ 'item', 'parent' ], true ) || ( 'repeat' === ( $region['kind'] ?? '' ) && 'parent' === ( $region['context'] ?? '' ) ) || ! in_array( $region['empty'] ?? '', [ 'remove', 'keep' ], true ) || ! is_int( $region['max_items'] ?? null ) || $region['max_items'] < 1 || $region['max_items'] > 500 ) { self::fail( 'Each native region declares a unique ID, contiguous range, source, bounded kind and empty preference.' ); }
@@ -113,7 +116,7 @@ final class Nova_Bridge_Suite_Recipe_Engine {
             foreach ( array_keys( $targets ) as $target ) { if ( self::inside_range( $target, $region ) ) { self::fail( 'A fixed binding cannot target content replaced by a region; move it into that prototype.' ); } }
             foreach ( $regions as $j => $other ) { if ( $j <= $i ) { continue; } if ( $region['target'] === $other['target'] ) { $a = $region['start']; $b = $other['start']; if ( ( $a === $b ) || ( $a < $b + $other['count'] && $b < $a + $region['count'] ) ) { self::fail( 'Native region replacement ranges must not overlap.' ); } } elseif ( self::inside_range( $other['target'], $region ) || self::inside_range( $region['target'], $other ) ) { self::fail( 'Nested regions belong inside their owning prototype, not overlapping root ranges.' ); } }
         }
-        if ( method_exists( $adapter, 'validate_plan_scope' ) ) { self::checked( $adapter->validate_plan_scope( $native, $bindings, $regions ) ); }
+        if ( method_exists( $adapter, 'validate_plan_scope' ) ) { $native_bindings = array_values( array_filter( $bindings, static function ( $binding ) { return Nova_Bridge_Suite_Recipe_Native_Media::FEATURED !== $binding['target']; } ) ); self::checked( $adapter->validate_plan_scope( $native, $native_bindings, $regions ) ); }
     }
     private static function inside_range( string $pointer, array $region ): bool { $prefix = $region['target'] . '/'; if ( 0 !== strpos( $pointer, $prefix ) ) { return false; } $tail = substr( $pointer, strlen( $prefix ) ); $index = explode( '/', $tail )[0]; return ctype_digit( $index ) && (int) $index >= $region['start'] && (int) $index < $region['start'] + $region['count']; }
     private static function validate_prototype( $prototype, $adapter, string $mode, int &$count, int $depth ): void {
@@ -182,6 +185,7 @@ final class Nova_Bridge_Suite_Recipe_Engine {
             $native = self::compile_scope( $recipe['blueprint'], $recipe['bindings'] ?? [], $recipe['regions'] ?? [], $normalized, $adapter, $seed, [], $state, 0 );
             $result = self::checked( $adapter->finalize( $native, $seed, [ 'recipe' => $recipe, 'content' => $normalized, 'regions' => $state['regions'] ] ) );
             if ( ! is_array( $result ) || ! isset( $result['native_document'], $result['writer_payload'], $result['preview_html'] ) || ! is_array( $result['writer_payload'] ) || ! is_string( $result['preview_html'] ) ) { self::fail( 'The adapter did not return a complete native document, writer payload and structure preview.' ); }
+            if ( ! empty( $state['native_media'] ) ) { $result['writer_payload']['nova_media'] = $state['native_media']; $state['warnings'][] = 'Mapped images are imported and applied in the native test draft and publication. This structure preview retains the reference images.'; }
             $result['warnings'] = array_values( array_unique( array_merge( $state['warnings'], (array) ( $result['warnings'] ?? [] ) ) ) );
             $result['summary'] = array_merge( (array) ( $result['summary'] ?? [] ), [ 'builder' => $recipe['builder'], 'mode' => $recipe['mode'], 'bindings' => $state['bindings'], 'instances' => $state['instances'], 'regions' => $state['regions'] ] );
             if ( ( $result['summary']['nodes'] ?? 0 ) > 2000 ) { self::fail( 'The compiled native document exceeds 2000 nodes.' ); }
@@ -195,6 +199,14 @@ final class Nova_Bridge_Suite_Recipe_Engine {
         if ( $depth > self::MAX_DEPTH ) { self::fail( 'Native region recursion exceeded eight levels.' ); }
         foreach ( $bindings as $binding ) {
             $value = self::get( $content, $binding['source'], $found );
+            $media = Nova_Bridge_Suite_Recipe_Native_Media::spec( $native, $binding, $adapter );
+            if ( $media ) {
+                if ( ( ! $found || null === $value || '' === $value ) && ! $binding['required'] ) { continue; }
+                if ( ! $found || ! is_string( $value ) || '' === $value ) { self::fail( 'Required image URL is missing at ' . $binding['source'] . '.' ); }
+                $entry = Nova_Bridge_Suite_Recipe_Native_Media::entry( $media, $value );
+                if ( $entry ) { $state['native_media'][$binding['target']] = $entry; }
+                ++$state['bindings']; continue;
+            }
             if ( ! $found ) { if ( $binding['required'] ) { self::fail( 'Required content is missing at ' . $binding['source'] . '.' ); } if ( method_exists( $adapter, 'preserve_missing_binding' ) && $adapter->preserve_missing_binding( $native, $binding, $context ) ) { continue; } $value = 'boolean' === $binding['format'] ? false : ( 'number' === $binding['format'] ? 0 : '' ); }
             $value = self::format_value( $value, $binding['format'], $state['warnings'] ); $native = self::checked( $adapter->bind( $native, $binding, $value, $context ) ); ++$state['bindings'];
         }

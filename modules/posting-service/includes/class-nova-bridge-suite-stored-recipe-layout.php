@@ -37,12 +37,13 @@ final class Nova_Bridge_Suite_Stored_Recipe_Layout {
             return Nova_Bridge_Suite_Stored_Layout_Provider::support( $builder, $type );
         } catch ( Throwable $error ) { return [ 'supported' => false, 'reason' => $error->getMessage() ]; }
     }
-    private static function inventory( string $builder, array $blueprint ): array {
+    private static function inventory( string $builder, array $blueprint, string $resource ): array {
         $adapter = self::checked( Nova_Bridge_Suite_Recipe_Engine::adapter( $builder ) );
         self::checked( $adapter->validate_blueprint( $blueprint ) );
         Nova_Bridge_Suite_Stored_Layout::assert_independent( $builder, $blueprint );
         if ( ! is_callable( [ $adapter, 'describe' ] ) ) { self::fail( 'This builder needs an editorial-field description before a saved layout can be synchronized.' ); }
         $description = self::checked( $adapter->describe( $blueprint ) );
+        $description = Nova_Bridge_Suite_Recipe_Native_Media::describe( $description, $resource );
         return array_column( $description['fields'] ?? [], null, 'target' );
     }
     private static function seal( array $draft, string $builder, string $resource, array $blueprint, array $post_fields ): array {
@@ -50,7 +51,7 @@ final class Nova_Bridge_Suite_Stored_Recipe_Layout {
         if ( ( $draft['routing']['post_type'] ?? '' ) !== $type ) { self::fail( 'The saved destination differs from its approved native routing.' ); }
         if ( 'core' === $builder && ( ( $blueprint['type'] ?? '' ) !== 'post_type' || ( $blueprint['post_type'] ?? '' ) !== $type || ( $blueprint['resource_id'] ?? '' ) !== $resource ) ) { self::fail( 'The WordPress content blueprint belongs to a different native destination.' ); }
         $adapter = self::checked( Nova_Bridge_Suite_Recipe_Engine::adapter( $builder ) );
-        $inventory = self::inventory( $builder, $blueprint ); $bindings = [];
+        $inventory = self::inventory( $builder, $blueprint, $resource ); $bindings = [];
         $effective = Nova_Bridge_Suite_Writing_Adapter::adaptation_draft( $draft );
         foreach ( $effective['fields'] ?? [] as $path => $field ) {
             $descriptor = $effective['target_descriptors'][$path] ?? []; $mode = $field['mode'] ?? '';
@@ -61,6 +62,10 @@ final class Nova_Bridge_Suite_Stored_Recipe_Layout {
             $value_type = $field['description']['value_type'] ?? 'text';
             $format = 'rich_text' === $value_type ? 'html' : ( 'url' === $value_type ? 'url' : 'text' );
             $binding = [ 'kind' => 'recipe', 'target' => $path, 'format' => $format, 'mode' => $mode ];
+            if ( array_key_exists( 'native_media', $descriptor ) || Nova_Bridge_Suite_Recipe_Native_Media::FEATURED === $path ) {
+                $media = Nova_Bridge_Suite_Recipe_Native_Media::spec( $blueprint, $binding + [ 'native_media' => $descriptor['native_media'] ?? null ], $adapter );
+                $binding['kind'] = 'media'; $binding['native_media'] = $media; $bindings[$path] = $binding; continue;
+            }
             self::checked( $adapter->validate_binding( $blueprint, $binding ) );
             if ( 'core' === $builder && in_array( $path, [ '/document/title', '/document/excerpt' ], true ) ) {
                 $binding['kind'] = 'post'; $binding['column'] = substr( $path, strlen( '/document/' ) );
@@ -78,7 +83,8 @@ final class Nova_Bridge_Suite_Stored_Recipe_Layout {
             $recipe = $record['recipe'] ?? []; $builder = $record['builder'] ?? $recipe['builder'] ?? '';
             $resource = $record['resource_id'] ?? ''; $type = self::post_type( $resource );
             if ( $builder !== ( $recipe['builder'] ?? '' ) || ( $recipe['mode'] ?? 'static' ) !== 'static' || ! is_array( $recipe['blueprint'] ?? null ) || ! is_array( $recipe['bindings'] ?? null ) || ! empty( $recipe['regions'] ) || ! empty( $recipe['custom_fields'] ) ) { self::fail( 'Automatic posting needs a complete saved layout with fixed scalar fields. Repeated regions and custom-field companions require their own publishing capability.' ); }
-            $inventory = self::inventory( $builder, $recipe['blueprint'] );
+            $inventory = self::inventory( $builder, $recipe['blueprint'], $resource );
+            $adapter = self::checked( Nova_Bridge_Suite_Recipe_Engine::adapter( $builder ) );
             $draft = [ 'schema_version' => 1, 'revision' => (string) ( $record['id'] ?? '' ) . ':' . (string) ( $record['revision'] ?? '' ), 'reference_type' => 'post', 'reference_id' => 0, 'signature' => Nova_Bridge_Suite_Recipe_Engine::digest( $recipe['blueprint'] ), 'catalog_mode' => 'destination', 'template' => [ 'id' => 'local-destination', 'revision' => '1' ], 'profile_page_type' => $record['posting_page_type'] ?? ( 'post' === $type ? 'informative' : 'service' ), 'label' => $record['label'] ?? 'Saved content layout', 'guidance_mode' => empty( $recipe['instructions'] ) ? 'clear' : 'set', 'guidance' => $recipe['instructions'] ?? '', 'routing' => [ 'operation' => 'create', 'publication' => 'publish', 'post_type' => $type, 'locale' => '' ], 'fields' => [], 'target_descriptors' => [], 'repeat_slots' => [], 'destination_groups' => [] ];
             $draft['fields']['/title'] = [ 'mode' => 'adapt', 'source_path' => '', 'required' => true, 'instructions' => '', 'description' => [ 'label' => 'Content title', 'purpose' => 'The native content title matching the supplied heading.', 'value_type' => 'text', 'constraints' => [] ] ];
             $draft['target_descriptors']['/title'] = [ 'path' => '/title' ];
@@ -93,6 +99,12 @@ final class Nova_Bridge_Suite_Stored_Recipe_Layout {
                 $label = isset( $binding['label'] ) && '' !== trim( $binding['label'] ) ? $binding['label'] : $field['label'];
                 $draft['fields'][$path] = [ 'mode' => 'adapt', 'source_path' => '', 'required' => ! empty( $binding['required'] ), 'instructions' => $binding['instructions'] ?? '', 'description' => [ 'label' => $label, 'purpose' => 'Content for ' . $label . ( empty( $binding['source'] ) ? '.' : ', described by ' . $binding['source'] . '.' ), 'value_type' => $value_type, 'constraints' => [] ] ];
                 $draft['target_descriptors'][$path] = [ 'path' => $path, 'builder' => $builder ];
+                $media = Nova_Bridge_Suite_Recipe_Native_Media::spec( $recipe['blueprint'], $binding, $adapter );
+                if ( $media ) {
+                    $draft['target_descriptors'][$path]['native_media'] = true;
+                    $draft['source_hints'][$path] = [ 'image_url', 'image_urls' ];
+                    $draft['fields'][$path]['description']['purpose'] = 'Image URL for ' . $label . '. Select an exact supplied image URL from image_url or image_urls. WordPress imports the selected image. When this field is optional and no suitable source exists, leave it empty to retain the saved image.';
+                }
             }
             $draft['stored_layout'] = self::seal( $draft, $builder, $resource, $recipe['blueprint'], [ 'title' => '', 'excerpt' => 'core' === $builder ? ( $recipe['blueprint']['document']['excerpt'] ?? '' ) : '' ] );
             return $draft;
@@ -115,17 +127,19 @@ final class Nova_Bridge_Suite_Stored_Recipe_Layout {
             $layout = self::checked( self::validate( $draft ) ); $effective = Nova_Bridge_Suite_Writing_Adapter::adaptation_draft( $draft );
             $values = self::checked( Nova_Bridge_Suite_Writing_Adapter::validate_fitted_values( $effective, $destination_values ) );
             $adapter = self::checked( Nova_Bridge_Suite_Recipe_Engine::adapter( $layout['builder'] ) );
-            $blueprint = $layout['blueprint']; $post_fields = $layout['post_fields'];
+            $blueprint = $layout['blueprint']; $post_fields = $layout['post_fields']; $media = [];
             foreach ( $layout['bindings'] as $path => $binding ) {
                 if ( 'protected' === $binding['mode'] ) { continue; }
                 $value = 'leave_empty' === $binding['mode'] ? '' : ( $values[$path] ?? '' );
                 $rich = 'rich_text' === ( $effective['fields'][$path]['description']['value_type'] ?? '' );
                 if ( $rich ? ( ! function_exists( 'wp_kses_post' ) || wp_kses_post( $value ) !== $value ) : preg_match( '/<[^>]*>/', $value ) ) { self::fail( 'Fitted content does not satisfy the saved field or WordPress HTML policy.' ); }
+                if ( 'media' === $binding['kind'] ) { $entry = Nova_Bridge_Suite_Recipe_Native_Media::entry( $binding['native_media'], $value, 'leave_empty' === $binding['mode'] ); if ( $entry ) { $media[$path] = $entry; } continue; }
                 if ( 'post' === $binding['kind'] ) { $post_fields[$binding['column']] = $value; }
                 else { $blueprint = self::checked( $adapter->bind( $blueprint, $binding, $value ) ); }
             }
             $compiled = self::checked( $adapter->finalize( $blueprint, 'stored-layout:' . $seed, [ 'recipe' => [ 'blueprint' => $layout['blueprint'] ] ] ) );
             if ( ! is_array( $compiled['writer_payload'] ?? null ) ) { self::fail( 'The builder did not produce a complete native payload.' ); }
+            if ( $media ) { $compiled['writer_payload']['nova_media'] = $media; }
             return [ 'builder' => $layout['builder'], 'post_type' => $layout['post_type'], 'writer_payload' => $compiled['writer_payload'], 'post_fields' => $post_fields, 'layout_digest' => $layout['digest'] ];
         } );
     }
